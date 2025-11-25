@@ -1,4 +1,3 @@
-import { error } from "console";
 import { FastifyRequest, FastifyReply } from "../barrel/fastify";
 import { prisma } from "../barrel/prisma";
 import argon from "argon2";
@@ -8,7 +7,6 @@ import { AdminLoginProps } from "../models/route";
 export const adminAuth = async (req: FastifyRequest, res: FastifyReply) => {
   try {
     const params = req.body as AdminLoginProps;
-    console.log({ params });
 
     if (!params.username || !params.password) {
       return res.code(400).send({ message: "Bad Request!" });

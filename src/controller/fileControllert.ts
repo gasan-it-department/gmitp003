@@ -3,9 +3,12 @@ import { prisma } from "../barrel/prisma";
 
 import fs from "fs";
 import path from "path";
+import { pipeline } from "stream";
+import * as fsConstants from "fs";
 import XLXS from "xlsx";
 import ExcelJs from "exceljs";
 import { formatDate } from "../utils/date";
+import { ValidationError } from "../errors/errors";
 
 export const itemExcelFile = async (req: FastifyRequest, res: FastifyReply) => {
   try {
@@ -66,12 +69,12 @@ export const dataSetSupplies = async (
         fitToPage: true,
         showGridLines: true,
       },
-      headerFooter: {
-        oddHeader: `&L&B$Items`,
-        oddFooter: `&RGenerated on: ${formatDate(
-          new Date().toLocaleDateString()
-        )}`,
-      },
+      // headerFooter: {
+      //   oddHeader: `&L&B$Items`,
+      //   oddFooter: `&RGenerated on: ${formatDate(
+      //     new Date().toLocaleDateString()
+      //   )}`,
+      // },
     });
 
     worksheet.columns = [
@@ -120,3 +123,53 @@ export const dataSetSupplies = async (
     return res.code(500).send({ message: "Internal server error" });
   }
 };
+
+// export const updateLoadProfile = async (
+//   req: FastifyRequest,
+//   res: FastifyReply
+// ) => {
+//   try {
+//     const data = await req.file();
+//     if (!data) {
+//       res.code(400).send({ error: 'No file uploaded' });
+//       return;
+//     }
+
+//     // Ensure directory exists
+//     const uploadDir = 'D:/portal/profile';
+//     try {
+//       await fs.access(uploadDir, fsConstants.constants.W_OK);
+//     } catch {
+//       await fs.mkdir(uploadDir, { recursive: true });
+//     }
+
+//     // Create safe filename and path
+//     const originalFilename = data.filename;
+//     const ext = path.extname(originalFilename);
+//     const basename = path.basename(originalFilename, ext);
+//     const filename = `${basename}-${Date.now()}${ext}`;
+//     const filePath = path.join(uploadDir, filename);
+
+//     // Write file using stream to handle large files efficiently
+//     await pipeline(data.file, fs.createWriteStream(filePath));
+
+//     return {
+//       success: true,
+//       message: 'File uploaded successfully',
+//       path: filePath,
+//       filename: filename
+//     };
+//   } catch (error) {
+//     if (error instanceof Error) {
+//       req.log.error(error);
+//       res.code(500).send({
+//         error: 'File upload failed',
+//         details: error.message
+//       });
+//     } else {
+//       res.code(500).send({
+//         error: 'Unknown error occurred'
+//       });
+//     }
+//   }
+// };

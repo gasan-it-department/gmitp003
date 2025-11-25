@@ -5,6 +5,7 @@ import {
   dataSetList,
   dataSetSupplies,
   dateSetData,
+  deleteDataSet,
 } from "../controller/dataSetController";
 import { newDataSetSchema } from "../models/request";
 export const dataSet = (fastify: FastifyInstance) => {
@@ -19,5 +20,10 @@ export const dataSet = (fastify: FastifyInstance) => {
     "/data-set-supplies",
     { preHandler: authenticated },
     dataSetSupplies
+  );
+  fastify.delete(
+    "/delete-data-set",
+    { preHandler: authenticated },
+    deleteDataSet
   );
 };

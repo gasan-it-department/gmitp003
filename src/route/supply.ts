@@ -5,6 +5,8 @@ import {
   deleteSupply,
   addSupply,
   updateSupply,
+  supplyList,
+  timebaseSupplyReport,
 } from "../controller/supplyController";
 
 export const supply = (fastify: FastifyInstance) => {
@@ -15,4 +17,10 @@ export const supply = (fastify: FastifyInstance) => {
     deleteSupply
   );
   fastify.post("/update-supply", { preHandler: authenticated }, updateSupply);
+  fastify.get("/supply-list", { preHandler: authenticated }, supplyList);
+  fastify.get(
+    "/supply-time-base",
+    { preHandler: authenticated },
+    timebaseSupplyReport
+  );
 };

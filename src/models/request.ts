@@ -182,6 +182,87 @@ export const listSchema: FastifySchema = {
       lastCursor: { type: "string" },
       limit: { type: "number" },
       inventoryBoxId: { type: "string" },
+      id: { type: "string" },
+    },
+  },
+};
+
+export const deleteListSchema: FastifySchema = {
+  params: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      userId: { type: "string" },
+      containerId: { type: "string" },
+    },
+  },
+};
+
+export const newOrderSchema: FastifySchema = {
+  body: {
+    type: "object",
+    properties: {
+      title: { type: "string" },
+      lastCursor: { type: "string" },
+      limit: { type: "number" },
+      inventoryBoxId: { type: "string" },
+    },
+  },
+};
+
+export const deleteOrderItemSchema: FastifySchema = {
+  params: {
+    type: "object",
+    properties: {
+      ids: {
+        type: "array",
+        items: {
+          type: "string",
+        },
+      },
+      userId: { type: "string" },
+      orderId: { type: "string" },
+      inventoryBoxId: { type: "string" },
+    },
+  },
+};
+
+export const deleteOrderSchema: FastifySchema = {
+  params: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      userId: { type: "string" },
+      inventoryBoxId: { type: "string" },
+    },
+  },
+};
+
+export const containerOverviewSchema: FastifySchema = {
+  params: {
+    type: "object",
+    properties: {
+      inventoryBoxId: { type: "string" },
+    },
+  },
+};
+
+export const listDataSchema: FastifySchema = {
+  params: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+    },
+  },
+};
+
+export const addAccessToListSchema: FastifySchema = {
+  body: {
+    type: "object",
+    properties: {
+      userId: { type: "string" },
+      containerId: { type: "string" },
+      listId: { type: "string" },
     },
   },
 };

@@ -1,6 +1,12 @@
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
 import { prisma, Prisma } from "../barrel/prisma";
-import { PagingProps } from "../models/route";
+import { AppError, NotFoundError, ValidationError } from "../errors/errors";
+import {
+  AddListAccess,
+  DataProps,
+  DeleteListProps,
+  PagingProps,
+} from "../models/route";
 
 export const createList = async (req: FastifyRequest, res: FastifyReply) => {
   try {
@@ -73,5 +79,160 @@ export const list = async (req: FastifyRequest, res: FastifyReply) => {
   } catch (error) {
     console.log(error);
     res.code(500).send({ message: "Internal Server Error" });
+  }
+};
+
+export const listData = async (req: FastifyRequest, res: FastifyReply) => {
+  const params = req.query as DataProps;
+
+  if (!params.id) throw new ValidationError();
+
+  try {
+    const data = await prisma.supplyBatch.findUnique({
+      where: {
+        id: params.id,
+      },
+    });
+
+    if (!data) throw new NotFoundError();
+    return res.code(200).send({ message: "OK", data });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+export const addListAccess = async (req: FastifyRequest, res: FastifyReply) => {
+  const params = req.query as AddListAccess;
+
+  if (!params.containerId || !params.listId || !params.userId)
+    throw new ValidationError();
+
+  try {
+    const [user, list] = await prisma.$transaction([
+      prisma.user.findUnique({
+        where: {
+          id: params.userId,
+        },
+      }),
+      prisma.supplyBatch.findUnique({
+        where: {
+          id: params.listId,
+        },
+      }),
+    ]);
+
+    if (!user || !list) throw new NotFoundError();
+
+    await prisma.$transaction([
+      prisma.inventoryAccessLogs.create({
+        data: {
+          inventoryBoxId: params.containerId,
+          userId: params.userId,
+          action: `Allowed ${user.username} to access list: ${list.title}`,
+        },
+      }),
+      prisma.supplyBatchAccess.create({
+        data: {
+          userId: params.userId,
+          supplyBatchId: params.listId,
+        },
+      }),
+    ]);
+    res.code(200).send({ message: "OK" });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+export const listAccessUsers = async (
+  req: FastifyRequest,
+  res: FastifyReply
+) => {
+  const params = req.query as PagingProps;
+
+  if (!params.id) throw new ValidationError();
+  try {
+    const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
+    const filter: any = {};
+    if (params.query) {
+      filter.user = {
+        firstName: { contains: params.query, mode: "insensitive" },
+        lastName: { contains: params.query, mode: "insensitive" },
+        username: { contains: params.query, mode: "insensitive" },
+      };
+    }
+    const response = await prisma.supplyBatchAccess.findMany({
+      where: {
+        user: filter,
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            username: true,
+          },
+        },
+      },
+      skip: cursor ? 1 : 0,
+      take: parseInt(params.limit, 10),
+      cursor,
+    });
+
+    const newLastCursorId =
+      response.length > 0 ? response[response.length - 1].id : null;
+    const hasMore = response.length === parseInt(params.limit, 10);
+
+    return res
+      .code(200)
+      .send({ list: response, lastCursor: newLastCursorId, hasMore });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+export const deleteList = async (req: FastifyRequest, res: FastifyReply) => {
+  const params = req.query as DeleteListProps;
+  if (!params.id || !params.containerId || !params.userId)
+    throw new ValidationError();
+  try {
+    const [list] = await prisma.$transaction([
+      prisma.supplyBatch.findUnique({
+        where: {
+          id: params.id,
+        },
+      }),
+    ]);
+    if (!list) throw new NotFoundError();
+    await prisma.$transaction([
+      prisma.inventoryAccessLogs.create({
+        data: {
+          inventoryBoxId: params.containerId,
+          userId: params.userId,
+          action: `DELETED List: ${list.title}`,
+        },
+      }),
+      prisma.supplyBatchAccess.delete({
+        where: {
+          id: params.id,
+        },
+      }),
+    ]);
+    return res.code(200).send({ message: "OK" });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
   }
 };

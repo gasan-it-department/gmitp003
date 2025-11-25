@@ -1,5 +1,6 @@
 import fastify, { FastifyRequest, FastifyReply } from "../barrel/fastify";
-import { prisma } from "../barrel/prisma";
+import { Prisma, prisma } from "../barrel/prisma";
+import { AppError, ValidationError } from "../errors/errors";
 import { EmployeesProps } from "../models/Employee";
 import { PagingProps } from "../models/route";
 import { getYearRange } from "../utils/date";
@@ -166,5 +167,71 @@ export const searchUser = async (req: FastifyRequest, res: FastifyReply) => {
     console.log(error);
 
     res.code(500).send({ message: "Internal Server Error" });
+  }
+};
+
+export const employees = async (req: FastifyRequest, res: FastifyReply) => {
+  const params = req.params as PagingProps;
+  console.log("Logged Error: ", params);
+
+  if (params.id) throw new ValidationError("BAD_REQUEST");
+
+  try {
+    const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
+    const filter: any = {};
+    const limit = params.limit ? parseInt(params.limit, 10) : 20;
+
+    if (params.query) {
+      const searchTerms = params.query.trim().split(/\s+/); // Split on any whitespace
+
+      if (searchTerms.length === 1) {
+        filter.OR = [
+          { lastName: { contains: searchTerms[0], mode: "insensitive" } },
+          { firstName: { contains: searchTerms[0], mode: "insensitive" } },
+          { middleName: { contains: searchTerms[0], mode: "insensitive" } },
+          { username: { contains: searchTerms[0], mode: "insensitive" } },
+        ];
+      } else {
+        filter.AND = searchTerms.map((term) => ({
+          OR: [
+            { firstname: { contains: term, mode: "insensitive" } },
+            { lastname: { contains: term, mode: "insensitive" } },
+            { middleName: { contains: term, mode: "insensitive" } },
+            { username: { contains: term, mode: "insensitive" } },
+          ],
+        }));
+
+        filter.OR = [
+          { AND: filter.AND },
+          {
+            middleName: { contains: params.query.trim(), mode: "insensitive" },
+          },
+        ];
+        delete filter.AND;
+      }
+    }
+
+    const response = await prisma.user.findMany({
+      where: {
+        lineId: params.id,
+        ...filter,
+      },
+      skip: cursor ? 1 : 0,
+      take: limit,
+      cursor,
+    });
+
+    const newLastCursorId =
+      response.length > 0 ? response[response.length - 1].id : null;
+    const hasMore = response.length === limit;
+
+    return res
+      .code(200)
+      .send({ list: response, lastCursor: newLastCursorId, hasMore });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DATABASE_CONNECTION_ERROR", 500, "DB_FAILED");
+    }
+    throw error;
   }
 };

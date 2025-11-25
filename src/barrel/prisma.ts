@@ -9,6 +9,9 @@ import {
   InvitationLink,
   Department,
   Prisma,
+  SupplyStockTrack,
+  Prescription,
+  SubmittedApplication,
 } from "@prisma/client";
 
 const prisma = new PrismaClient();
@@ -24,4 +27,7 @@ export {
   InvitationLink,
   Department,
   Prisma,
+  SupplyStockTrack,
+  Prescription,
+  SubmittedApplication,
 };

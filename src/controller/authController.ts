@@ -1,7 +1,9 @@
-import { prisma, User } from "../barrel/prisma";
+import { prisma, User, Prisma } from "../barrel/prisma";
 import argon from "argon2";
 import { AuthUser } from "../models/User";
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
+
+import { AppError, ValidationError } from "../errors/errors";
 
 export const authController = async (
   request: FastifyRequest,
@@ -86,49 +88,50 @@ export const registerController = async (
   request: FastifyRequest,
   res: FastifyReply
 ) => {
+  const data = request.body as AuthUser;
+  console.log(data);
+
+  if (!data.username || !data.password)
+    throw new ValidationError("BAD_REQUEST");
   try {
-    console.log("registerController called");
+    await prisma.$transaction(async (tx) => {
+      const existingUser = await tx.account.findFirst({
+        where: { username: { contains: data.username, mode: "insensitive" } },
+      });
+      if (existingUser) {
+        return res.code(400).send({ message: "User already exists" });
+      }
 
-    const data = request.body as AuthUser;
+      const hashed = await argon.hash(data.password);
 
-    const existingUser = await prisma.account.findFirst({
-      where: { username: { contains: data.username, mode: "insensitive" } },
+      const newUser = await tx.account.create({
+        data: {
+          username: data.username,
+          password: hashed,
+          lineId: "c039c8fd-8058-4e07-820e-7a3f36dc108d",
+        },
+      });
+      const user = await tx.user.create({
+        data: {
+          username: data.username,
+          lastName: data.lastName,
+          level: 2,
+          firstName: data.firstName,
+          middleName: "dasdasd",
+          email: data.email,
+          accountId: newUser.id,
+          lineId: "c039c8fd-8058-4e07-820e-7a3f36dc108d",
+        },
+      });
+
+      console.log("user created", user);
     });
-    console.log("existingUser", existingUser);
-    if (existingUser) {
-      return res.code(400).send({ message: "User already exists" });
-    }
-    console.log("1");
-
-    const hashed = await argon.hash(data.password);
-    console.log("hashed password", hashed);
-
-    const newUser = await prisma.account.create({
-      data: {
-        username: data.username,
-        password: hashed,
-      },
-    });
-    const user = await prisma.user.create({
-      data: {
-        username: data.username,
-        lastName: "dasdasjdkajslk",
-        level: 2,
-        firstName: "dasdasd",
-        middleName: "dasdasd",
-        email: "testEmail@gmail.com",
-        accountId: newUser.id,
-      },
-    });
-
-    console.log("user created", user);
   } catch (error) {
     console.log(error);
 
-    res.code(500).send({
-      message: "Internal Server Error",
-      error:
-        error instanceof Error ? error.message : "An unexpected error occurred",
-    });
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
   }
 };

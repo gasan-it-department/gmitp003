@@ -4,4 +4,5 @@ import { adminLoginScehma } from "../models/request";
 export const admin = (fastify: FastifyInstance) => {
   fastify.post("/admin-login", { schema: adminLoginScehma }, adminAuth);
   fastify.post("/create-admin", { schema: adminLoginScehma }, creteAdmin);
+  fastify.get("/admin-inbox", async (req, res) => {});
 };

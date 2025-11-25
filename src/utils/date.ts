@@ -21,3 +21,33 @@ export const formatDate = (isoDateString: string): string => {
 
   return date.toLocaleDateString("en-US", options);
 };
+
+export const getPriceTotal = (
+  price: { value: number; timestamp: Date }[],
+  period: number,
+  target: number
+) => {
+  const filtered = price.map((item) => {
+    const month = new Date(item.timestamp).getMonth();
+    const months = 12;
+    const temp = months / period;
+    const calMax = temp * target;
+    const min = calMax - temp;
+
+    if (month >= min && month <= calMax) {
+      return item;
+    }
+  });
+  return filtered
+    .filter((item) => item !== undefined)
+    .reduce((base, acc) => {
+      return base + acc.value;
+    }, 0);
+};
+
+export const getQuarter = (date = new Date()) => {
+  const month = date.getMonth(); // 0-11 (January is 0)
+
+  // Quarters: Q1 (0-2), Q2 (3-5), Q3 (6-8), Q4 (9-11)
+  return Math.floor(month / 3) + 1;
+};

@@ -4,6 +4,8 @@ import fastify, {
   FastifyReply,
   RouteHandlerMethod,
   FastifyInstance,
+  FastifyError,
+  FastifyPluginAsync,
 } from "fastify";
 import jwt from "@fastify/jwt";
 const app = fastify();
@@ -14,5 +16,7 @@ export {
   RouteHandlerMethod,
   FastifyInstance,
   jwt,
+  FastifyError,
+  FastifyPluginAsync,
 };
 export default app;

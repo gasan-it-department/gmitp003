@@ -1,16 +1,21 @@
 import { prisma } from "../barrel/prisma";
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
+import { PagingProps } from "../models/route";
+import { AppError, NotFoundError, ValidationError } from "../errors/errors";
 
-interface Props {
-  lastCursor: string;
-}
 export const personnelList = async (req: FastifyRequest, res: FastifyReply) => {
+  const { lastCursor, query, limit, id } = req.query as PagingProps;
+  if (!id) throw new ValidationError("INVALID_REQUEST");
   try {
-    const { lastCursor } = req.body as Props;
     const cursor = lastCursor ? { id: lastCursor } : undefined;
+    const take = limit ? parseInt(limit) : 20;
     const response = await prisma.user.findMany({
+      where: {
+        departmentId: id,
+      },
       cursor,
-      take: 10,
+      take,
+      skip: cursor ? 1 : 0,
       orderBy: {
         lastName: "asc",
       },

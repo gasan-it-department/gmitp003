@@ -4,7 +4,7 @@ import { PagingProps } from "../models/route";
 export const accountList = async (req: FastifyRequest, res: FastifyReply) => {
   try {
     const params = req.query as PagingProps;
-    console.log(params);
+
     const filter: any = {};
     if (params.query) {
       const searchTerms = params.query.trim().split(/\s+/); // Split on any whitespace

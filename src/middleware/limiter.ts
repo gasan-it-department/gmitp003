@@ -1,3 +1,5 @@
+import rateLimiter from "@fastify/rate-limit";
+
 export const limiter = {
   max: 100,
   timeWindow: "1 minute",

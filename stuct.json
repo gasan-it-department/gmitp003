@@ -1,0 +1,13 @@
+{
+  "stock": [
+    {
+      "item": "Phone",
+      "price": {
+        "1st_quater": { "total": "10000" },
+        "2nd_quater": { "total": "20000" },
+        "3rd_quater": { "total": "30000" },
+        "4th_quater": { "total": "40000" }
+      }
+    }
+  ]
+}

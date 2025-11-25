@@ -1,6 +1,7 @@
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
 import { Prisma, prisma } from "../barrel/prisma";
-import { NewDataSetProps } from "../models/route";
+import { AppError, ValidationError } from "../errors/errors";
+import { DeleteDataSetProps, NewDataSetProps } from "../models/route";
 import { PagingProps } from "../models/route";
 
 export const createDateSet = async (req: FastifyRequest, res: FastifyReply) => {
@@ -126,7 +127,7 @@ export const dataSetSupplies = async (
     const filter: any = {
       suppliesDataSetId: params.id,
     };
-    console.log({ params });
+    console.log("Data Set Item: ", { params });
 
     if (!params.id) {
       return res.code(400).send({ message: "Bad request!" });
@@ -194,5 +195,39 @@ export const dataSetSupplies = async (
   } catch (error) {
     console.log(error);
     return res.code(500).send({ message: "Internal server error" });
+  }
+};
+
+export const dataSetSelection = async (
+  req: FastifyRequest,
+  res: FastifyReply
+) => {
+  try {
+    const body = req.query as { id: string };
+  } catch (error) {
+    console.log(error);
+  }
+};
+
+export const deleteDataSet = async (req: FastifyRequest, res: FastifyReply) => {
+  const params = req.query as DeleteDataSetProps;
+
+  if (!params.id || !params.userId || !params.inventoryBoxId)
+    throw new ValidationError();
+
+  try {
+    await prisma.suppliesDataSet.delete({
+      where: {
+        id: params.id,
+      },
+    });
+    return res.code(200).send({ message: "OK" });
+  } catch (error) {
+    console.log("Delete Error: ", error);
+
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_ERROR", 500, "DB_ERROR");
+    }
+    throw error;
   }
 };
