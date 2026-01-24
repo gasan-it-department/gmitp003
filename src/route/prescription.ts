@@ -8,6 +8,7 @@ import {
   prescriptionDispense,
   prescriptionProgress,
   prescriptionProgressUpdate,
+  prescribeTransaction,
 } from "../controller/prescriptionController";
 
 export const prescription = (fastify: FastifyInstance) => {
@@ -39,4 +40,9 @@ export const prescription = (fastify: FastifyInstance) => {
 
   fastify.patch("/prescription/dispense", prescriptionDispense);
   fastify.patch("/prescription/progress/update", prescriptionProgressUpdate);
+  fastify.get(
+    "/prescription/transaction",
+    { preHandler: authenticated },
+    prescribeTransaction
+  );
 };

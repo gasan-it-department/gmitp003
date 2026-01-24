@@ -1,7 +1,13 @@
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
-import { prisma } from "../barrel/prisma";
+import { prisma, Prisma } from "../barrel/prisma";
 import { PagingProps } from "../models/route";
 import { generatedBoxCode } from "../middleware/handler";
+import {
+  AppError,
+  NotFoundError,
+  UnauthorizedError,
+  ValidationError,
+} from "../errors/errors";
 export const inventories = async (req: FastifyRequest, res: FastifyReply) => {
   try {
     const params = req.query as PagingProps;
@@ -52,6 +58,11 @@ export const inventories = async (req: FastifyRequest, res: FastifyReply) => {
       .send({ list: response, lastCursor: nextLastCursorId, hasMore });
   } catch (error) {
     console.log(error);
+
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_ERROR", 500, "DB_ERROR");
+    }
+    throw error;
   }
 };
 
@@ -94,6 +105,8 @@ export const createInventory = async (
         createdAt: new Date(),
       },
     });
+
+    if (!response) throw new ValidationError("TRANSACTION FAILED");
     await prisma.containerAllowedUser.create({
       data: {
         inventoryBoxId: response.id,
@@ -112,49 +125,55 @@ export const viewContainerAuth = async (
   req: FastifyRequest,
   res: FastifyReply
 ) => {
+  const params = req.query as { id: string; userId: string };
+  console.log("Containers: ", { params });
+
+  if (!params.id || !params.userId) {
+    throw new ValidationError("INVALID REQUIRED FIELDS");
+  }
   try {
-    const params = req.query as { id: string; userId: string };
-    console.log({ params });
-
-    if (!params.id || !params.userId) {
-      console.log("Bad");
-
-      return res.code(400).send({ message: "Bad Request" });
-    }
-    const check = await prisma.containerAllowedUser.findFirst({
-      where: {
-        userId: params.userId,
-        id: params.id,
-      },
-    });
-
-    if (!check) {
-      throw new Error("Unauthorized");
-    }
-    const data = await prisma.inventoryBox.findUnique({
-      where: {
-        id: params.id,
-      },
-      select: {
-        batch: true,
-        id: true,
-        name: true,
-        code: true,
-        createdBy: {
-          select: {
-            username: true,
-          },
+    const response = await prisma.$transaction(async (tx) => {
+      const checkPrev = await tx.module.findFirst({
+        where: {
+          userId: params.userId,
+          moduleName: "container",
         },
-        createdAt: true,
-      },
+      });
+
+      if (!checkPrev) {
+        throw new UnauthorizedError("INVALID ACCESS");
+      }
+
+      const data = await tx.inventoryBox.findUnique({
+        where: {
+          id: params.id,
+        },
+        select: {
+          batch: true,
+          id: true,
+          name: true,
+          code: true,
+          createdBy: {
+            select: {
+              username: true,
+            },
+          },
+          createdAt: true,
+        },
+      });
+      return data;
     });
-    return res.code(200).send({ message: "OK", data });
+
+    if (!response) {
+      throw new NotFoundError("DATA NOT FOUND!");
+    }
+
+    return res.code(200).send({ message: "OK", data: response });
   } catch (error) {
-    console.log(error);
-    res.code(401).send({
-      error: "Unauthorized",
-      message: error instanceof Error ? error.message : "Authentication failed",
-    });
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_ERROR", 500, "DB_FAILED");
+    }
+    throw error;
   }
 };
 
@@ -236,5 +255,118 @@ export const inventoryLogsAccessList = async (
   } catch (error) {
     console.log(error);
     res.code(500).send({ message: "Internal Server Error" });
+  }
+};
+
+export const inventoryLogs = async (req: FastifyRequest, res: FastifyReply) => {
+  const params = req.query as PagingProps;
+
+  if (!params.id) throw new ValidationError("INVALID REQUIRED ID");
+  try {
+    const cursor = params.lastCursor ? { id: params.id } : undefined;
+    const limit = params.limit ? parseInt(params.limit, 10) : 20;
+
+    const response = await prisma.supplyTransaction.findMany({
+      where: {
+        inventoryBoxId: params.id,
+      },
+      skip: cursor ? 1 : 0,
+      take: limit,
+      orderBy: {
+        timestamp: "desc",
+      },
+      cursor,
+    });
+
+    const newLastCursorId =
+      response.length > 0 ? response[response.length - 1].id : null;
+    const hasMore = limit === response.length;
+
+    return res
+      .code(200)
+      .send({ list: response, lastCursor: newLastCursorId, hasMore });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_ERROR", 500, "DB_FAILED");
+    }
+    throw error;
+  }
+};
+
+export const removeContainer = async (
+  req: FastifyRequest,
+  res: FastifyReply
+) => {
+  try {
+    const { id, userId } = req.query as { id: string; userId: string };
+    console.log({ id, userId });
+
+    if (!id || !userId) {
+      return res.code(400).send({ message: "Bad Request" });
+    }
+    const response = await prisma.$transaction(async (tx) => {
+      const items = await tx.supplies.count({
+        where: {
+          inventoryBoxId: id,
+        },
+      });
+      const stocks = await tx.supplyStockTrack.count({
+        where: {
+          inventoryBoxId: id,
+        },
+      });
+
+      const dispensedLogs = await tx.supplyDispenseRecord.count({
+        where: {
+          inventoryBoxId: id,
+        },
+      });
+
+      const recievedItems = await tx.supplieRecieveHistory.count({
+        where: {
+          inventoryBoxId: id,
+        },
+      });
+
+      if (items > 0 || stocks > 0 || dispensedLogs > 0 || recievedItems > 0) {
+        throw new ValidationError(
+          "CANNOT DELETE CONTAINER WITH EXISTING RECORDS"
+        );
+      }
+      // const lists = await tx.
+      const container = await tx.inventoryBox.delete({
+        where: {
+          id,
+        },
+      });
+      await tx.inventoryLogs.create({
+        data: {
+          userId,
+          action: 4,
+          lineId: container.lineId,
+          desc: `Container Removed - ${container.name} (${container.code}) | Remaining Items: ${items} | Remaining Stocks: ${stocks} | `,
+        },
+      });
+      await tx.inventoryAccessLogs.create({
+        data: {
+          userId,
+          action: "REMOVED CONTAINER",
+        },
+      });
+
+      return true;
+    });
+
+    if (!response) {
+      throw new ValidationError("TRANSACTION FAILED");
+    }
+
+    return res.code(200).send({ message: "Container removed successfully" });
+  } catch (error) {
+    console.log(error);
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_ERROR", 500, "DB_FAILED");
+    }
+    throw error;
   }
 };

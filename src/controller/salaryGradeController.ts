@@ -6,10 +6,9 @@ import { PagingProps } from "../models/route";
 import { AppError, ValidationError } from "../errors/errors";
 export const salaryGradeList = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const { lastCursor, limit, id } = req.query as PagingProps;
-  console.log({ lastCursor, limit, id });
 
   if (!id) throw new ValidationError("BAD_REQUEST");
   try {
@@ -24,6 +23,14 @@ export const salaryGradeList = async (
       skip: cursor ? 1 : 0,
       orderBy: {
         grade: "asc",
+      },
+      include: {
+        _count: {
+          select: {
+            SalaryGradeHistory: true,
+            users: true,
+          },
+        },
       },
     });
     const newLastCursor =
@@ -42,7 +49,7 @@ export const salaryGradeList = async (
 
 export const saveNewSalaryGrade = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   try {
     const response = await prisma.salaryGrade.createMany({
@@ -60,6 +67,66 @@ export const saveNewSalaryGrade = async (
 
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+export const updateSalaryGrade = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as {
+    id: string;
+    amount: number;
+    userId: string;
+    lineId: string;
+  };
+  if (!body.id || !body.amount || !body.lineId || !body.userId) {
+    throw new ValidationError("BAD_REQUEST");
+  }
+
+  try {
+    const response = await prisma.$transaction(async (tx) => {
+      const updatedSalaryGrade = await tx.salaryGrade.update({
+        data: {
+          amount: body.amount,
+        },
+        where: {
+          id: body.id,
+        },
+      });
+
+      await tx.salaryGradeHistory.create({
+        data: {
+          salaryGradeId: body.id,
+          amount: body.amount,
+          userId: "",
+          effectiveDate: new Date(),
+        },
+      });
+      await tx.humanResourcesLogs.create({
+        data: {
+          action: `Updated Salary Grade ${updatedSalaryGrade.grade} to ${updatedSalaryGrade.amount}`,
+          lineId: updatedSalaryGrade.lineId as string,
+          desc: `Salary Grade ${updatedSalaryGrade.grade} amount updated to ${updatedSalaryGrade.amount}`,
+          userId: body.userId,
+        },
+      });
+
+      return true;
+    });
+
+    if (!response) {
+      throw new ValidationError("TRANSACTION FAILED");
+    }
+
+    return res.code(200).send({
+      message: "OK",
+    });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_ERROR", 500, "DB_ERROR");
     }
     throw error;
   }

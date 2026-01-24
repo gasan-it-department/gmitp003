@@ -1,12 +1,49 @@
 import { FastifyInstance } from "../barrel/fastify";
 import { authenticated } from "../middleware/handler";
-import { announcements } from "../controller/announcementController";
-import { announcementsSchema } from "../models/request";
+import {
+  announcements,
+  createNewAnnouncement,
+  announcementData,
+  publishAnnouncement,
+  announcementUpdateStatus,
+  viewAnnouncement,
+  markOkayAnnouncement,
+} from "../controller/announcementController";
 
 export const announcement = (fastify: FastifyInstance) => {
   fastify.get(
-    "/announcements",
-    { preHandler: authenticated, schema: announcementsSchema },
+    "/announcement/list",
+    { preHandler: authenticated },
     announcements
+  );
+  fastify.post(
+    "/announcement/new",
+    { preHandler: authenticated },
+    createNewAnnouncement
+  );
+  fastify.get(
+    "/announcement/data",
+    { preHandler: authenticated },
+    announcementData
+  );
+  fastify.patch(
+    "/announcement/publish",
+    { preHandler: authenticated },
+    publishAnnouncement
+  );
+  fastify.patch(
+    "/announcement/status/update",
+    { preHandler: authenticated },
+    announcementUpdateStatus
+  );
+  fastify.patch(
+    "/announcement/view-announcement",
+    { preHandler: authenticated },
+    viewAnnouncement
+  );
+  fastify.patch(
+    "/announcement/toogle-react",
+    { preHandler: authenticated },
+    markOkayAnnouncement
   );
 };

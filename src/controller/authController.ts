@@ -39,10 +39,14 @@ export const authController = async (
     if (!user) {
       return res.code(200).send({ message: "User not found", error: 1 });
     }
+    // if (user.status === 2) {
+    //   return res.code(200).send({ message: "Account suspended", error: 4 });
+    // }
     const mathced = await argon.verify(user.password, password);
     if (!mathced) {
       return res.code(200).send({ message: "Incorrect password", error: 2 });
     }
+
     const token = await res.jwtSign({ id: user.id, username: user.username });
     // if (user.line?.status && user.line.status === 1) {
     //   return res.code(200).send({
@@ -76,6 +80,8 @@ export const authController = async (
       },
     });
   } catch (error) {
+    console.log(error);
+
     res.code(500).send({
       message: "Internal Server Error",
       error:

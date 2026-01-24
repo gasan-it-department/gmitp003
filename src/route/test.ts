@@ -204,4 +204,12 @@ export const test = (fastify: FastifyInstance) => {
     const applications = await prisma.submittedApplication.findMany();
     return res.code(200).send({ applications });
   });
+  fastify.get("/test/notification", async (req, res) => {
+    try {
+      const response = await prisma.supplyBatchOrder.findMany();
+      return res.code(200).send({ list: response });
+    } catch (error) {
+      console.log(error);
+    }
+  });
 };

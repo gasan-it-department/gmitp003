@@ -1,7 +1,11 @@
 // route/notification.ts
 import { FastifyInstance } from "../barrel/fastify";
 import { notificationSocket } from "..";
-import { sendEmail } from "../middleware/handler";
+import { authenticated, sendEmail } from "../middleware/handler";
+import {
+  notifications,
+  viewNotifcation,
+} from "../controller/notificationController";
 interface SendNotificationBody {
   userId: string;
   title: string;
@@ -56,4 +60,14 @@ export const notification = (fastify: FastifyInstance) => {
       return res.code(500).send({ error: "Failed to send notification" });
     }
   });
+  fastify.get(
+    "/notification/list",
+    { preHandler: authenticated },
+    notifications
+  );
+  fastify.patch(
+    "/notification/view",
+    { preHandler: authenticated },
+    viewNotifcation
+  );
 };

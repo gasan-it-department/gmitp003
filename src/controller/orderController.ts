@@ -11,14 +11,15 @@ import {
   UpdateOrderItem,
 } from "../models/route";
 import { quality } from "../route/quality";
+import { supplyOrderStatus } from "../utils/helper";
 
 export const orders = async (req: FastifyRequest, res: FastifyReply) => {
   try {
     const { id, lastCursor, limit } = req.query as PagingProps;
-    console.log({ id, lastCursor, limit });
+    console.log("check", { id, lastCursor, limit });
 
     if (!id) {
-      return res.code(400).send({ message: "Bad request" });
+      throw new ValidationError("INVALID REQUIRED ID");
     }
     const cursor = lastCursor ? { id: lastCursor } : undefined;
     const response = await prisma.supplyBatchOrder.findMany({
@@ -53,25 +54,28 @@ export const orders = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const orderItemList = async (req: FastifyRequest, res: FastifyReply) => {
   try {
-    const { query, lastCursor, limit, id } = req.query as PagingProps;
-    console.log("====================================");
-    console.log("sdas");
-    console.log("====================================");
+    const { lastCursor, limit, id } = req.query as PagingProps;
     if (!id) {
       throw new ValidationError("BAD_REQUEST");
     }
     const cursor = lastCursor ? { id: lastCursor } : undefined;
+    const take = limit ? parseInt(limit, 10) : 20;
     const items = await prisma.supplyOrder.findMany({
       where: {
         supplyBatchOrderId: id,
       },
       cursor,
-      take: parseInt(limit, 10),
+      take: take,
       skip: cursor ? 1 : 0,
       include: {
         supply: {
           select: {
             item: true,
+          },
+        },
+        brand: {
+          select: {
+            brand: true,
           },
         },
       },
@@ -101,7 +105,6 @@ export const addSupplyItem = async (req: FastifyRequest, res: FastifyReply) => {
       desc: string;
       orderId: string;
       supplyId: string;
-      qualityId: string;
     };
     console.log("Params new ORder: ", params);
 
@@ -127,7 +130,6 @@ export const addSupplyItem = async (req: FastifyRequest, res: FastifyReply) => {
           quantity: parseInt(params.quanlity, 10),
           suppliesId: params.supplyId,
           refNumber: code,
-          suppliesQualityId: params.qualityId,
         },
       }),
     ]);
@@ -286,6 +288,13 @@ export const saveOrder = async (req: FastifyRequest, res: FastifyReply) => {
   if (!body.status) return new ValidationError("Status to update not found!");
   try {
     await prisma.$transaction(async (tx) => {
+      const items = await tx.supplyOrder.findMany({
+        where: {
+          supplyBatchOrderId: body.id,
+        },
+      });
+
+      if (items.length === 0) throw new ValidationError("FOUND 0 ITEMS");
       const order = await tx.supplyBatchOrder.update({
         where: {
           id: body.id,
@@ -323,18 +332,29 @@ export const saveOrder = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const fullFillOrder = async (req: FastifyRequest, res: FastifyReply) => {
   const body = req.body as FullFillOrderProps;
-  if (!body.ids || !body.orderId || !body.userId || !body.inventoryBoxId) {
+  console.log(body);
+
+  if (!body.orderId || !body.userId || !body.inventoryBoxId) {
     throw new ValidationError("BAD REQUEST!");
   }
 
   try {
-    const [items, order, stocks] = await prisma.$transaction([
+    const [items, order] = await prisma.$transaction([
       prisma.supplyOrder.findMany({
         where: {
           supplyBatchOrderId: body.orderId,
-          id: {
-            in: body.ids.map((i) => i.id),
-          },
+        },
+        select: {
+          quantity: true,
+          perQuantity: true,
+          id: true,
+          status: true,
+          price: true,
+          suppliesId: true,
+          receivedQuantity: true,
+          quality: true,
+          desc: true,
+          condition: true,
         },
       }),
       prisma.supplyBatchOrder.findUnique({
@@ -342,38 +362,43 @@ export const fullFillOrder = async (req: FastifyRequest, res: FastifyReply) => {
           id: body.orderId,
         },
       }),
-      prisma.supplyStockTrack.findMany({
-        where: {
-          suppliesId: { in: body.ids.map((i) => i.id) },
-        },
-      }),
     ]);
 
     if (!order) throw new NotFoundError("Order not found!");
     if (items.length === 0) throw new NotFoundError("No items found!");
+    const stocks = await prisma.supplyStockTrack.findMany({
+      where: {
+        suppliesId: { in: items.map((i) => i.id) },
+        inventoryBoxId: body.inventoryBoxId,
+      },
+    });
 
     const operations: Prisma.PrismaPromise<any>[] = [];
-    const currentDate = new Date();
 
-    // Subtract 3 months
-    const threeMonthsAgo = new Date();
-    threeMonthsAgo.setMonth(currentDate.getMonth() - 3);
-
-    body.ids.forEach((item) => {
-      const existed = stocks.find((i) => i.suppliesId === item.id);
-      if (existed) {
+    items.forEach((item) => {
+      const status = item.status !== "OK" ? item.status : "OK";
+      const existed = stocks.find((i) => i.suppliesId === item.suppliesId);
+      const actualStock = item.perQuantity * item.receivedQuantity;
+      if (
+        existed &&
+        item.perQuantity === existed.perQuantity &&
+        item.quality === existed.quality
+      ) {
         operations.push(
           prisma.supplyStockTrack.update({
             where: { id: existed.id },
             data: {
-              stock: existed.stock + parseInt(item.quantity, 10),
+              stock: existed.stock + actualStock,
               inventoryBoxId: order.inventoryBoxId,
               price: {
                 create: {
-                  value: item.price ? parseFloat(item.price) : 0,
-                  suppliesId: item.id,
+                  value: item.price ? item.price : 0,
+                  suppliesId: item.suppliesId,
                 },
               },
+              perQuantity: item.perQuantity,
+              quantity: item.quantity,
+              quality: item.quality,
             },
           })
         );
@@ -381,16 +406,20 @@ export const fullFillOrder = async (req: FastifyRequest, res: FastifyReply) => {
         operations.push(
           prisma.supplyStockTrack.create({
             data: {
-              suppliesId: item.id,
-              stock: parseInt(item.quantity, 10),
+              suppliesId: item.suppliesId,
+              stock: actualStock,
               inventoryBoxId: order.inventoryBoxId,
               supplyBatchId: order.supplyBatchId,
               price: {
                 create: {
-                  value: item.price ? parseFloat(item.price) : 0,
-                  suppliesId: item.id,
+                  value: item.price ? item.price : 0,
+                  suppliesId: item.suppliesId,
                 },
               },
+              perQuantity: item.perQuantity,
+              quantity: item.receivedQuantity,
+              quality: item.quality,
+              desc: item.desc,
             },
           })
         );
@@ -401,7 +430,34 @@ export const fullFillOrder = async (req: FastifyRequest, res: FastifyReply) => {
             userId: body.userId,
             inventoryBoxId: body.inventoryBoxId,
             action: `Fullfilled Order: ${order.title} Ref No.: ${order.refNumber}`,
-            timestamp: threeMonthsAgo.toISOString(),
+          },
+        }),
+        prisma.supplyOrder.update({
+          where: {
+            id: item.id,
+          },
+          data: {
+            status: status,
+          },
+        }),
+        prisma.supplyBatchOrder.update({
+          where: {
+            id: body.orderId,
+          },
+          data: {
+            status: 2,
+          },
+        }),
+        prisma.supplieRecieveHistory.create({
+          data: {
+            suppliesId: item.suppliesId,
+            quality: item.quality,
+            quantity: item.quantity,
+            perQuantity: item.perQuantity,
+            pricePerItem: item.price || 0.0,
+            condition: item.condition,
+            supplyBatchId: order.lineId,
+            timestamp: "2025-08-14T07:38:01.125Z",
           },
         })
       );
@@ -412,6 +468,8 @@ export const fullFillOrder = async (req: FastifyRequest, res: FastifyReply) => {
 
     return res.code(200).send({ message: "OK" });
   } catch (error) {
+    console.log(error);
+
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("Database operation failed", 500, "DB_ERROR");
     }
@@ -421,7 +479,7 @@ export const fullFillOrder = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const saveItemOrder = async (req: FastifyRequest, res: FastifyReply) => {
   const body = req.body as FullfilledItemOrderProps;
-  console.log("Datas: ", body);
+  console.log({ body });
 
   if (
     !body.id ||
@@ -431,7 +489,7 @@ export const saveItemOrder = async (req: FastifyRequest, res: FastifyReply) => {
     !body.inventoryBoxId ||
     !body.listId
   ) {
-    throw new ValidationError("BAD REQUEST!1");
+    throw new ValidationError("BAD REQUEST!");
   }
 
   try {
@@ -449,93 +507,125 @@ export const saveItemOrder = async (req: FastifyRequest, res: FastifyReply) => {
 
     // if (!item) throw new NotFoundError("Item not found!");
     const currentDate = new Date();
-
+    const optional: any = {};
     // Subtract 3 months
     const threeMonthsAgo = new Date();
     threeMonthsAgo.setMonth(currentDate.getMonth() - 7);
+    const brands = body.brand ? body.brand.split(",") : [];
+    console.log({ brands });
 
     await prisma.$transaction(async (tx) => {
       const item = await tx.supplyOrder.findUnique({
         where: { id: body.orderItemId },
       });
-      const stock = await tx.supplyStockTrack.findFirst({
-        where: { suppliesId: body.id },
-      });
-      // let supplier;
-      // if (body.supplier) {
-      //   supplier = await tx.supplier.findFirst({
-      //     where: { id: body.supplier },
-      //   });
-      // }
 
       if (!item) throw new NotFoundError("Item not found!");
-      // if (!supplier) {
-      //   supplier = await tx.supplier.create({
-      //     data: {
-      //       name: body.supplier,
-      //       lineId: body.lineId,
-      //     },
-      //   });
-      // }
-      //console.log("Source: ", supplier);
 
-      const orderItem = await tx.supplyOrder.update({
-        where: { id: body.orderItemId },
+      let supplier;
+      if (body.supplier) {
+        const check = await tx.supplier.findFirst({
+          where: { name: body.supplier },
+        });
+
+        if (!check) {
+          const Newsupplier = await tx.supplier.create({
+            data: {
+              name: body.supplier,
+              lineId: body.lineId,
+            },
+          });
+          supplier = Newsupplier.id;
+        }
+        supplier = check?.id;
+      }
+
+      if (body.expirationDate) {
+        optional.expiration = new Date(body.expirationDate).toISOString();
+      }
+      if (supplier) {
+        optional.supplierId = supplier;
+      }
+      const quantity = parseInt(body.quantity, 10);
+
+      const orderOptionalData: any = {};
+      if (brands.length > 0) {
+        orderOptionalData.brand = {
+          createMany: {
+            data: brands.map((brand) => {
+              return {
+                suppliesId: item.suppliesId,
+                brand: brand,
+              };
+            }),
+          },
+        };
+      }
+
+      const updatedOrder = await tx.supplyOrder.update({
+        where: { id: item.id },
         data: {
           price: body.price ? parseFloat(body.price) : 0,
-          status: body.condition,
+          status: supplyOrderStatus[body.resolve],
           comments: body.comments,
           remark: body.resolve,
           condition: body.condition,
+          receivedQuantity: quantity,
+          perQuantity: body.perQuantity,
+          quality: body.quality,
+          ...orderOptionalData,
         },
       });
-      console.log("Item updated:", orderItem);
 
-      if (stock) {
-        await tx.supplyStockTrack.update({
-          where: { id: stock.id },
-          data: {
-            stock: stock.stock + parseInt(body.quantity, 10),
-            brand: {
-              create: {
-                brand: body.brand || "N/A",
-                suppliesId: body.id,
-              },
-            },
-            price: {
-              create: {
-                value: body.price ? parseFloat(body.price) : 0,
-                suppliesId: body.id,
-                timestamp: threeMonthsAgo.toISOString(),
-              },
-            },
-            supplyBatchId: body.listId,
-          },
-        });
-      } else {
-        await tx.supplyStockTrack.create({
-          data: {
-            suppliesId: body.id,
-            stock: parseInt(body.quantity, 10),
-            inventoryBoxId: body.inventoryBoxId,
-            supplyBatchId: body.listId,
-            expiration: body.expirationDate,
-            price: {
-              create: {
-                value: body.price ? parseFloat(body.price) : 0,
-                suppliesId: body.id,
-                timestamp: threeMonthsAgo.toISOString(),
-              },
-            },
-            brand: {
-              create: {
-                brand: body.brand || "N/A",
-                suppliesId: body.id,
-              },
-            },
-          },
-        });
-      }
+      console.log({ updatedOrder });
+
+      // if (stock) {
+      //   await tx.supplyStockTrack.update({
+      //     where: { id: stock.id },
+      //     data: {
+      //       stock: stock.stock + parseInt(body.quantity, 10),
+      //       brand: {
+      //         create: {
+      //           brand: body.brand || "N/A",
+      //           suppliesId: body.id,
+      //         },
+      //       },
+      //       price: {
+      //         create: {
+      //           value: body.price ? parseFloat(body.price) : 0,
+      //           suppliesId: body.id,
+      //           timestamp: threeMonthsAgo.toISOString(),
+      //         },
+      //       },
+      //       supplyBatchId: body.listId,
+      //     },
+      //   });
+      // } else {
+      //   await tx.supplyStockTrack.create({
+      //     data: {
+      //       suppliesId: body.id,
+      //       stock: quantity * body.perQuantity,
+      //       quantity: quantity,
+      //       quality: body.quality,
+      //       perQuantity: body.perQuantity,
+      //       inventoryBoxId: body.inventoryBoxId,
+      //       supplyBatchId: body.listId,
+      //       ...optional,
+      //       price: {
+      //         create: {
+      //           value: body.price ? parseFloat(body.price) : 0,
+      //           suppliesId: body.id,
+      //           timestamp: threeMonthsAgo.toISOString(),
+      //         },
+      //       },
+      //       brand: {
+      //         create: {
+      //           brand: body.brand || "N/A",
+      //           suppliesId: body.id,
+      //         },
+      //       },
+      //     },
+      //   });
+      // }
     });
 
     // Return information about whether stock was created or updated
@@ -543,6 +633,8 @@ export const saveItemOrder = async (req: FastifyRequest, res: FastifyReply) => {
       message: "OK",
     });
   } catch (error) {
+    console.log(error);
+
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("Database operation failed", 500, "DB_ERROR");
     }

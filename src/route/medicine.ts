@@ -13,6 +13,9 @@ import {
   newPrescriptionCount,
   medicineNotification,
   viewNotification,
+  transferMedicine,
+  removeStock,
+  medicineTransactions,
 } from "../controller/medicineController";
 
 export const medicine = (fastify: FastifyInstance) => {
@@ -56,5 +59,22 @@ export const medicine = (fastify: FastifyInstance) => {
     "/medicine/notification/view",
     { preHandler: authenticated },
     viewNotification
+  );
+
+  fastify.patch(
+    "/medicine/transfer",
+    { preHandler: authenticated },
+    transferMedicine
+  );
+
+  fastify.delete(
+    "/storage/medicine/remove",
+    { preHandler: authenticated },
+    removeStock
+  );
+  fastify.get(
+    "/medicine/transactions",
+    { preHandler: authenticated },
+    medicineTransactions
   );
 };

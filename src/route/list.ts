@@ -7,6 +7,7 @@ import {
   addListAccess,
   listAccessUsers,
   deleteList,
+  removeList,
 } from "../controller/listController";
 import { authenticated } from "../middleware/handler";
 
@@ -43,4 +44,5 @@ export const list = (fastify: FastifyInstance) => {
     { schema: deleteListSchema, preHandler: authenticated },
     deleteList
   );
+  fastify.delete("/list/remove", { preHandler: authenticated }, removeList);
 };

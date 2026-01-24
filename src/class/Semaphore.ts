@@ -1,5 +1,7 @@
 // services/semaphoreService.ts
 import axios from "axios";
+
+export const semaphoreKey = process.env.SEMAPHORE_API_KEY;
 // types/semaphore.ts
 export interface SemaphoreSMSOptions {
   number: string | string[];

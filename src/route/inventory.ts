@@ -3,6 +3,8 @@ import {
   inventories,
   createInventory,
   inventoryLogsAccessList,
+  inventoryLogs,
+  removeContainer,
 } from "../controller/inventory";
 import { authenticated } from "../middleware/handler";
 import { viewContainerAuth } from "../controller/inventory";
@@ -22,5 +24,11 @@ export const inventory = (fastify: FastifyInstance) => {
     "/container-access",
     { preHandler: authenticated },
     inventoryLogsAccessList
+  );
+  fastify.get("/inventory/logs", { preHandler: authenticated }, inventoryLogs);
+  fastify.delete(
+    "/inventory/delete",
+    { preHandler: authenticated },
+    removeContainer
   );
 };

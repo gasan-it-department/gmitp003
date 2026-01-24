@@ -183,7 +183,7 @@ export const addPosition = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const createNewUnitPosition = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const body = req.body as AddPositionProps;
 
@@ -269,7 +269,7 @@ export const createNewUnitPosition = async (
 
 export const deletePosition = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   try {
     const body = req.body as { id: string };
@@ -318,7 +318,7 @@ export const deletePosition = async (
 
 export const confirmDeletePosition = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   try {
     const body = req.body as { id: string };
@@ -369,7 +369,7 @@ export const confirmDeletePosition = async (
 
 export const updatePosition = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   try {
     const body = req.body as AddPositionProps;
@@ -420,19 +420,27 @@ export const updatePosition = async (
 
 export const positionSelectionList = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.query as PagingProps;
   console.log({ params });
 
   if (!params.id) throw new ValidationError("BAD_REQUEST");
   try {
+    const filter: any = { lineId: params.id };
+
+    if (params.query) {
+      filter.position = {
+        name: {
+          contains: params.query,
+          mode: "insensitive",
+        },
+      };
+    }
     const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
     const limit = params.limit ? parseInt(params.limit, 10) : 10;
     const response = await prisma.unitPosition.findMany({
-      where: {
-        lineId: params.id,
-      },
+      where: filter,
       cursor,
       take: limit,
       skip: cursor ? 1 : 0,

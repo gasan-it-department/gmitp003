@@ -1,5 +1,7 @@
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
-import { prisma, Line } from "../barrel/prisma";
+import { prisma, Line, Prisma } from "../barrel/prisma";
+import { AppError } from "../errors/errors";
+import { PagingProps } from "../models/route";
 
 export const createLine = async (req: FastifyRequest, res: FastifyReply) => {
   try {
@@ -24,7 +26,7 @@ export const createLine = async (req: FastifyRequest, res: FastifyReply) => {
         regionId: body.regionId,
       },
     });
-    return res.code(201).send({
+    return res.code(200).send({
       message: "Line created successfully",
       line: newLine,
       error: 0,
@@ -49,5 +51,53 @@ export const getLines = async (req: FastifyRequest, res: FastifyReply) => {
     console.log(error);
 
     res.code(500).send({ message: "Internal Server Error" });
+  }
+};
+
+export const getAllLine = async (req: FastifyRequest, res: FastifyReply) => {
+  const params = req.query as PagingProps;
+  console.log({ params });
+
+  try {
+    const cursor = params.lastCursor ? { id: params.id } : undefined;
+    const limit = params.limit ? parseInt(params.limit, 10) : 20;
+    const filter: any = {};
+
+    if (params.query) {
+      filter.name = {
+        contains: params.query,
+        mode: "insensitive",
+      };
+    }
+    const response = await prisma.line.findMany({
+      where: filter,
+      skip: cursor ? 1 : 0,
+      take: limit,
+      orderBy: {
+        createdAt: "desc",
+      },
+      cursor,
+      include: {
+        _count: {
+          select: {
+            User: true,
+          },
+        },
+      },
+    });
+    console.log(response);
+
+    const newLastCursor =
+      response.length > 0 ? response[response.length - 1].id : null;
+    const hasMore = limit === response.length;
+
+    return res
+      .code(200)
+      .send({ list: response, hasMore, lastCursor: newLastCursor });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
   }
 };

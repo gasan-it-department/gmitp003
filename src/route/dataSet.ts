@@ -11,7 +11,7 @@ import { newDataSetSchema } from "../models/request";
 export const dataSet = (fastify: FastifyInstance) => {
   fastify.post(
     "/create-data-set",
-    { preHandler: authenticated, schema: newDataSetSchema },
+    { preHandler: authenticated },
     createDateSet
   );
   fastify.get("/data-set-list", dataSetList);

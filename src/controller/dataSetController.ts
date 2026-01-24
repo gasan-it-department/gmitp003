@@ -51,12 +51,12 @@ export const createDateSet = async (req: FastifyRequest, res: FastifyReply) => {
 export const dataSetList = async (req: FastifyRequest, res: FastifyReply) => {
   try {
     const body = req.query as PagingProps;
-    console.log("params", body);
     if (!body.id) {
       return res.code(400).send({ message: "Bad request!" });
     }
 
     const cursor = body.lastCursor ? { id: body.lastCursor } : undefined;
+    const limit = body.limit ? parseInt(body.limit, 10) : 20;
 
     const response = await prisma.suppliesDataSet.findMany({
       where: {
@@ -66,6 +66,7 @@ export const dataSetList = async (req: FastifyRequest, res: FastifyReply) => {
         _count: {
           select: {
             list: true,
+            supplies: true,
           },
         },
         id: true,
@@ -73,13 +74,13 @@ export const dataSetList = async (req: FastifyRequest, res: FastifyReply) => {
         timestamp: true,
       },
       cursor,
-      take: parseInt(body.limit, 10),
+      take: limit,
       skip: cursor ? 1 : 0,
     });
 
     const newLastCursorId =
       response.length > 0 ? response[response.length - 1].id : null;
-    const hasMore = response.length === parseInt(body.limit, 10);
+    const hasMore = response.length === limit;
     return res.code(200).send({
       message: "OK",
       list: response,

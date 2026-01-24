@@ -1,4 +1,4 @@
-import { SupplyStockTrack } from "../barrel/prisma";
+import { SupplyStockTrack, User } from "../barrel/prisma";
 export interface PagingProps {
   lastCursor: string | null;
   limit: string;
@@ -123,15 +123,6 @@ export type DeleteListProps = {
 };
 
 export type FullFillOrderProps = {
-  ids: {
-    id: string;
-    quantity: string;
-    brand?: string;
-    condition: string;
-    comments: string;
-    price?: string;
-    resolve: string;
-  }[];
   inventoryBoxId: string;
   userId: string;
   orderId: string;
@@ -140,6 +131,8 @@ export type FullFillOrderProps = {
 export type FullfilledItemOrderProps = {
   id: string;
   quantity: string;
+  quality: string;
+  perQuantity: number;
   brand?: string;
   condition: string;
   comments: string;
@@ -167,6 +160,10 @@ export type DispenseItemProps = {
   unitId?: string;
   quantity: string;
   desc?: string;
+  currUserId: string;
+  remark: string;
+  listId: string;
+  inventoryBoxId: string;
 };
 
 export type TimebaseGroupPrice = {
@@ -218,6 +215,7 @@ export type PrescriptionDispenseProps = {
     remark: string;
     stockId: string;
     prescribeQuantity: number;
+    stocks: { id: string; toRelease: number }[];
   }[];
 };
 
@@ -232,6 +230,7 @@ export type PostNewJobProps = {
   positionId: string;
   desc: string;
   salaryGrade: string;
+  deadline: string;
 };
 
 export type AddNewPostJobRequiementsProps = {
@@ -417,4 +416,31 @@ export type UpdateApplicationStatus = {
   userId: string;
   lineId: string;
   status: number;
+};
+
+export type NewAnnouncement = {
+  id: string;
+  title: string;
+  content: string;
+  lineId: string;
+  mentions: string[];
+  important: boolean;
+  authorId: string;
+};
+
+export type PdfParsedData = {
+  numPages: number;
+  text: string;
+  pages: PdfPage[];
+  metadata: Record<string, any>;
+  textStats: {
+    totalCharacters: number;
+    totalWords: number;
+  };
+};
+
+export type PdfPage = {
+  pageNumber: number;
+  text: string;
+  charCount: number;
 };

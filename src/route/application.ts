@@ -1,6 +1,6 @@
 import { FastifyInstance } from "../barrel/fastify";
 
-import { authenticated } from "../middleware/handler";
+import { authenticated, tempAuthenticated } from "../middleware/handler";
 
 import {
   applications,
@@ -20,41 +20,50 @@ import {
   contactManyApplicants,
   adminApplicationSendConversation,
   updateApplicationStatus,
+  concludeApplication,
+  applicationRegisterUser,
+  updatePostApplication,
+  sendPublicApplicationMessage,
 } from "../controller/applicationController";
 
 export const application = (fastify: FastifyInstance) => {
   fastify.post("/submit-application", () => {});
   fastify.post("/application/post", { preHandler: authenticated }, postJob);
+  fastify.patch(
+    "/application/post/update/status",
+    { preHandler: authenticated },
+    updatePostApplication,
+  );
   fastify.post(
     "/application/post-requirement",
     { preHandler: authenticated },
-    createPobJobRequirements
+    createPobJobRequirements,
   );
   fastify.get(
     "/application/post-job/requirement",
     { preHandler: authenticated },
-    postJobRequirements
+    postJobRequirements,
   );
   fastify.delete(
     "/application/post-job/delete",
     { preHandler: authenticated },
-    removePostJobRequirements
+    removePostJobRequirements,
   );
   fastify.delete(
     "/application/post-job/requirements/delete",
     { preHandler: authenticated },
-    postJobRequirementsRemoveAsset
+    postJobRequirementsRemoveAsset,
   );
 
   fastify.patch(
     "/application/update-job/requirement",
     { preHandler: authenticated },
-    updatePostJobRequiments
+    updatePostJobRequiments,
   );
   fastify.patch(
     "/application/post/update",
     { preHandler: authenticated },
-    updatePostJob
+    updatePostJob,
   );
 
   fastify.get("/application/job-post", jobPost);
@@ -62,41 +71,53 @@ export const application = (fastify: FastifyInstance) => {
   fastify.get(
     "/application/list",
     { preHandler: authenticated },
-    applicationList
+    applicationList,
   );
   fastify.get(
     "/application/data",
     { preHandler: authenticated },
-    applicationData
+    applicationData,
   );
   fastify.post(
     "/application/contact-applicant",
     { preHandler: authenticated },
-    contactApplicant
+    contactApplicant,
   );
   fastify.post(
     "/application/contact-applicant/bulk",
     { preHandler: authenticated },
-    contactManyApplicants
+    contactManyApplicants,
   );
   fastify.get(
     "/application/conversation",
     { preHandler: authenticated },
-    applicationConvertion
+    applicationConvertion,
+  );
+  fastify.get(
+    "/application/public/conversation",
+    { preHandler: tempAuthenticated },
+    applicationConvertion,
   );
   fastify.post(
     "/application/send/applicant-conversation",
-    applicationConvertion
+    sendPublicApplicationMessage,
   );
   fastify.post(
     "/application/send/admin-conversation",
     { preHandler: authenticated },
-    adminApplicationSendConversation
+    adminApplicationSendConversation,
   );
   fastify.patch(
     "/application/update/status",
     { preHandler: authenticated },
-    updateApplicationStatus
+    updateApplicationStatus,
   );
   fastify.get("/application/public/data", applicationData);
+  fastify.post("/application/user/registration", applicationRegisterUser);
+
+  fastify.patch(
+    "/application/conclude",
+    { preHandler: authenticated },
+    concludeApplication,
+  );
 };

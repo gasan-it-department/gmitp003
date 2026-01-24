@@ -32,6 +32,9 @@ import { prescription } from "./route/prescription";
 import { notification } from "./route/notification";
 import { salaryGrade } from "./route/salaryGrade";
 import { application } from "./route/application";
+import { otp } from "./route/otp";
+import { modules } from "./route/module";
+import { document } from "./route/document";
 //
 import { file } from "./route/file";
 import { supply } from "./route/supply";
@@ -124,19 +127,31 @@ app.register(prescription);
 app.register(notification);
 app.register(salaryGrade);
 app.register(application);
-
+app.register(otp);
+app.register(modules);
+app.register(document);
 io.on("connection", (socket) => {
   console.log("User connected: ", socket.id);
 
   socket.on("send_message", (data) => {
     console.log("Received message:", data);
 
-    // Send response back
     socket.emit("message_received", {
       status: "success",
       message: "Message received by server",
       originalData: data,
     });
+  });
+
+  // New area handler
+  socket.on("new_area", (areaData) => {
+    console.log("New area created:", areaData);
+
+    // Broadcast to all other clients except sender
+    socket.broadcast.emit("new_area_broadcast", areaData);
+
+    // Or broadcast to everyone including sender
+    // io.emit("new_area_broadcast", areaData);
   });
 
   socket.on("disconnect", (reason) => {
@@ -154,7 +169,7 @@ app.get("/", async (request, reply) => {
   const encrypt = await EncryptionService.encrypt(text);
   const decrypt = await EncryptionService.decrypt(
     encrypted.encryptedData,
-    encrypted.iv
+    encrypted.iv,
   );
   return { encrypt, decrypt };
 });

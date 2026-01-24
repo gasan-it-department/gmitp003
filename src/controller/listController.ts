@@ -67,6 +67,13 @@ export const list = async (req: FastifyRequest, res: FastifyReply) => {
       orderBy: {
         timestamp: "asc",
       },
+      include: {
+        _count: {
+          select: {
+            SupplyStockTrack: true,
+          },
+        },
+      },
     });
 
     const newLastCursorId =
@@ -232,6 +239,44 @@ export const deleteList = async (req: FastifyRequest, res: FastifyReply) => {
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+export const removeList = async (req: FastifyRequest, res: FastifyReply) => {
+  const params = req.query as { id: string; userId: string; lineId: string };
+
+  if (!params.id || !params.userId || !params.lineId)
+    throw new ValidationError("INVALID REQUIRED ID");
+  try {
+    const response = await prisma.$transaction(async (tx) => {
+      const list = await tx.supplyBatch.delete({
+        where: {
+          id: params.id,
+        },
+      });
+
+      await tx.inventoryLogs.create({
+        data: {
+          userId: params.userId,
+          lineId: params.lineId,
+          action: 4,
+          desc: `ROMOVE: List - (${list.title})`,
+        },
+      });
+
+      return true;
+    });
+
+    if (!response) {
+      throw new ValidationError("TRANSACTION FAILED");
+    }
+
+    return res.code(200).send({ message: "OK" });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_ERROR", 500, "DB_FAILED");
     }
     throw error;
   }

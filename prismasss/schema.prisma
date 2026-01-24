@@ -1,0 +1,1542 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Line {
+  id                      String                    @id @default(uuid())
+  name                    String                    @unique
+  barangayId              String
+  municipalId             String
+  provinceId              String
+  regionId                String
+  createdAt               DateTime                  @default(now())
+  status                  Int                       @default(1)
+  adminProfileId          String?
+  password                String?
+  Account                 Account[]
+  Announcement            Announcement[]
+  applications            Application[]
+  ApplicationConversation ApplicationConversation[]
+  ApplicationResponse     ApplicationResponse[]
+  BirthdayNoticeResponse  BirthdayNoticeResponse[]
+  Department              Department[]
+  Group                   Group[]
+  HumanResourcesLogs      HumanResourcesLogs[]
+  InventoryBox            InventoryBox[]
+  InventoryInboxItems     InventoryInboxItems[]
+  InvitationLink          InvitationLink[]
+  jobPosts                JobPost[]
+  AdminProfile            AdminProfile?             @relation(fields: [adminProfileId], references: [id])
+  barangay                Barangay                  @relation(fields: [barangayId], references: [id])
+  municipal               Municipal                 @relation(fields: [municipalId], references: [id])
+  province                Province                  @relation(fields: [provinceId], references: [id])
+  region                  Region                    @relation(fields: [regionId], references: [id])
+  lineGeneralAssets       LineGeneralAssets[]
+  Medicine                Medicine[]
+  MedicineLogs            MedicineLogs[]
+  MedicineNotification    MedicineNotification[]
+  MedicineStock           MedicineStock[]
+  MedicineStorage         MedicineStorage[]
+  MedicineTransaction     MedicineTransaction[]
+  MessageTemplate         MessageTemplate[]
+  Position                Position[]
+  Prescription            Prescription[]
+  SalaryGrade             SalaryGrade[]
+  SubmittedApplication    SubmittedApplication[]
+  Supplier                Supplier[]
+  Supplies                Supplies[]
+  SuppliesDataSet         SuppliesDataSet[]
+  SupplyBatchOrder        SupplyBatchOrder[]
+  unitPositions           UnitPosition[]
+  User                    User[]
+}
+
+model InvitationLink {
+  id        String    @id @default(uuid())
+  code      String    @unique
+  createdAt DateTime  @default(now())
+  expiresAt DateTime?
+  used      Boolean   @default(false)
+  url       String
+  lineId    String
+  status    Int       @default(1)
+  message   String?
+  line      Line      @relation(fields: [lineId], references: [id], onDelete: Cascade)
+}
+
+model Assets {
+  id                 String                   @id @default(uuid())
+  url                String
+  fileSize           String
+  fileType           String
+  fileName           String
+  createdAt          DateTime                 @default(now())
+  suppliesId         String?
+  Supplies           Supplies?                @relation(fields: [suppliesId], references: [id])
+  ProfilePicture     ProfilePicture[]
+  SupplyOrderSupport SupplyOrderSupportFile[]
+}
+
+model ProfilePicture {
+  id        String   @id @default(uuid())
+  assetsId  String
+  userId    String   @unique
+  createdAt DateTime @default(now())
+  asset     Assets   @relation(fields: [assetsId], references: [id])
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model InventoryBox {
+  id                   String                 @id @default(uuid())
+  name                 String                 @unique
+  code                 Int                    @unique
+  createdAt            DateTime               @default(now())
+  lineId               String
+  userId               String
+  departmentId         String?
+  ContainerAllowedUser ContainerAllowedUser[]
+  InventoryAccessLogs  InventoryAccessLogs[]
+  unit                 Department?            @relation(fields: [departmentId], references: [id])
+  line                 Line                   @relation(fields: [lineId], references: [id])
+  createdBy            User                   @relation("createdBy", fields: [userId], references: [id])
+  supplies             Supplies[]
+  SuppliesDataSet      SuppliesDataSet[]
+  SupplyBatch          SupplyBatch[]
+  batch                SupplyBatchOrder[]
+  SupplyStockTrack     SupplyStockTrack[]
+}
+
+model InventoryInbox {
+  id String @id @default(uuid())
+}
+
+model InventoryInboxItems {
+  id        String   @id @default(uuid())
+  view      Boolean  @default(false)
+  type      Int      @default(0)
+  message   String?
+  subject   String?
+  path      String?
+  timestamp DateTime @default(now())
+  lineId    String
+  line      Line     @relation(fields: [lineId], references: [id])
+}
+
+model ContainerAllowedUser {
+  id             String       @id @default(uuid())
+  userId         String?
+  inventoryBoxId String
+  grantByUserId  String
+  timestamp      DateTime     @default(now())
+  grantBy        User         @relation("GrantBy", fields: [grantByUserId], references: [id])
+  container      InventoryBox @relation(fields: [inventoryBoxId], references: [id])
+  user           User?        @relation(fields: [userId], references: [id])
+}
+
+model InventoryAccessLogs {
+  id             String        @id @default(uuid())
+  userId         String?
+  timestamp      DateTime      @default(now())
+  inventoryBoxId String?
+  action         String        @default("Viewed")
+  suppliesId     String?
+  path           String?
+  box            InventoryBox? @relation(fields: [inventoryBoxId], references: [id])
+  supply         Supplies?     @relation(fields: [suppliesId], references: [id])
+  user           User?         @relation(fields: [userId], references: [id])
+}
+
+model SupplyIncharge {
+  id               String             @id @default(uuid())
+  createdAt        DateTime           @default(now())
+  departmentId     String
+  userId           String?
+  SupplyBatchOrder SupplyBatchOrder[]
+  unit             Department         @relation(fields: [departmentId], references: [id])
+  user             User?              @relation(fields: [userId], references: [id])
+}
+
+model Supplies {
+  id                    String                  @id @default(uuid())
+  item                  String
+  description           String?                 @default("N/A")
+  quantity              Int                     @default(1)
+  createdAt             DateTime                @default(now())
+  updatedAt             DateTime                @updatedAt
+  lineId                String
+  userId                String?
+  condition             String?                 @default("New")
+  status                String?                 @default("Available")
+  price                 Float                   @default(0.0)
+  suppliesCategoryId    String?
+  suppliesQualityId     String?
+  notifyAtStockOf       Int                     @default(10)
+  suppliesDataSetId     String?
+  code                  Int                     @unique @default(autoincrement())
+  consumable            Boolean                 @default(true)
+  refNumber             String?                 @unique
+  supplierId            String?
+  inventoryBoxId        String?
+  asset                 Assets[]
+  InventoryAccessLogs   InventoryAccessLogs[]
+  SupplieRecieveHistory SupplieRecieveHistory[]
+  InventoryBox          InventoryBox?           @relation(fields: [inventoryBoxId], references: [id])
+  line                  Line                    @relation(fields: [lineId], references: [id])
+  Supplier              Supplier?               @relation(fields: [supplierId], references: [id])
+  SuppliesCategory      SuppliesCategory?       @relation(fields: [suppliesCategoryId], references: [id])
+  SuppliesDataSet       SuppliesDataSet?        @relation(fields: [suppliesDataSetId], references: [id], onDelete: Cascade)
+  SuppliesQuality       SuppliesQuality?        @relation(fields: [suppliesQualityId], references: [id])
+  user                  User?                   @relation(fields: [userId], references: [id])
+  Part                  SuppliesRecord?         @relation("Part")
+  SuppliesRecord        SuppliesRecord[]
+  SupplyBatchItem       SupplyBatchItem?
+  SupplyBrand           SupplyBrand[]
+  SupplyOrder           SupplyOrder[]
+  SupplyOrderItemReturn SupplyOrderItemReturn[]
+  SupplyPriceTrack      SupplyPriceTrack[]
+  SupplyStockTrack      SupplyStockTrack[]
+  TransferredSupplies   TransferredSupplies[]
+}
+
+model SupplyBrand {
+  id                    String                  @id @default(uuid())
+  suppliesId            String?
+  timestamp             DateTime                @default(now())
+  brand                 String?                 @default("N/A")
+  model                 String?                 @default("N/A")
+  supplyStockTrackId    String?
+  supply                Supplies?               @relation(fields: [suppliesId], references: [id])
+  SupplyStockTrack      SupplyStockTrack?       @relation(fields: [supplyStockTrackId], references: [id])
+  SupplyOrderItemReturn SupplyOrderItemReturn[]
+}
+
+model SupplyBatch {
+  id                String              @id @default(uuid())
+  timestamp         DateTime            @default(now())
+  inventoryBoxId    String
+  title             String
+  suppliesDataSetId String?
+  box               InventoryBox        @relation(fields: [inventoryBoxId], references: [id])
+  SuppliesDataSet   SuppliesDataSet?    @relation(fields: [suppliesDataSetId], references: [id])
+  SupplyBatchAccess SupplyBatchAccess[]
+  SupplyBatchItem   SupplyBatchItem[]
+  SupplyBatchOrder  SupplyBatchOrder[]
+  SupplyStockTrack  SupplyStockTrack[]
+}
+
+model SupplyBatchAccess {
+  id            String      @id @default(uuid())
+  supplyBatchId String
+  userId        String
+  timestamp     DateTime    @default(now())
+  privilege     Int         @default(0)
+  batch         SupplyBatch @relation(fields: [supplyBatchId], references: [id], onDelete: Cascade)
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model SupplyBatchItem {
+  id            String      @id @default(uuid())
+  supplyBatchId String
+  suppliesId    String?     @unique
+  timestamp     DateTime    @default(now())
+  supply        Supplies?   @relation(fields: [suppliesId], references: [id])
+  batch         SupplyBatch @relation(fields: [supplyBatchId], references: [id])
+}
+
+model SupplyBatchOrder {
+  id                String                   @id @default(uuid())
+  timestamp         DateTime                 @default(now())
+  userId            String?
+  status            Int                      @default(0)
+  lineId            String?
+  inventoryBoxId    String?
+  title             String?                  @default("N/A")
+  refNumber         String                   @unique
+  supplyBatchId     String?
+  approvedAt        DateTime?
+  supplyInchargeId  String?
+  comments          String                   @default("N/A")
+  remark            Int                      @default(0)
+  InventoryBox      InventoryBox?            @relation(fields: [inventoryBoxId], references: [id])
+  line              Line?                    @relation(fields: [lineId], references: [id])
+  batch             SupplyBatch?             @relation(fields: [supplyBatchId], references: [id])
+  inventoryInCharge SupplyIncharge?          @relation(fields: [supplyInchargeId], references: [id])
+  user              User?                    @relation(fields: [userId], references: [id])
+  order             SupplyOrder[]
+  SupplyOrderReturn SupplyOrderReturn[]
+  files             SupplyOrderSupportFile[]
+}
+
+model Supplier {
+  id               String             @id @default(cuid())
+  name             String             @unique
+  timestamp        DateTime           @default(now())
+  lineId           String
+  line             Line               @relation(fields: [lineId], references: [id])
+  supplies         Supplies[]
+  SupplyOrder      SupplyOrder?
+  SupplyStockTrack SupplyStockTrack[]
+}
+
+model SupplyOrderSupportFile {
+  id                 String            @id @default(uuid())
+  assetsId           String
+  supplyBatchOrderId String?
+  file               Assets            @relation(fields: [assetsId], references: [id])
+  SupplyBatchOrder   SupplyBatchOrder? @relation(fields: [supplyBatchOrderId], references: [id])
+}
+
+model SupplyOrder {
+  id                    String                 @id @default(cuid())
+  supplyBatchOrderId    String?
+  status                String                 @default("Drafted")
+  suppliesId            String
+  quantity              Int                    @default(1)
+  suppliesQualityId     String
+  subject               String?                @default("None")
+  refNumber             String                 @unique
+  desc                  String?                @default("None")
+  condition             String?                @default("New")
+  remark                Int                    @default(1)
+  timestamp             DateTime?              @default(now())
+  comments              String?                @default("N/A")
+  price                 Float?                 @default(0.0)
+  supplierId            String?                @unique
+  supplier              Supplier?              @relation(fields: [supplierId], references: [id])
+  supply                Supplies               @relation(fields: [suppliesId], references: [id])
+  unit                  SuppliesQuality        @relation(fields: [suppliesQualityId], references: [id])
+  SupplyBatchOrder      SupplyBatchOrder?      @relation(fields: [supplyBatchOrderId], references: [id])
+  SupplyOrderItemReturn SupplyOrderItemReturn?
+  SupplyOrderStatus     SupplyOrderStatus[]
+}
+
+model SupplyOrderStatus {
+  id            String      @id @default(uuid())
+  phase         Int         @default(0)
+  supplyOrderId String
+  timestamp     DateTime    @default(now())
+  userId        String
+  desc          String?
+  order         SupplyOrder @relation(fields: [supplyOrderId], references: [id])
+  user          User        @relation(fields: [userId], references: [id])
+}
+
+model SupplyOrderReturn {
+  id                 String                  @id @default(uuid())
+  supplyBatchOrderId String
+  status             Int                     @default(0)
+  timestamp          DateTime                @default(now())
+  message            String?                 @default("N/A")
+  item               SupplyOrderItemReturn[]
+  batchOrder         SupplyBatchOrder        @relation(fields: [supplyBatchOrderId], references: [id], onDelete: Cascade)
+}
+
+model SupplyOrderItemReturn {
+  id                  String             @id @default(uuid())
+  supplyOrderReturnId String?
+  supplyBrandId       String?
+  suppliesId          String?
+  quantity            Int                @default(1)
+  supplyOrderId       String?            @unique
+  supply              Supplies?          @relation(fields: [suppliesId], references: [id])
+  brand               SupplyBrand?       @relation(fields: [supplyBrandId], references: [id])
+  orderItem           SupplyOrder?       @relation(fields: [supplyOrderId], references: [id])
+  SupplyOrderReturn   SupplyOrderReturn? @relation(fields: [supplyOrderReturnId], references: [id], onDelete: Cascade)
+}
+
+model SuppliesDataSet {
+  id             String            @id @default(cuid())
+  title          String            @unique
+  timestamp      DateTime          @default(now())
+  lineId         String
+  inventoryBoxId String
+  supplies       Supplies[]
+  container      InventoryBox      @relation(fields: [inventoryBoxId], references: [id], onDelete: Cascade)
+  line           Line              @relation(fields: [lineId], references: [id])
+  unit           SuppliesQuality[]
+  list           SupplyBatch[]
+}
+
+model SuppliesQuality {
+  id                String           @id @default(cuid())
+  quality           String           @unique
+  perQuality        Int              @default(0)
+  suppliesDataSetId String?
+  supplies          Supplies[]
+  SuppliesDataSet   SuppliesDataSet? @relation(fields: [suppliesDataSetId], references: [id])
+  SupplyOrder       SupplyOrder[]
+}
+
+model SupplyPriceTrack {
+  id                 String            @id @default(uuid())
+  value              Int               @default(0)
+  suppliesId         String
+  timestamp          DateTime          @default(now())
+  supplyStockTrackId String?
+  period             String            @default("0:0")
+  supply             Supplies          @relation(fields: [suppliesId], references: [id], onDelete: Cascade)
+  SupplyStockTrack   SupplyStockTrack? @relation(fields: [supplyStockTrackId], references: [id])
+}
+
+model SupplyStockTrack {
+  id                   String                 @id @default(uuid())
+  stock                Int                    @default(0)
+  suppliesId           String
+  timestamp            DateTime               @default(now())
+  inventoryBoxId       String?
+  supplyBatchId        String?
+  expiration           DateTime?
+  supplierId           String?
+  brand                SupplyBrand[]
+  SupplyDispenseRecord SupplyDispenseRecord[]
+  price                SupplyPriceTrack[]
+  inventoryBox         InventoryBox?          @relation(fields: [inventoryBoxId], references: [id])
+  supplier             Supplier?              @relation(fields: [supplierId], references: [id])
+  supply               Supplies               @relation(fields: [suppliesId], references: [id], onDelete: Cascade)
+  list                 SupplyBatch?           @relation(fields: [supplyBatchId], references: [id])
+}
+
+model SupplyDispenseRecord {
+  id                 String           @id @default(uuid())
+  userId             String?
+  departmentId       String?
+  quantity           String           @default("0")
+  supplyStockTrackId String
+  timestamp          DateTime         @default(now())
+  remarks            String           @default("N/A")
+  unit               Department?      @relation(fields: [departmentId], references: [id])
+  supply             SupplyStockTrack @relation(fields: [supplyStockTrackId], references: [id])
+  user               User?            @relation(fields: [userId], references: [id])
+}
+
+model SuppliesCategory {
+  id          String     @id @default(uuid())
+  name        String     @unique
+  description String?
+  createdAt   DateTime   @default(now())
+  supplies    Supplies[]
+}
+
+model SupplieRecieveHistory {
+  id         String   @id @default(uuid())
+  suppliesId String
+  userId     String
+  timestamp  DateTime @default(now())
+  quantity   Int      @default(0)
+  condition  String?  @default("New")
+  supply     Supplies @relation(fields: [suppliesId], references: [id], onDelete: Cascade)
+}
+
+model TransferredSupplies {
+  id              String    @id @default(uuid())
+  suppliesId      String?
+  userId          String
+  transferredToId String
+  timestamp       DateTime  @default(now())
+  condition       Int       @default(1)
+  supply          Supplies? @relation(fields: [suppliesId], references: [id])
+  transferredTo   User      @relation("transferTo", fields: [transferredToId], references: [id])
+  user            User      @relation(fields: [userId], references: [id])
+}
+
+model SuppliesRecord {
+  id          String    @id @default(uuid())
+  suppliesId  String
+  timestamp   DateTime  @default(now())
+  userId      String
+  action      String
+  description String?
+  modifiedId  String?   @unique
+  status      Int       @default(1)
+  modified    Supplies? @relation("Part", fields: [modifiedId], references: [id])
+  suppyId     Supplies  @relation(fields: [suppliesId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id])
+}
+
+model MessageTemplate {
+  id          String        @id @default(uuid())
+  module      Int
+  platform    String?
+  message     String
+  subject     String
+  link        String?
+  timestamp   DateTime      @default(now())
+  lineId      String
+  messageIv   String?
+  subjectIv   String
+  MessageLogs MessageLogs[]
+  line        Line          @relation(fields: [lineId], references: [id])
+}
+
+model MessageLogs {
+  id                String          @id @default(uuid())
+  ref               String?
+  number            String
+  content           String?
+  timestamp         DateTime?       @default(now())
+  messageTemplateId String
+  status            Int             @default(0)
+  template          MessageTemplate @relation(fields: [messageTemplateId], references: [id])
+}
+
+model Application {
+  id        String   @id @default(uuid())
+  userId    String
+  status    String   @default("pending")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  jobPostId String?
+  lineId    String
+  jobPost   JobPost? @relation(fields: [jobPostId], references: [id])
+  line      Line     @relation(fields: [lineId], references: [id])
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model SubmittedApplication {
+  id                      String                    @id @default(uuid())
+  lastname                String
+  firstname               String
+  middleName              String?                   @default("N/A")
+  suffix                  String?                   @default("N/A")
+  birthDate               String
+  email                   String
+  gender                  String
+  filipino                Boolean
+  dualCitizen             Boolean
+  byBirth                 Boolean
+  byNatural               Boolean
+  cvilStatus              String
+  reshouseBlock           String?                   @default("N/A")
+  resStreet               String?                   @default("N/A")
+  resSub                  String?                   @default("N/A")
+  resBarangay             String
+  resCity                 String
+  resProvince             String
+  resZipCode              String
+  permahouseBlock         String?                   @default("N/A")
+  permaStreet             String?                   @default("N/A")
+  permaSub                String?                   @default("N/A")
+  permaBarangay           String
+  permaCity               String
+  permaProvince           String
+  permaZipCode            String
+  teleNo                  String
+  mobileNo                String
+  height                  Float
+  weight                  Float
+  bloodType               String?                   @default("N/A")
+  umidNo                  String?                   @default("N/A")
+  pagIbigNo               String?                   @default("N/A")
+  philHealthNo            String?                   @default("N/A")
+  philSys                 String?                   @default("N/A")
+  tinNo                   String?                   @default("N/A")
+  agencyNo                String?                   @default("N/A")
+  spouseSurname           String?                   @default("N/A")
+  spouseFirstname         String?                   @default("N/A")
+  spouseMiddle            String?                   @default("N/A")
+  spouseBusinessAddress   String?                   @default("N/A")
+  spouseTelephone         String?                   @default("N/A")
+  fatherSurname           String?                   @default("N/A")
+  fatherFirstname         String?                   @default("N/A")
+  fatherMiddlename        String?                   @default("N/A")
+  fatherOccupation        String?                   @default("N/A")
+  fatherAge               Int
+  fatherBirthday          DateTime?
+  fatherSuffix            String?                   @default("N/A")
+  motherSurname           String?                   @default("N/A")
+  motherFirstname         String?                   @default("N/A")
+  motherMiddlename        String?                   @default("N/A")
+  motherOccupation        String?                   @default("N/A")
+  motherAge               Int
+  motherBirthday          DateTime?
+  children                String
+  elementary              Json?
+  secondary               Json?
+  vocational              Json?
+  college                 Json?
+  graduateCollege         Json?
+  civilService            Json[]
+  experience              Json[]
+  voluntaryWork           Json[]
+  learningDev             Json[]
+  otherInfo               Json[]
+  references              Json[]
+  govId                   Json
+  status                  Int                       @default(0)
+  lineId                  String
+  applicationProfilePicId String?                   @unique
+  timestamp               DateTime                  @default(now())
+  batch                   DateTime
+  positionId              String?
+  agencyNoIv              String?
+  bdayIv                  String?
+  cvilStatusIv            String?
+  emailIv                 String?
+  fatherFirstnameIv       String?
+  fatherMiddlenameIv      String?
+  fatherOccupationIv      String?
+  fatherSurnameIv         String?
+  firsntameIv             String
+  govIdIv                 String?
+  ivMobileNo              String
+  lastnameIv              String
+  middleNameIv            String?
+  motherFirstnameIv       String?
+  motherMiddlenameIv      String?
+  motherSurnameIv         String?
+  pagIbigNoIv             String?
+  permaBarangayIv         String?
+  permaCityIv             String?
+  permaProvinceIv         String?
+  permaStreetIv           String?
+  permaSubIv              String?
+  permaZipCodeIv          String?
+  permahouseBlockIv       String?
+  philHealthNoIv          String?
+  philSysIv               String?
+  resBarangayIv           String?
+  resCityIv               String?
+  resProvinceIv           String?
+  resStreetIv             String?
+  resZipCodeIv            String?
+  reshouseBlockIv         String?
+  tinNoIv                 String?
+  umidNoIv                String?
+  childrenIv              String?
+  dualCitizenHalf         String
+  spouseFirstnameIv       String?
+  spouseMiddleIv          String?
+  spouseSurnameIv         String?
+  fileAttached            ApplicationAttachedFile[]
+  ApplicationConversation ApplicationConversation[]
+  ApplicationResponse     ApplicationResponse[]
+  ApplicationSkillTags    ApplicationSkillTags[]
+  profilePic              ApplicationProfilePic?    @relation(fields: [applicationProfilePicId], references: [id])
+  line                    Line                      @relation(fields: [lineId], references: [id])
+  forPosition             Position?                 @relation(fields: [positionId], references: [id])
+  otps                    OtpVerification[]
+}
+
+model ApplicationSkillTags {
+  id                     String               @id @default(uuid())
+  tags                   String?
+  submittedApplicationId String
+  timestamp              DateTime             @default(now())
+  applicant              SubmittedApplication @relation(fields: [submittedApplicationId], references: [id])
+}
+
+model ApplicationAttachedFile {
+  id                     String                @id @default(uuid())
+  file_url               String
+  file_name              String
+  file_type              Int
+  file_size              String
+  timestamp              DateTime              @default(now())
+  submittedApplicationId String?
+  file_url_Iv            String
+  SubmittedApplication   SubmittedApplication? @relation(fields: [submittedApplicationId], references: [id])
+}
+
+model ApplicationProfilePic {
+  id                   String                @id @default(uuid())
+  file_url             String
+  file_name            String
+  file_type            Int
+  file_size            String
+  timestamp            DateTime              @default(now())
+  file_url_Iv          String?
+  SubmittedApplication SubmittedApplication?
+}
+
+model ApplicationConvoAsset {
+  id                        String                   @id @default(uuid())
+  file_url                  String
+  file_name                 String
+  file_type                 Int
+  file_size                 String
+  timestamp                 DateTime                 @default(now())
+  applicationConversationId String?
+  ApplicationConversation   ApplicationConversation? @relation(fields: [applicationConversationId], references: [id])
+}
+
+model ApplicationResponseAsset {
+  id                    String               @id @default(uuid())
+  file_url              String
+  file_name             String
+  file_type             Int
+  file_size             String
+  timestamp             DateTime             @default(now())
+  applicationResponseId String?
+  ApplicationResponse   ApplicationResponse? @relation(fields: [applicationResponseId], references: [id])
+}
+
+model ApplicationResponse {
+  id                     String                     @id @default(uuid())
+  message                String
+  title                  String
+  timestmap              DateTime                   @default(now())
+  submittedApplicationId String
+  lineId                 String
+  userId                 String
+  messageIv              String?
+  titleIv                String?
+  line                   Line                       @relation(fields: [lineId], references: [id])
+  application            SubmittedApplication       @relation(fields: [submittedApplicationId], references: [id])
+  from                   User                       @relation("from", fields: [userId], references: [id])
+  assets                 ApplicationResponseAsset[]
+}
+
+model ApplicationConversation {
+  id                     String                  @id @default(uuid())
+  message                String
+  title                  String
+  timestamp              DateTime                @default(now())
+  userId                 String
+  submittedApplicationId String
+  lineId                 String
+  messageIv              String
+  line                   Line                    @relation(fields: [lineId], references: [id])
+  applicant              SubmittedApplication    @relation(fields: [submittedApplicationId], references: [id])
+  hrAdmin                User                    @relation("hrAdminResponse", fields: [userId], references: [id])
+  assets                 ApplicationConvoAsset[]
+}
+
+model Department {
+  id                   String                 @id @default(uuid())
+  name                 String                 @unique
+  description          String?
+  createdAt            DateTime               @default(now())
+  headId               String?                @unique
+  idCode               String?                @default("N/A")
+  lineId               String?
+  email                String?
+  Announcement         Announcement[]
+  head                 User?                  @relation("DepartmentHead", fields: [headId], references: [id])
+  line                 Line?                  @relation(fields: [lineId], references: [id])
+  Group                Group[]
+  InventoryBox         InventoryBox[]
+  MedicineNotification MedicineNotification[]
+  MedicineStorage      MedicineStorage[]
+  Position             Position[]
+  SignatureQueueRoom   SignatureQueueRoom[]
+  SupplyDispenseRecord SupplyDispenseRecord[]
+  SupplyIncharge       SupplyIncharge[]
+  unitPositions        UnitPosition[]
+  users                User[]                 @relation("DepartmentMembers")
+}
+
+model Group {
+  id           String     @id @default(uuid())
+  departmentId String
+  name         String?    @default("N/A")
+  createdAt    DateTime   @default(now())
+  lineId       String?
+  userId       String?
+  unit         Department @relation(fields: [departmentId], references: [id])
+  line         Line?      @relation(fields: [lineId], references: [id])
+  chief        User?      @relation("Chief", fields: [userId], references: [id])
+  users        User[]
+}
+
+model Admin {
+  id       String @id @default(uuid())
+  username String
+  password String
+}
+
+model AdminProfile {
+  id       String @id @default(uuid())
+  username String
+  line     Line[]
+}
+
+model Account {
+  id        String   @id @default(uuid())
+  username  String
+  password  String
+  createdAt DateTime @default(now())
+  active    Boolean  @default(true)
+  role      String   @default("user")
+  status    Int      @default(1)
+  lineId    String?
+  line      Line?    @relation(fields: [lineId], references: [id])
+  User      User?
+}
+
+model Privilege {
+  id             String  @id @default(uuid())
+  humanResources Boolean @default(false)
+  inventory      Boolean @default(false)
+  super          Boolean @default(false)
+  User           User?
+}
+
+model User {
+  id                         String                       @id @default(uuid())
+  email                      String
+  createdAt                  DateTime                     @default(now())
+  birthDate                  DateTime?
+  departmentId               String?
+  firstName                  String
+  lastName                   String
+  level                      Int                          @default(1)
+  middleName                 String?
+  positionId                 String?
+  salaryGradeId              String?
+  status                     String                       @default("Regular")
+  suffix                     String?
+  username                   String                       @unique
+  accountId                  String?                      @unique
+  barangayId                 String?
+  municipalId                String?
+  provinceId                 String?
+  regionId                   String?
+  step                       Int                          @default(1)
+  type                       String                       @default("M")
+  lineId                     String?
+  gender                     String?                      @default("--/--")
+  profilePicture             String?
+  privilegeId                String?                      @unique
+  groupId                    String?
+  term                       DateTime?
+  emailIv                    String?
+  phoneNumber                String?
+  phoneNumberIv              String?
+  statusIV                   String?
+  usernameIv                 String?
+  firstNameIv                String?
+  lastNameIv                 String?
+  Accomplishment             Accomplishment[]
+  headResponse               AccomplishmentResponse[]     @relation("Head")
+  AdminInbox                 AdminInbox[]
+  Announcement               Announcement[]
+  Application                Application[]
+  ApplicationConversation    ApplicationConversation[]    @relation("hrAdminResponse")
+  ApplicationResponse        ApplicationResponse[]        @relation("from")
+  bdayRecipient              BirthdayNoticeResponse[]     @relation("Recipient")
+  bdaySender                 BirthdayNoticeResponse[]     @relation("Sender")
+  GrantContainer             ContainerAllowedUser[]       @relation("GrantBy")
+  ContainerAllowedUser       ContainerAllowedUser[]
+  headedDepartment           Department?                  @relation("DepartmentHead")
+  chief                      Group[]                      @relation("Chief")
+  HumanResourcesLogs         HumanResourcesLogs[]
+  InventoryAccessLogs        InventoryAccessLogs[]
+  InventoryBox               InventoryBox[]               @relation("createdBy")
+  Leave                      Leave[]
+  LogRecord                  LogRecord[]
+  MedicineLogs               MedicineLogs[]
+  MedicineNotification       MedicineNotification[]
+  MedicineStorageAccess      MedicineStorageAccess[]
+  MedicineTransaction        MedicineTransaction[]
+  receivedNotifications      Notification[]               @relation("ReceivedNotifications")
+  sentNotifications          Notification[]               @relation("SentNotifications")
+  PositionSlot               PositionSlot?
+  respondedBy                Prescription[]               @relation("respondedBy")
+  processBy                  Prescription[]               @relation("processBy")
+  prescriptionSender         PrescriptionComment[]        @relation("prescriptionSender")
+  PrescriptionComment        PrescriptionComment[]
+  ProfilePicture             ProfilePicture?
+  Promotions                 Promotion[]
+  SalaryTransactionRecord    SalaryTransactionRecord[]
+  Signature                  Signature[]
+  SignatureQueueRoom         SignatureQueueRoom[]
+  SignatureQueueRoomApprover SignatureQueueRoomApprover[]
+  requestFrom                SignatureRequest[]           @relation("fromUser")
+  requestTo                  SignatureRequest[]           @relation("toUser")
+  Supplies                   Supplies[]
+  SuppliesRecord             SuppliesRecord[]
+  SupplyBatchAccess          SupplyBatchAccess[]
+  SupplyBatchOrder           SupplyBatchOrder[]
+  SupplyDispenseRecord       SupplyDispenseRecord[]
+  SupplyIncharge             SupplyIncharge[]
+  SupplyOrderStatus          SupplyOrderStatus[]
+  transferTo                 TransferredSupplies[]        @relation("transferTo")
+  TransferredSupplies        TransferredSupplies[]
+  account                    Account?                     @relation(fields: [accountId], references: [id])
+  barangay                   Barangay?                    @relation(fields: [barangayId], references: [id])
+  department                 Department?                  @relation("DepartmentMembers", fields: [departmentId], references: [id])
+  Group                      Group?                       @relation(fields: [groupId], references: [id])
+  line                       Line?                        @relation(fields: [lineId], references: [id])
+  municipal                  Municipal?                   @relation(fields: [municipalId], references: [id])
+  Position                   Position?                    @relation(fields: [positionId], references: [id])
+  privilege                  Privilege?                   @relation(fields: [privilegeId], references: [id])
+  province                   Province?                    @relation(fields: [provinceId], references: [id])
+  region                     Region?                      @relation(fields: [regionId], references: [id])
+  SalaryGrade                SalaryGrade?                 @relation(fields: [salaryGradeId], references: [id])
+  UserKeyPair                UserKeyPair?
+
+  @@index([departmentId], map: "department_idx")
+  @@index([firstName, lastName])
+}
+
+model SalaryTransactionRecord {
+  id        String   @id @default(uuid())
+  userId    String
+  period    String
+  periodIv  String
+  timestamp DateTime @default(now())
+  value     String
+  valueIv   String
+  user      User     @relation(fields: [userId], references: [id])
+}
+
+model LogRecord {
+  id        String   @id @default(uuid())
+  userId    String
+  action    String
+  timestamp DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Notification {
+  id          String   @id @default(uuid())
+  title       String
+  content     String
+  createdAt   DateTime @default(now())
+  recipientId String
+  senderId    String
+  path        String?
+  isRead      Boolean  @default(false)
+  recipient   User     @relation("ReceivedNotifications", fields: [recipientId], references: [id], onDelete: Cascade)
+  sender      User     @relation("SentNotifications", fields: [senderId], references: [id], onDelete: Cascade)
+}
+
+model Position {
+  id                   String                 @id @default(uuid())
+  name                 String                 @unique
+  description          String?
+  createdAt            DateTime               @default(now())
+  itemNumber           String?                @unique
+  max                  Int                    @default(0)
+  plantilla            Boolean                @default(false)
+  salaryGradeId        String?
+  departmentId         String?
+  lineId               String?
+  fixToUnit            Boolean                @default(false)
+  jobPosts             JobPost[]
+  department           Department?            @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  line                 Line?                  @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  SalaryGrade          SalaryGrade?           @relation(fields: [salaryGradeId], references: [id], onDelete: Cascade)
+  PositionSlot         PositionSlot[]
+  Promotion            Promotion[]
+  SubmittedApplication SubmittedApplication[]
+  unitPositions        UnitPosition[]
+  users                User[]
+}
+
+model UnitPosition {
+  id           String         @id @default(uuid())
+  departmentId String
+  positionId   String
+  designation  String?        @default("N/A")
+  timestamp    DateTime       @default(now())
+  lineId       String
+  fixToUnit    Boolean        @default(false)
+  itemNumber   String?        @default("N/A")
+  plantilla    Boolean        @default(false)
+  slot         PositionSlot[]
+  unit         Department     @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  line         Line           @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  position     Position       @relation(fields: [positionId], references: [id], onDelete: Cascade)
+}
+
+model PositionSlot {
+  id             String        @id @default(uuid())
+  positionId     String?
+  salaryGradeId  String?
+  userId         String?       @unique
+  occupied       Boolean       @default(false)
+  unitPositionId String?
+  designation    String?       @default("N/A")
+  pos            Position?     @relation(fields: [positionId], references: [id])
+  salaryGrade    SalaryGrade?  @relation(fields: [salaryGradeId], references: [id], onDelete: Cascade)
+  unitPosition   UnitPosition? @relation(fields: [unitPositionId], references: [id], onDelete: Cascade)
+  user           User?         @relation(fields: [userId], references: [id])
+}
+
+model SalaryGrade {
+  id                 String               @id @default(uuid())
+  grade              Int
+  amount             Float
+  createdAt          DateTime             @default(now())
+  lineId             String?
+  jobPosts           JobPost[]
+  positions          Position[]
+  PositionSlot       PositionSlot[]
+  line               Line?                @relation(fields: [lineId], references: [id])
+  SalaryGradeHistory SalaryGradeHistory[]
+  users              User[]
+}
+
+model HumanResourcesLogs {
+  id        String   @id @default(uuid())
+  lineId    String
+  userId    String
+  action    String
+  desc      String   @default("N/A")
+  timestamp DateTime @default(now())
+  tab       Int      @default(1)
+  line      Line     @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id])
+}
+
+model SalaryGradeHistory {
+  id            String      @id @default(uuid())
+  userId        String
+  salaryGradeId String
+  effectiveDate DateTime
+  createdAt     DateTime    @default(now())
+  amount        Int
+  salaryGrade   SalaryGrade @relation(fields: [salaryGradeId], references: [id], onDelete: Cascade)
+}
+
+model Leave {
+  id        String   @id @default(uuid())
+  userId    String
+  type      String
+  startDate DateTime
+  endDate   DateTime
+  reason    String?
+  status    String   @default("pending")
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id])
+}
+
+model Announcement {
+  id           String      @id @default(uuid())
+  title        String
+  content      String
+  createdAt    DateTime    @default(now())
+  authorId     String
+  lineId       String
+  departmentId String?
+  important    Boolean     @default(true)
+  path         String?
+  author       User        @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  unit         Department? @relation(fields: [departmentId], references: [id])
+  line         Line        @relation(fields: [lineId], references: [id])
+}
+
+model Promotion {
+  id         String   @id @default(uuid())
+  userId     String
+  timestamp  DateTime @default(now())
+  positionId String
+  postion    Position @relation(fields: [positionId], references: [id])
+  User       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model BirthdayNoticeResponse {
+  id          String   @id @default(uuid())
+  message     String?
+  like        Boolean  @default(false)
+  timestamp   DateTime @default(now())
+  senderId    String
+  recipientId String?
+  lineId      String
+  line        Line     @relation(fields: [lineId], references: [id])
+  Recipient   User?    @relation("Recipient", fields: [recipientId], references: [id])
+  Sender      User     @relation("Sender", fields: [senderId], references: [id])
+}
+
+model Region {
+  id       String     @id
+  name     String
+  Line     Line[]
+  provices Province[]
+  User     User[]
+}
+
+model Province {
+  id           String         @id
+  name         String
+  regionId     String?
+  Line         Line[]
+  municipals   Municipal[]
+  Prescription Prescription[]
+  Region       Region?        @relation(fields: [regionId], references: [id])
+  User         User[]
+}
+
+model Municipal {
+  id           String         @id
+  name         String
+  provinceId   String?
+  barangays    Barangay[]
+  Line         Line[]
+  Province     Province?      @relation(fields: [provinceId], references: [id])
+  Prescription Prescription[]
+  User         User[]
+}
+
+model Barangay {
+  id           String         @id
+  name         String
+  municipalId  String?
+  Municipal    Municipal?     @relation(fields: [municipalId], references: [id])
+  Line         Line[]
+  Prescription Prescription[]
+  User         User[]
+}
+
+model Accomplishment {
+  id                     String                   @id @default(uuid())
+  timestamp              DateTime                 @default(now())
+  userId                 String?
+  start                  DateTime
+  end                    DateTime
+  task                   String
+  user                   User?                    @relation(fields: [userId], references: [id])
+  AccomplishmentResponse AccomplishmentResponse[]
+}
+
+model AccomplishmentResponse {
+  id               String         @id @default(uuid())
+  headId           String
+  accomplishmentId String
+  message          String
+  timestamp        DateTime       @default(now())
+  accomplishment   Accomplishment @relation(fields: [accomplishmentId], references: [id])
+  head             User           @relation("Head", fields: [headId], references: [id])
+}
+
+model UserKeyPair {
+  id         String   @id @default(uuid())
+  userId     String   @unique
+  publicKey  String
+  privateKey String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  user       User     @relation(fields: [userId], references: [id])
+}
+
+model Signature {
+  id        String   @id @default(uuid())
+  title     String
+  url       String
+  defalt    Boolean  @default(false)
+  timestamp DateTime @default(now())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+}
+
+model SignatureAudit {
+  id                   String             @id @default(uuid())
+  message              String
+  title                String
+  timestamp            DateTime           @default(now())
+  auditedId            String?            @default("")
+  signatureQueueRoomId String
+  room                 SignatureQueueRoom @relation(fields: [signatureQueueRoomId], references: [id])
+}
+
+model SignatureQueueRoom {
+  id             String                       @id @default(uuid())
+  userId         String
+  departmentId   String
+  timestamp      DateTime                     @default(now())
+  SignatureAudit SignatureAudit[]
+  unit           Department                   @relation(fields: [departmentId], references: [id])
+  user           User                         @relation(fields: [userId], references: [id])
+  endorser       SignatureQueueRoomApprover[]
+}
+
+model SignatureQueueRoomApprover {
+  id                   String              @id @default(uuid())
+  userId               String
+  timestamp            String
+  signatureQueueRoomId String?
+  SignatureQueueRoom   SignatureQueueRoom? @relation(fields: [signatureQueueRoomId], references: [id])
+  user                 User                @relation(fields: [userId], references: [id])
+}
+
+model SignatureCoor {
+  id                 String            @id @default(uuid())
+  xAxis              Int
+  yAxis              Int
+  width              Int
+  height             Int
+  timestamp          DateTime          @default(now())
+  signatureRequestId String?
+  SignatureRequest   SignatureRequest? @relation(fields: [signatureRequestId], references: [id])
+}
+
+model SignatureRecord {
+  id                 String           @id @default(uuid())
+  signatureRequestId String
+  lineId             String
+  signature          String
+  userId             String
+  timestamp          DateTime         @default(now())
+  request            SignatureRequest @relation(fields: [signatureRequestId], references: [id])
+}
+
+model SignatureRequest {
+  id              String            @id @default(uuid())
+  subject         String
+  desc            String?           @default("N/A")
+  size            String            @default("A4")
+  timestamp       DateTime          @default(now())
+  fromUserId      String?
+  toUserId        String?
+  status          Int               @default(0)
+  target          SignatureCoor[]
+  file            SignatureFile[]
+  SignatureRecord SignatureRecord[]
+  fromUser        User?             @relation("fromUser", fields: [fromUserId], references: [id])
+  toUser          User?             @relation("toUser", fields: [toUserId], references: [id])
+}
+
+model SignatureFile {
+  id                 String           @id @default(uuid())
+  url                String
+  fileName           String
+  fileSize           String
+  fileType           String
+  timestamp          DateTime         @default(now())
+  signatureRequestId String
+  SignatureRequest   SignatureRequest @relation(fields: [signatureRequestId], references: [id])
+}
+
+model AdminModule {
+  id        String   @id @default(uuid())
+  name      String
+  createdAt DateTime @default(now())
+  timestamp DateTime @default(now())
+}
+
+model AdminInbox {
+  id        String   @id @default(uuid())
+  type      String
+  title     String
+  content   String
+  createdAt DateTime @default(now())
+  path      String?
+  isRead    Boolean  @default(false)
+  userId    String
+  sender    User     @relation(fields: [userId], references: [id])
+}
+
+model Test {
+  id        String   @id @default(uuid())
+  test      Bytes
+  timestamp DateTime @default(now())
+  encrypt   Bytes
+}
+
+model MedicineStorage {
+  id                    String                  @id @default(uuid())
+  refNumber             String                  @unique
+  name                  String
+  desc                  String
+  timestamp             String
+  lineId                String
+  departmentId          String
+  status                Int                     @default(1)
+  stocks                MedicineStock[]
+  unit                  Department              @relation(fields: [departmentId], references: [id], onDelete: SetDefault)
+  line                  Line                    @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  MedicineStorageAccess MedicineStorageAccess[]
+  MedicineTransaction   MedicineTransaction[]
+}
+
+model MedicineNotification {
+  id           String      @id @default(uuid())
+  message      String
+  timestamp    DateTime    @default(now())
+  userId       String
+  departmentId String?
+  path         String?
+  phase        Int         @default(1)
+  view         Int         @default(0)
+  lineId       String
+  title        String
+  type         Int         @default(1)
+  unit         Department? @relation(fields: [departmentId], references: [id])
+  line         Line        @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  user         User        @relation(fields: [userId], references: [id])
+}
+
+model MedicineStorageAccess {
+  id                String          @id @default(uuid())
+  medicineStorageId String
+  previlege         Int             @default(0)
+  userId            String
+  timestamp         DateTime        @default(now())
+  medicineStorage   MedicineStorage @relation(fields: [medicineStorageId], references: [id])
+  user              User            @relation(fields: [userId], references: [id])
+}
+
+model MedicineLogs {
+  id        String   @id @default(uuid())
+  action    Int      @default(0)
+  message   String
+  timestamp DateTime @default(now())
+  userId    String
+  lineId    String?
+  line      Line?    @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id])
+}
+
+model Medicine {
+  id               String             @id @default(uuid())
+  serialNumber     String
+  name             String
+  desc             String?            @default("None")
+  phase            Int                @default(0)
+  timestamp        DateTime           @default(now())
+  lineId           String
+  line             Line               @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  MedicineHistory  MedicineHistory[]
+  MedicineStock    MedicineStock[]
+  MedicineTrack    MedicineTrack[]
+  PrecribeMedicine PrecribeMedicine[]
+}
+
+model MedicineTransaction {
+  id                      String                    @id @default(uuid())
+  prescriptionId          String?
+  quantity                Int
+  unit                    String
+  remark                  Int                       @default(0)
+  timestamp               DateTime                  @default(now())
+  userId                  String?
+  medicineStorageId       String?
+  lineId                  String
+  line                    Line                      @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  storage                 MedicineStorage?          @relation(fields: [medicineStorageId], references: [id])
+  prescription            Prescription?             @relation(fields: [prescriptionId], references: [id])
+  user                    User?                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  MedicineTransactionItem MedicineTransactionItem[]
+}
+
+model MedicineTransactionItem {
+  id                    String              @id @default(uuid())
+  medicineTransactionId String
+  precribeMedicineId    String?             @unique
+  prescribeQuantity     Int                 @default(0)
+  releasedQuantity      Int                 @default(0)
+  presTranscription     MedicineTransaction @relation(fields: [medicineTransactionId], references: [id], onDelete: Cascade)
+  prescribeMed          PrecribeMedicine?   @relation(fields: [precribeMedicineId], references: [id])
+}
+
+model MedicineQuality {
+  id              String         @id @default(uuid())
+  quantity        Int            @default(1)
+  unit            String         @default("pcs")
+  perUnit         Int            @default(1)
+  medicineStockId String?        @unique
+  timestamp       DateTime       @default(now())
+  stock           MedicineStock? @relation(fields: [medicineStockId], references: [id], onDelete: Cascade)
+}
+
+model MedicineStock {
+  id                String               @id @default(uuid())
+  medicineId        String
+  quarter           Int
+  timestamp         DateTime             @default(now())
+  expiration        DateTime?
+  medicineStorageId String?
+  lineId            String
+  actualStock       Int                  @default(0)
+  threshold         Int                  @default(5)
+  price             MedicinePriceTrack[]
+  stock             MedicineQuality?
+  line              Line                 @relation(fields: [lineId], references: [id])
+  medicine          Medicine             @relation(fields: [medicineId], references: [id])
+  MedicineStorage   MedicineStorage?     @relation(fields: [medicineStorageId], references: [id])
+}
+
+model MedicineTrack {
+  id         String   @id @default(uuid())
+  medicineId String
+  stock      Int      @default(0)
+  quarter    Int
+  timestamp  DateTime @default(now())
+  medicine   Medicine @relation(fields: [medicineId], references: [id], onDelete: Cascade)
+}
+
+model MedicineHistory {
+  id         String   @id @default(uuid())
+  medicineId String
+  action     Int      @default(0)
+  stock      Int      @default(0)
+  message    String   @default("N/A")
+  timestamp  DateTime @default(now())
+  medicine   Medicine @relation(fields: [medicineId], references: [id], onDelete: Cascade)
+}
+
+model MedicinePriceTrack {
+  id              String         @id @default(uuid())
+  value           Float          @default(0.0)
+  timestamp       DateTime       @default(now())
+  medicineStockId String?
+  MedicineStock   MedicineStock? @relation(fields: [medicineStockId], references: [id], onDelete: Cascade)
+}
+
+model Prescription {
+  id                  String                 @id @default(uuid())
+  refNumber           String
+  condtion            String?
+  firstname           String?
+  lastname            String?
+  street              String?
+  barangayId          String?
+  municipalId         String?
+  provinceId          String?
+  userId              String
+  respondedByUserId   String?
+  status              Int                    @default(0)
+  remark              Int                    @default(0)
+  timestamp           DateTime               @default(now())
+  lineId              String
+  age                 String                 @default("N/A")
+  MedicineTransaction MedicineTransaction[]
+  presMed             PrecribeMedicine[]
+  barangay            Barangay?              @relation(fields: [barangayId], references: [id])
+  line                Line                   @relation(fields: [lineId], references: [id])
+  municipal           Municipal?             @relation(fields: [municipalId], references: [id])
+  province            Province?              @relation(fields: [provinceId], references: [id])
+  respondedBy         User?                  @relation("respondedBy", fields: [respondedByUserId], references: [id], onDelete: Cascade)
+  processBy           User                   @relation("processBy", fields: [userId], references: [id])
+  assets              PrescriptionAsset[]
+  comment             PrescriptionComment[]
+  progress            PrescriptionProgress[]
+}
+
+model PrescriptionAsset {
+  id             String       @id @default(uuid())
+  refNumber      String?
+  remark         Int          @default(0)
+  prescriptionId String
+  file_url       String?
+  file_size      String?
+  file_type      String?
+  timestamp      DateTime     @default(now())
+  precription    Prescription @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
+}
+
+model PrescriptionProgress {
+  id             String        @id @default(uuid())
+  step           Int           @default(0)
+  timestamp      DateTime      @default(now())
+  prescriptionId String?
+  comment        String?
+  Prescription   Prescription? @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
+}
+
+model PrescriptionComment {
+  id                        String                      @id @default(uuid())
+  status                    Int                         @default(0)
+  prescriberId              String
+  message                   String?
+  prescriptionId            String?
+  timestamp                 DateTime                    @default(now())
+  userId                    String
+  prescriptionSender        User                        @relation("prescriptionSender", fields: [prescriberId], references: [id])
+  Prescription              Prescription?               @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
+  User                      User                        @relation(fields: [userId], references: [id])
+  PrescriptionCommentAssets PrescriptionCommentAssets[]
+}
+
+model PrescriptionCommentAssets {
+  id                    String               @id @default(uuid())
+  file_url              String
+  file_name             String
+  file_type             Int
+  file_size             String
+  timestamp             DateTime             @default(now())
+  prescriptionCommentId String?
+  PrescriptionComment   PrescriptionComment? @relation(fields: [prescriptionCommentId], references: [id])
+}
+
+model PrecribeMedicine {
+  id                      String                   @id @default(uuid())
+  medicineId              String?
+  timestamp               DateTime                 @default(now())
+  desc                    String?
+  quantity                Int                      @default(1)
+  prescriptionId          String?
+  remark                  String                   @default("Pending")
+  comments                String?
+  releaseQuantity         Int                      @default(1)
+  MedicineTransactionItem MedicineTransactionItem?
+  medicine                Medicine?                @relation(fields: [medicineId], references: [id])
+  Prescription            Prescription?            @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
+}
+
+model PrescriptionMedicine {
+  id String @id @default(uuid())
+}
+
+model JobPost {
+  id                   String                @id @default(uuid())
+  salaryGradeId        String?
+  hideSG               Boolean               @default(false)
+  slot                 Int
+  showApplicationCount Boolean
+  timestamp            DateTime              @default(now())
+  positionId           String
+  location             String
+  desc                 String?               @default("N/A")
+  status               Int
+  updateAt             DateTime              @default(now())
+  lineId               String?
+  application          Application[]
+  applicationInquiries ApplicationInquiry[]
+  line                 Line?                 @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  position             Position              @relation(fields: [positionId], references: [id], onDelete: Cascade)
+  salaryGrade          SalaryGrade?          @relation(fields: [salaryGradeId], references: [id])
+  requirements         JobPostRequirements[]
+}
+
+model JobPostRequirements {
+  id        String          @id @default(uuid())
+  title     String
+  desc      String?
+  jobPostId String?
+  asset     JobPostAssets[]
+  jobPost   JobPost?        @relation(fields: [jobPostId], references: [id])
+}
+
+model JobPostAssets {
+  id                    String               @id @default(uuid())
+  fileType              String
+  fileSize              String
+  fileName              String
+  fileUrl               String?
+  timestamp             DateTime             @default(now())
+  jobPostRequirementsId String?
+  filePublicId          String
+  jobPostRequirements   JobPostRequirements? @relation(fields: [jobPostRequirementsId], references: [id], onDelete: Cascade)
+}
+
+model ApplicationInquiry {
+  id        String  @id @default(uuid())
+  jobPostId String
+  jobPost   JobPost @relation(fields: [jobPostId], references: [id], onDelete: Cascade)
+}
+
+model LineGeneralAssets {
+  id        String   @id @default(uuid())
+  file_url  String
+  file_name String
+  file_size String
+  file_type String
+  timestamp DateTime @default(now())
+  lineId    String
+  line      Line     @relation(fields: [lineId], references: [id])
+}
+
+model OtpVerification {
+  code                   Int                   @id @unique
+  status                 Int                   @default(0)
+  dateUsed               DateTime?
+  timestamp              DateTime              @default(now())
+  submittedApplication   SubmittedApplication? @relation(fields: [submittedApplicationId], references: [id])
+  submittedApplicationId String?
+}

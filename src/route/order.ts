@@ -40,7 +40,11 @@ export const order = async (fastify: FastifyInstance) => {
   );
   fastify.delete("/delete-order", { preHandler: authenticated }, cancelOrder);
   fastify.patch("/save-order", { preHandler: authenticated }, saveOrder);
-  fastify.post("/finalize-order", { preHandler: authenticated }, fullFillOrder);
+  fastify.patch(
+    "/finalize-order",
+    { preHandler: authenticated },
+    fullFillOrder
+  );
   fastify.post(
     "/fullfill-item-order",
     { preHandler: authenticated },

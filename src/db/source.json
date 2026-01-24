@@ -1,0 +1,38 @@
+{
+  "unitOfMeasure": [
+    "bottle",
+    "gallon",
+    "piece",
+    "pack",
+    "box",
+    "pair",
+    "case",
+    "yard",
+    "meter",
+    "centemeter",
+    "liter",
+    "kilogram",
+    "ton",
+    "dozen",
+    "ream",
+    "roll",
+    "can",
+    "unit",
+    "bundle",
+    "cart",
+    "jar",
+    "set",
+    "pad",
+    "tube"
+  ],
+  "category": [
+    { "cat": "Pesticides or Pest Repellents", "index": 1 },
+    { "cat": "Perfumes or Colognes or Fragrances", "index": 2 },
+    { "cat": "Alcohol or Acetone Based Antiseptics", "index": 3 },
+    { "cat": "Color Compounds and Dispersions", "index": 4 },
+    { "cat": "Filmss", "index": 5 },
+    { "cat": "Pesticides or Pest Repellents", "index": 6 },
+    { "cat": "Pesticides or Pest Repellents", "index": 7 },
+    { "cat": "Pesticides or Pest Repellents", "index": 8 }
+  ]
+}

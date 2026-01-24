@@ -7,19 +7,19 @@ import {
 import fs from "fs";
 import path from "path";
 import cloudinary from "../class/Cloundinary";
+import argon from "argon2";
 import { EncryptionService } from "../service/encryption";
 import { AppError, NotFoundError, ValidationError } from "../errors/errors";
 import {
   PagingProps,
   PostNewJobProps,
-  AddNewPostJobRequiementsProps,
-  ApplicationSubmissionProps,
   ApplicationConversation,
   UpdateApplicationStatus,
 } from "../models/route";
-import { file } from "../route/file";
-import { sendEmail } from "../middleware/handler";
+import { semaphoreKey } from "../class/Semaphore";
+import { phNumberFormat, sendEmail } from "../middleware/handler";
 import { semaphoreService } from "../class/Semaphore";
+import axios from "axios";
 
 const officialUrl = process.env.VITE_LOCAL_FRONTEND_URL;
 
@@ -61,11 +61,12 @@ export const applications = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const postJob = async (req: FastifyRequest, res: FastifyReply) => {
   const body = req.body as PostNewJobProps;
+  console.log("Post: ", body);
 
   if (!body.id || !body.lineId) throw new ValidationError("BAD_REQUEST");
   try {
     const response = await prisma.$transaction(async (tx) => {
-      const position = await tx.unitPosition.findFirst({
+      const position = await tx.unitPosition.findUnique({
         where: {
           id: body.id,
         },
@@ -78,10 +79,13 @@ export const postJob = async (req: FastifyRequest, res: FastifyReply) => {
         },
       });
       if (!position) throw new NotFoundError("Position not found!");
+      console.log({ position });
+
       const check = await tx.jobPost.findFirst({
         where: {
           positionId: position.positionId,
           lineId: body.lineId,
+          status: 1,
         },
       });
       let jobPost;
@@ -98,6 +102,7 @@ export const postJob = async (req: FastifyRequest, res: FastifyReply) => {
               ? body.showApplicationCount
               : false,
             lineId: body.lineId,
+            unitPositionId: position.id,
           },
         });
 
@@ -113,14 +118,72 @@ export const postJob = async (req: FastifyRequest, res: FastifyReply) => {
             } | Show App Count: ${body.showApplicationCount ? "Yes" : "No"}`,
           },
         });
-      } else if (check && check.status > 0) {
-        return check.id;
+        console.log({ check });
       } else {
-        return check.id;
+        jobPost = check;
       }
+      return jobPost.id;
     });
     if (!response) throw new AppError("Something went wrong", 500, "DB_ERROR");
     return res.code(200).send({ message: "OK", id: response });
+  } catch (error) {
+    console.log(error);
+
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DATABASE_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+export const updatePostApplication = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as {
+    id: string;
+    status: number;
+    userId: string;
+    lineId: string;
+  };
+
+  console.log({ body });
+
+  if (!body.id || !body.userId || !body.lineId)
+    throw new ValidationError("INVALID REQUIRED ID");
+  try {
+    const response = await prisma.$transaction(async (tx) => {
+      const post = await tx.jobPost.update({
+        where: {
+          id: body.id,
+        },
+        data: {
+          status: body.status,
+        },
+        include: {
+          position: {
+            select: {
+              name: true,
+            },
+          },
+        },
+      });
+
+      console.log({ post });
+
+      await tx.humanResourcesLogs.create({
+        data: {
+          userId: body.userId,
+          action: "UPDATE",
+          lineId: body.lineId,
+          desc: `UPDATED JOB POST STATUS: ${post.position.name}`,
+        },
+      });
+      return true;
+    });
+
+    if (!response) throw new ValidationError("TRANSACTION FAILED");
+    return res.code(200).send({ message: "OK" });
   } catch (error) {
     console.log(error);
 
@@ -157,6 +220,9 @@ export const updatePostJob = async (req: FastifyRequest, res: FastifyReply) => {
       if (jobPost.desc !== param.desc) {
         optional.desc = param.desc;
       }
+      if (param.deadline) {
+        optional.deadline = param.deadline;
+      }
       await tx.jobPost.update({
         where: {
           id: jobPost.id,
@@ -165,6 +231,7 @@ export const updatePostJob = async (req: FastifyRequest, res: FastifyReply) => {
           hideSG: param.hideSG,
           showApplicationCount: param.showApplicationCount,
           status: param.status,
+          salaryGradeId: param.salaryGrade,
           ...optional,
         },
       });
@@ -186,6 +253,8 @@ export const updatePostJob = async (req: FastifyRequest, res: FastifyReply) => {
     if (response !== "OK") throw new AppError("DB_CONNECTION", 500, "DB_ERROR");
     return res.code(200).send({ message: "OK" });
   } catch (error) {
+    console.log(error);
+
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DATABASE_CONNECTION_FAILED", 500, "DB_ERROR");
     }
@@ -195,7 +264,7 @@ export const updatePostJob = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const createPobJobRequirements = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   if (!req.isMultipart()) {
     console.log("Not multipart");
@@ -262,7 +331,7 @@ export const createPobJobRequirements = async (
             throw new AppError(
               `Failed to upload file "${part.filename}" to Cloudinary`,
               500,
-              "UPLOAD_FAILED"
+              "UPLOAD_FAILED",
             );
           } finally {
             // Always remove temp file
@@ -308,7 +377,7 @@ export const createPobJobRequirements = async (
 
 export const postJobRequirements = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.query as PagingProps;
 
@@ -352,7 +421,7 @@ export const postJobRequirements = async (
 };
 export const updatePostJobRequiments = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   if (!req.isMultipart()) {
     return res.status(400).send({ error: "Not multipart" });
@@ -400,7 +469,7 @@ export const updatePostJobRequiments = async (
             throw new AppError(
               `Failed to upload file "${part.filename}" to Cloudinary`,
               500,
-              "UPLOAD_FAILED"
+              "UPLOAD_FAILED",
             );
           } finally {
             // Always remove temp file
@@ -455,7 +524,7 @@ export const updatePostJobRequiments = async (
 };
 export const removePostJobRequirements = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.query as { id: string };
 
@@ -478,7 +547,7 @@ export const removePostJobRequirements = async (
 };
 export const postJobRequirementsRemoveAsset = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.query as { id: string };
 
@@ -562,6 +631,7 @@ export const jobPost = async (req: FastifyRequest, res: FastifyReply) => {
         salaryGrade: {
           select: {
             grade: true,
+            id: true,
           },
         },
         _count: {
@@ -569,6 +639,15 @@ export const jobPost = async (req: FastifyRequest, res: FastifyReply) => {
             application: {
               where: {
                 status: "pending",
+              },
+            },
+          },
+        },
+        unitPos: {
+          select: {
+            unit: {
+              select: {
+                name: true,
               },
             },
           },
@@ -599,7 +678,7 @@ export const jobPost = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const submitApplication = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   if (!req.isMultipart()) throw new Error("NOT MULTI PARTS");
 
@@ -624,6 +703,20 @@ export const submitApplication = async (
       } else {
         formData[part.fieldname] = part.value;
       }
+    }
+
+    const jobPost = await prisma.jobPost.findUnique({
+      where: {
+        id: formData.jobPostId,
+      },
+      select: {
+        id: true,
+        unitPositionId: true,
+      },
+    });
+
+    if (!jobPost) {
+      throw new NotFoundError("JOB POST NOT FOUND");
     }
 
     const tmpDir = path.join(process.cwd(), "tmp_uploads");
@@ -665,13 +758,15 @@ export const submitApplication = async (
             .then((r) => {
               fs.unlinkSync(tmpPath); // Delete temp file after upload
               return { ...r, originalName: f.filename, fieldname: f.fieldname };
-            })
+            }),
         );
       }
     }
     const uploaded = await Promise.all(uploads);
 
     function normalizeForm(formData: any) {
+      console.log({ formData });
+
       const parseArrayField = (fieldName: string, defaultValue: any = []) => {
         if (!formData[fieldName]) return defaultValue;
         try {
@@ -705,6 +800,16 @@ export const submitApplication = async (
         email: formData.email,
         civilStatus: formData.civilStatus,
 
+        bloodType: formData.bloodType,
+        height: formData.height,
+        weight: formData.weight,
+
+        umidNo: formData.umidNo,
+        pagIbigNo: formData.pagIbigNo,
+        philHealthNo: formData.philHealthNo,
+        philSys: formData.philSys,
+        tinNo: formData.tinNo,
+        agencyNo: formData.agencyNo,
         // citizenship
         citizenship: formData["citizenship[citizenship]"],
         dualCitizen: formData["citizenship[by]"],
@@ -796,11 +901,6 @@ export const submitApplication = async (
         municipalId: formData.municipalId,
         positionId: formData.positionId,
 
-        // physical attributes
-        height: formData.height,
-        weight: formData.weight,
-        bloodType: formData.bloodType,
-
         // other fields from form
         gender: formData.gender,
         suffix: formData.suffix,
@@ -836,6 +936,13 @@ export const submitApplication = async (
       motherFirstname: clean.motherFirstname,
 
       birthDate: clean.birthDate,
+
+      umidNo: clean.umidNo,
+      pagIbigNo: clean.pagIbigNo,
+      philHealthNo: clean.philHealthNo,
+      philSys: clean.philSys,
+      tinNo: clean.tinNo,
+      agencyNo: clean.agencyNo,
     };
 
     const encrypted: Record<string, any> = {};
@@ -848,7 +955,7 @@ export const submitApplication = async (
       encPromises.push(
         EncryptionService.encrypt(String(fieldsToEncrypt[key])).then((r) => {
           encrypted[key] = r;
-        })
+        }),
       );
     }
 
@@ -960,14 +1067,28 @@ export const submitApplication = async (
 
         // GOV ID - This is a Json field (pass object directly)
         govId: clean.govId,
+        umidNo: encrypted.umidNo?.encryptedData || "N/A",
+        umidNoIv: encrypted.umidNo?.iv || null,
+        pagIbigNo: encrypted.pagIbigNo?.encryptedData || "N/A",
+        pagIbigNoIv: encrypted.pagIbigNo?.iv || null,
+        philHealthNo: encrypted.philHealthNo?.encryptedData || "N/A",
+        philHealthNoIv: encrypted.philHealthNo?.iv || null,
+        philSys: encrypted.philSys?.encryptedData || "N/A",
+        philSysIv: encrypted.philSys?.iv || null,
+        tinNo: encrypted.tinNo?.encryptedData || "N/A",
+        tinNoIv: encrypted.tinNo?.iv || null,
+        agencyNo: encrypted.agencyNo?.encryptedData || "N/A",
+        agencyNoIv: encrypted.agencyNo?.iv || null,
 
         // job linking
         lineId: position.line?.id as string,
         positionId: formData.positionId,
-
+        unitPositionId: jobPost.unitPositionId,
         // REQUIRED Date
         batch: new Date(),
       };
+
+      console.log("Application Data: ", { applicationData });
 
       // Add profile picture relation if it exists
       if (profilePicture) {
@@ -977,6 +1098,8 @@ export const submitApplication = async (
       const application = await tx.submittedApplication.create({
         data: applicationData,
       });
+
+      console.log("Submitted Application: ", { application });
 
       // Create skill tags if they exist
       if (clean.tags && clean.tags.length > 0) {
@@ -1003,21 +1126,50 @@ export const submitApplication = async (
       }
 
       if (formData.email) {
-        await sendEmail(
+        const sebtEmail = await sendEmail(
           "Application Received",
           formData.email,
           `
-          Dear ${formData.firstName} ${formData.lastName},
-          Thank you for submitting your application for the position of ${position.name} at ${municipal.name}.
-          We have received your application and our team will review it shortly. If your qualifications match our requirements, we will contact you for the next steps in the hiring process.
-          We appreciate your interest in joining our team and look forward to the possibility of working together.
-
-          You can check the status of your application, click this ${officialUrl}/public/application/${application.id} .
-
+Dear ${formData.firstName} ${formData.lastName},
+          
+          This is to confirm that we have successfully received your application for the position of ${position.name} at ${municipal.name}.
+          
+          We will inform you of any further instructions regarding the next steps in the hiring process once your application has been reviewed.
+          
+          You can check the status of your application by clicking this link: ${officialUrl}/public/application/${application.id}
+          
           Sincerely,
           The HR Team
-        `,
-          `${municipal.name} HR Team <no-reply@${municipal.name}.gov.ph>`
+          ${municipal.name}
+          `,
+          `${municipal.name} HR Team <no-reply@${municipal.name}.gov.ph>`,
+        );
+
+        console.log({ sebtEmail });
+      }
+
+      if (formData.mobileNo && semaphoreKey) {
+        const contact = phNumberFormat(formData.mobileNo);
+        await axios.post(
+          `https://api.semaphore.co/api/v4/messages`,
+          {
+            number: contact,
+            message: `Dear ${formData.firstName} ${formData.lastName},
+
+This is to confirm that we have successfully received your application for the position of ${position.name} at ${municipal.name}.
+
+We will inform you of any further instructions regarding the next steps in the hiring process once your application has been reviewed.
+
+Sincerely,
+The HR Team
+${municipal.name}`,
+            apikey: semaphoreKey,
+          },
+          {
+            headers: {
+              "Content-Type": "application/json",
+            },
+          },
         );
       }
 
@@ -1043,7 +1195,7 @@ export const submitApplication = async (
 
 export const applicationList = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.query as PagingProps;
 
@@ -1157,9 +1309,11 @@ export const applicationList = async (
 };
 export const applicationData = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.query as SubmittedApplicationProps;
+  console.log(params);
+
   if (!params.id) throw new ValidationError("INVALID REQUIRED ID");
 
   try {
@@ -1216,6 +1370,12 @@ export const applicationData = async (
       motherSurname,
       motherFirstname,
       birthDate,
+      umidNo,
+      pagIbigNo,
+      philHealthNo,
+      philSys,
+      tinNo,
+      agencyNo,
     ] = await Promise.all([
       response.emailIv
         ? EncryptionService.decrypt(response.email, response.emailIv)
@@ -1227,7 +1387,7 @@ export const applicationData = async (
       response.resProvinceIv
         ? EncryptionService.decrypt(
             response.resProvince,
-            response.resProvinceIv
+            response.resProvinceIv,
           )
         : response.resProvince,
       response.resCityIv
@@ -1236,13 +1396,13 @@ export const applicationData = async (
       response.resBarangayIv
         ? EncryptionService.decrypt(
             response.resBarangay,
-            response.resBarangayIv
+            response.resBarangayIv,
           )
         : response.resBarangay,
       response.permaProvinceIv
         ? EncryptionService.decrypt(
             response.permaProvince,
-            response.permaProvinceIv
+            response.permaProvinceIv,
           )
         : response.permaProvince,
       response.permaCityIv
@@ -1251,36 +1411,57 @@ export const applicationData = async (
       response.permaBarangayIv
         ? EncryptionService.decrypt(
             response.permaBarangay,
-            response.permaBarangayIv
+            response.permaBarangayIv,
           )
         : response.permaBarangay,
       response.fatherSurname && response.fatherSurnameIv
         ? EncryptionService.decrypt(
             response.fatherSurname,
-            response.fatherSurnameIv
+            response.fatherSurnameIv,
           )
         : Promise.resolve(response.fatherSurname || ""),
       response.fatherFirstname && response.fatherFirstnameIv
         ? EncryptionService.decrypt(
             response.fatherFirstname,
-            response.fatherFirstnameIv
+            response.fatherFirstnameIv,
           )
         : Promise.resolve(response.fatherFirstname || ""),
       response.motherSurname && response.motherSurnameIv
         ? EncryptionService.decrypt(
             response.motherSurname,
-            response.motherSurnameIv
+            response.motherSurnameIv,
           )
         : Promise.resolve(response.motherSurname || ""),
       response.motherFirstname && response.motherFirstnameIv
         ? EncryptionService.decrypt(
             response.motherFirstname,
-            response.motherFirstnameIv
+            response.motherFirstnameIv,
           )
         : Promise.resolve(response.motherFirstname || ""),
       response.bdayIv
         ? EncryptionService.decrypt(response.birthDate, response.bdayIv)
         : response.birthDate,
+      response.umidNoIv && response.umidNo
+        ? EncryptionService.decrypt(response.umidNo, response.umidNoIv)
+        : "N/A",
+      response.pagIbigNo && response.pagIbigNoIv
+        ? EncryptionService.decrypt(response.pagIbigNo, response.pagIbigNoIv)
+        : "N/A",
+      response.philHealthNo && response.philHealthNoIv
+        ? EncryptionService.decrypt(
+            response.philHealthNo,
+            response.philHealthNoIv,
+          )
+        : "N/A",
+      response.philSys && response.philSysIv
+        ? EncryptionService.decrypt(response.philSys, response.philSysIv)
+        : "N/A",
+      response.tinNo && response.tinNoIv
+        ? EncryptionService.decrypt(response.tinNo, response.tinNoIv)
+        : "N/A",
+      response.agencyNo && response.agencyNoIv
+        ? EncryptionService.decrypt(response.agencyNo, response.agencyNoIv)
+        : "N/A",
     ]);
 
     // Create decrypted response object
@@ -1344,6 +1525,13 @@ export const applicationData = async (
       fatherFirstname,
       motherSurname,
       motherFirstname,
+
+      umidNo,
+      pagIbigNo,
+      philHealthNo,
+      philSys,
+      tinNo,
+      agencyNo,
     };
 
     return res.code(200).send(decryptedResponse);
@@ -1373,7 +1561,7 @@ interface BulkContactRequest {
 
 export const contactApplicant = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const {
     applicationId,
@@ -1385,7 +1573,7 @@ export const contactApplicant = async (
   // Validate required fields
   if (!applicationId?.trim() || !message?.trim() || !subject?.trim()) {
     throw new ValidationError(
-      "Missing required fields: applicationId, message, and subject are required"
+      "Missing required fields: applicationId, message, and subject are required",
     );
   }
 
@@ -1412,7 +1600,7 @@ export const contactApplicant = async (
       application.ivMobileNo
         ? EncryptionService.decrypt(
             application.mobileNo,
-            application.ivMobileNo
+            application.ivMobileNo,
           )
         : application.mobileNo,
     ]);
@@ -1461,7 +1649,7 @@ export const contactApplicant = async (
 
 export const contactManyApplicants = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const {
     applicationId,
@@ -1472,13 +1660,13 @@ export const contactManyApplicants = async (
 
   if (!applicationId?.length || !message?.trim() || !subject?.trim()) {
     throw new ValidationError(
-      "Missing required fields: applicationIds, message, and subject are required"
+      "Missing required fields: applicationIds, message, and subject are required",
     );
   }
 
   if (applicationId.length > 100) {
     throw new ValidationError(
-      "Cannot contact more than 100 applicants at once"
+      "Cannot contact more than 100 applicants at once",
     );
   }
 
@@ -1509,7 +1697,7 @@ export const contactManyApplicants = async (
       const foundIds = new Set(applications.map((app) => app.id));
       const missingIds = applicationId.filter((id) => !foundIds.has(id));
       throw new NotFoundError(
-        `Some applications not found: ${missingIds.join(", ")}`
+        `Some applications not found: ${missingIds.join(", ")}`,
       );
     }
 
@@ -1537,7 +1725,7 @@ export const contactManyApplicants = async (
           phoneNumber,
           name: `${firstName} ${lastName}`.trim(),
         };
-      })
+      }),
     );
 
     const BATCH_SIZE = 10;
@@ -1553,10 +1741,10 @@ export const contactManyApplicants = async (
           // Personalize message for each applicant
           const personalizedMessage = message.replace(
             /{{name}}/g,
-            applicant.name
+            applicant.name,
           );
           individualPromises.push(
-            sendEmail(subject, applicant.email, personalizedMessage, "HR Team")
+            sendEmail(subject, applicant.email, personalizedMessage, "HR Team"),
           );
         }
 
@@ -1589,7 +1777,7 @@ export const contactManyApplicants = async (
     throw new AppError(
       "BULK_CONTACT_FAILED",
       500,
-      "Failed to contact applicants"
+      "Failed to contact applicants",
     );
   }
 };
@@ -1601,7 +1789,7 @@ export const exportPersonalDataSheet = async () => {
 
 export const applicationConvertion = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.query as PagingProps;
 
@@ -1640,6 +1828,7 @@ export const applicationConvertion = async (
         timestamp: true,
         title: true,
         id: true,
+        fromHr: true,
       },
     });
 
@@ -1648,7 +1837,7 @@ export const applicationConvertion = async (
         try {
           const decryptedMessage = await EncryptionService.decrypt(
             item.message,
-            item.messageIv
+            item.messageIv,
           );
 
           return { messageContent: decryptedMessage, ...item };
@@ -1656,7 +1845,7 @@ export const applicationConvertion = async (
           console.error("ERROR decrypting item:", item.id, err);
           throw err; // <--- VERY IMPORTANT (forces error to bubble)
         }
-      })
+      }),
     );
 
     const newLastCursorId =
@@ -1671,6 +1860,8 @@ export const applicationConvertion = async (
       lastCursor: newLastCursorId,
     });
   } catch (error) {
+    console.log(error);
+
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_ERROR", 500, "DB_ERROR");
     }
@@ -1680,7 +1871,7 @@ export const applicationConvertion = async (
 
 export const adminApplicationSendConversation = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const body = req.body as ApplicationConversation;
   console.log({ body });
@@ -1752,12 +1943,62 @@ export const adminApplicationSendConversation = async (
   }
 };
 
+export const sendPublicApplicationMessage = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as { message: string; applicationId: string };
+
+  if (!body.applicationId || !body.message) {
+    throw new ValidationError("INVALID REQUIRED FIELD");
+  }
+  try {
+    const encryptedMessage = await EncryptionService.encrypt(body.message);
+    const response = await prisma.$transaction(async (tx) => {
+      const application = await tx.submittedApplication.findUnique({
+        where: {
+          id: body.applicationId,
+        },
+        include: {
+          forPosition: {
+            select: {
+              name: true,
+              lineId: true,
+            },
+          },
+        },
+      });
+
+      if (!application) throw new NotFoundError("APPLICATION NOT FOUND");
+
+      await tx.applicationConversation.create({
+        data: {
+          message: encryptedMessage.encryptedData,
+          messageIv: encryptedMessage.iv,
+          lineId: application.forPosition?.lineId as string,
+          title: "",
+          fromHr: false,
+          submittedApplicationId: body.applicationId,
+        },
+      });
+      return true;
+    });
+
+    if (!response) throw new ValidationError("TRANSACTION FAILED");
+    return res.code(200).send({ message: "OK" });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_ERROR", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
 export const updateApplicationStatus = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const body = req.body as UpdateApplicationStatus;
-  console.log(body);
 
   if (!body.userId || !body.applicantId)
     throw new ValidationError("INVALID REQUIRED ID");
@@ -1813,6 +2054,343 @@ export const updateApplicationStatus = async (
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_ERROR", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+export const concludeApplication = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as {
+    applicationId: string;
+    accepted: boolean;
+    sendInviteLink: boolean;
+  };
+
+  if (!body.applicationId) throw new ValidationError("INVALID REQUIRED ID");
+
+  try {
+    const response = await prisma.$transaction(async (tx) => {
+      const application = await tx.submittedApplication.findUnique({
+        where: {
+          id: body.applicationId,
+        },
+        include: {
+          forPosition: {
+            select: {
+              name: true,
+            },
+          },
+          jobPost: {
+            select: {
+              salaryGrade: {
+                select: {
+                  grade: true,
+                  amount: true,
+                },
+              },
+              position: {
+                select: {
+                  name: true,
+                  id: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+      if (!application) {
+        throw new NotFoundError("APPLICATION NOT FOUND");
+      }
+
+      const email = application.emailIv
+        ? await EncryptionService.decrypt(
+            application.email,
+            application.emailIv,
+          )
+        : undefined;
+
+      const mobileNo = application.ivMobileNo
+        ? await EncryptionService.decrypt(
+            application.mobileNo,
+            application.ivMobileNo,
+          )
+        : undefined;
+
+      if (!email) throw new ValidationError("FAILED TO PARSE EMAIL");
+
+      const link = `${officialUrl}public/${application.lineId}/application/${application.id}`;
+
+      await tx.submittedApplication.update({
+        where: {
+          id: application.id,
+        },
+        data: {
+          status: 3,
+        },
+      });
+
+      // Generate professional text email content
+      const emailContent = generateInvitationEmail(
+        `${application.lastname}, ${application.firstname}` || "Applicant",
+        application.forPosition?.name || "the position",
+        link,
+      );
+
+      await sendEmail(
+        "Invitation to Complete Your Registration - Gasan Portal",
+        email,
+        emailContent,
+        "HR Team -  Municipal Government",
+      );
+
+      if (mobileNo) {
+        const contact = phNumberFormat(mobileNo);
+
+        await axios.post(
+          `https://api.semaphore.co/api/v4/messages`,
+          {
+            number: contact,
+            message: `
+Your application for ${
+              application.forPosition?.name || "{Error}"
+            } has been approved, please check your email for the invitation link.
+
+Sincerely,
+The HR Team`,
+            apikey: semaphoreKey,
+          },
+          {
+            headers: {
+              "Content-Type": "application/json",
+            },
+          },
+        );
+      }
+
+      return "OK";
+    });
+
+    return res
+      .status(200)
+      .send({ message: "Invitation sent successfully", data: response });
+  } catch (error) {
+    console.error("Error concluding application:", error);
+
+    if (error instanceof NotFoundError) {
+      return res.status(404).send({ error: "Application not found" });
+    }
+    if (error instanceof ValidationError) {
+      return res.status(400).send({ error: "Failed to process email" });
+    }
+
+    return res.status(500).send({ error: "Internal server error" });
+  }
+};
+
+// Helper function to generate professional text email content
+const generateInvitationEmail = (
+  applicantName: string,
+  positionTitle: string,
+  registrationLink: string,
+): string => {
+  return `
+INVITATION TO COMPLETE YOUR REGISTRATION
+Municipal Government of Gasan
+
+Dear ${applicantName},
+
+We are pleased to inform you that your application for ${positionTitle} has been reviewed and we would like to invite you to complete your registration through our online portal.
+
+NEXT STEPS:
+Please use the link below to complete your registration and set up your account credentials:
+
+REGISTRATION LINK: ${registrationLink}
+
+REGISTRATION INSTRUCTIONS:
+1. Click on the registration link above
+2. Create your username and password
+3. Set up your security preferences
+4. Complete your profile information
+
+IMPORTANT NOTES:
+- This link is unique to your application and should not be shared with others
+- Please complete your registration within 7 days
+- Ensure you use a valid email address that you have access to
+- Keep your login credentials secure
+
+For security reasons, please do not share this link with anyone. If you did not apply for this position or believe you received this email in error, please contact us immediately.
+
+If you encounter any issues during registration or have questions, please contact our HR Department at hr@gasan.gov.ph or call (042) 123-4567.
+
+We look forward to having you as part of the Gasan Municipal Government community.
+
+Best regards,
+
+HR Team
+Municipal Government of Gasan
+Gasan, Marinduque
+Email: hr@gasan.gov.ph
+Phone: (042) 123-4567
+
+CONFIDENTIALITY NOTICE:
+This email and any attachments are confidential and intended solely for the use of the individual to whom they are addressed. If you are not the intended recipient, please notify us immediately and delete this email.
+  `.trim();
+};
+
+export const applicationRegisterUser = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as {
+    username: string;
+    password: string;
+    lineId: string;
+    applicationId: string;
+  };
+
+  if (!body.applicationId || !body.username || !body.password || !body.lineId) {
+    throw new ValidationError("INVALID REQUIRED FIELD");
+  }
+
+  try {
+    const response = await prisma.$transaction(async (tx) => {
+      const check = await tx.account.findFirst({
+        where: {
+          username: {
+            contains: body.username,
+            mode: "insensitive",
+          },
+        },
+      });
+
+      if (check) throw new ValidationError("Username alrady exiist");
+      const application = await tx.submittedApplication.findUnique({
+        where: {
+          id: body.applicationId,
+        },
+        select: {
+          id: true,
+          firstname: true,
+          lastname: true,
+          middleName: true,
+          email: true,
+          emailIv: true,
+          profilePic: {
+            select: {
+              file_name: true,
+              file_type: true,
+              file_size: true,
+              file_url: true,
+              file_url_Iv: true,
+            },
+          },
+          jobPost: {
+            select: {
+              id: true,
+              position: {
+                select: {
+                  name: true,
+                  id: true,
+                },
+              },
+              salaryGradeId: true,
+              unitPositionId: true,
+            },
+          },
+          positionId: true,
+        },
+      });
+
+      console.log({ application });
+
+      if (!application) throw new ValidationError("Application not found!");
+      const hashedPassword = await argon.hash(body.password);
+      const newAccount = await tx.account.create({
+        data: {
+          username: body.username,
+          password: hashedPassword,
+          lineId: body.lineId,
+        },
+      });
+      const optional: any = {};
+
+      if (application.profilePic) {
+        optional.userProfilePictures = {
+          create: {
+            file_name: application.profilePic.file_name,
+            file_public_id: application.profilePic.file_url_Iv,
+            file_size: application.profilePic.file_size,
+            file_url: application.profilePic.file_url,
+          },
+        };
+      }
+      const user = await tx.user.create({
+        data: {
+          username: newAccount.username,
+          lineId: body.lineId,
+          accountId: newAccount.id,
+          firstName: application.firstname,
+          lastName: application.lastname,
+          email: application.email,
+          emailIv: application.emailIv,
+          positionId: application.jobPost?.position.id as string,
+          salaryGradeId: application.jobPost?.salaryGradeId as string,
+        },
+      });
+      await tx.unitPosition.update({
+        where: {
+          id: application.jobPost?.unitPositionId as string,
+          positionId: application.positionId as string,
+        },
+        data: {
+          slot: {
+            update: {
+              where: {
+                occupied: false,
+                userId: undefined,
+              },
+              data: {
+                occupied: true,
+                userId: user.id,
+              },
+            },
+          },
+        },
+      });
+      await tx.positionSlot.update({
+        where: {
+          userId: user.id,
+          salaryGradeId: application.jobPost?.salaryGradeId as string,
+        },
+        data: {
+          userId: user.id,
+        },
+      });
+      await tx.submittedApplication.update({
+        where: {
+          id: application.id,
+        },
+        data: {
+          userId: user.id,
+        },
+      });
+
+      return "OK";
+    });
+
+    if (response !== "OK") {
+      throw new ValidationError("FAILED TO CREATE ACCOUNT");
+    }
+    return res.code(200).send({ message: "OK" });
+  } catch (error) {
+    console.log(error);
+
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
     }
     throw error;
   }

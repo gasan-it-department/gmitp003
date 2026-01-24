@@ -14,7 +14,6 @@ export const supplyOverview = async (
   }
   try {
     const { lastCursor, limit, query, id } = params;
-    console.log({ lastCursor, limit, query, id });
 
     const filter: any = {};
 
@@ -45,6 +44,7 @@ export const supplyOverview = async (
     const items = await prisma.supplyStockTrack.findMany({
       where: {
         supply: filter,
+        supplyBatchId: id,
       },
       take: parseInt(limit),
       skip: cursor ? 1 : 0,
@@ -83,7 +83,6 @@ export const supplyOverview = async (
     const newLastCursorId =
       items.length > 0 ? items[items.length - 1].id : null;
     const hasMore = items.length === parseInt(limit);
-    console.log({ items });
 
     return res.code(200).send({
       list: items,
@@ -95,5 +94,46 @@ export const supplyOverview = async (
       throw new AppError("Database operation failed");
     }
     throw error;
+  }
+};
+
+export const supplyOverviewStatus = async (
+  req: FastifyRequest,
+  res: FastifyReply
+) => {
+  const params = req.query as { listId: string };
+  if (!params) throw new ValidationError("INVALID REQUIRED ID");
+  try {
+    const response = await prisma.$transaction(async (tx) => {
+      const total = await tx.supplyStockTrack.count({
+        where: {
+          supplyBatchId: params.listId,
+        },
+      });
+      const lowStock = await tx.supplyStockTrack.count({
+        where: {
+          supplyBatchId: params.listId,
+          stock: {
+            lt: 10,
+          },
+        },
+      });
+      const order = await tx.supplyBatchOrder.count({
+        where: {
+          supplyBatchId: params.listId,
+          status: 0,
+        },
+      });
+
+      return { total, lowStock, order };
+    });
+
+    if (!response) throw new ValidationError("DATA FAILED TO PARSED");
+
+    return res.code(200).send(response);
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_ERROR", 500, "DB_ERROR");
+    }
   }
 };

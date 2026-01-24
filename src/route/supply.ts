@@ -7,6 +7,14 @@ import {
   updateSupply,
   supplyList,
   timebaseSupplyReport,
+  dispenseSupply,
+  categories,
+  supplyDispenseTransaction,
+  supplyTimeBaseReport,
+  removeStockInList,
+  supplyTransactionInfo,
+  userSupplyDispenseRecords,
+  unitSupplyDispenseRecords,
 } from "../controller/supplyController";
 
 export const supply = (fastify: FastifyInstance) => {
@@ -22,5 +30,41 @@ export const supply = (fastify: FastifyInstance) => {
     "/supply-time-base",
     { preHandler: authenticated },
     timebaseSupplyReport
+  );
+  fastify.post(
+    "/supply/dispense",
+    { preHandler: authenticated },
+    dispenseSupply
+  );
+  fastify.get("/supply/category", { preHandler: authenticated }, categories);
+  fastify.get(
+    "/supply/dispense/transactions",
+    { preHandler: authenticated },
+    supplyDispenseTransaction
+  );
+  fastify.get(
+    "/supply/timebase",
+    { preHandler: authenticated },
+    supplyTimeBaseReport
+  );
+  fastify.delete(
+    "/supply/delete-item",
+    { preHandler: authenticated },
+    removeStockInList
+  );
+  fastify.get(
+    "/supply/dispense/transaction/info",
+    { preHandler: authenticated },
+    supplyTransactionInfo
+  );
+  fastify.get(
+    "/supply/user/dispense/record",
+    { preHandler: authenticated },
+    userSupplyDispenseRecords
+  );
+  fastify.get(
+    "/supply/unit/dispense/record",
+    { preHandler: authenticated },
+    unitSupplyDispenseRecords
   );
 };

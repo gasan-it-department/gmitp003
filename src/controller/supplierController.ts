@@ -8,17 +8,26 @@ export const getSuppliers = async (req: FastifyRequest, res: FastifyReply) => {
   const params = req.query as PagingProps;
 
   if (!params.id) throw new ValidationError("BAD_REQUEST");
+  if (!params.query)
+    return res.code(200).send({ list: [], lastCursor: null, hasMore: false });
 
   try {
     const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
     const limit = params.limit
       ? parseInt(params.limit as unknown as string)
       : 10;
+
     const response = await prisma.supplier.findMany({
       take: limit,
       skip: cursor ? 1 : 0,
       cursor: cursor,
       orderBy: { id: "asc" },
+      where: {
+        name: {
+          contains: params.query,
+          mode: "insensitive",
+        },
+      },
     });
 
     const newLastCursorId =
