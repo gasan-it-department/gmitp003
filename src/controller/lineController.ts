@@ -25,20 +25,86 @@ export const createLine = async (req: FastifyRequest, res: FastifyReply) => {
         .code(400)
         .send({ message: "Line with this name already exists" });
     }
-    const [province, municipal, barangay] = await Promise.all([
+    const [province, municipal, barangay, region] = await Promise.all([
       getAreaData(body.provinceId, 0),
       getAreaData(body.municipalId, 1),
       getAreaData(body.barangayId, 2),
+      getAreaData(body.regionId, 3),
     ]);
 
+    if (!province || !municipal || !barangay || !region) {
+      throw new ValidationError("INVALID AREA");
+    }
+
     const response = await prisma.$transaction(async (tx) => {
+      let checkBarangay = await tx.barangay.findUnique({
+        where: {
+          id: barangay.code,
+        },
+      });
+
+      let checkMunicipal = await tx.municipal.findUnique({
+        where: {
+          id: municipal.code,
+        },
+      });
+
+      let checkProvince = await tx.province.findUnique({
+        where: {
+          id: province.code,
+        },
+      });
+
+      let checkRegion = await tx.region.findUnique({
+        where: {
+          id: region.code,
+        },
+      });
+
+      if (!checkProvince) {
+        checkProvince = await tx.province.create({
+          data: {
+            id: province.code,
+            name: province.name,
+          },
+        });
+      }
+
+      if (!checkMunicipal) {
+        checkMunicipal = await tx.municipal.create({
+          data: {
+            id: municipal.code,
+            name: municipal.name,
+            provinceId: province.code,
+          },
+        });
+      }
+      if (!checkBarangay) {
+        checkBarangay = await tx.barangay.create({
+          data: {
+            id: barangay.code,
+            name: barangay.name,
+            municipalId: municipal.code,
+          },
+        });
+      }
+
+      if (!checkRegion) {
+        checkRegion = await tx.region.create({
+          data: {
+            id: region.code,
+            name: region.name,
+          },
+        });
+      }
+
       const newLine = await prisma.line.create({
         data: {
           name: body.name,
-          barangayId: body.barangayId,
-          municipalId: body.municipalId,
-          provinceId: body.provinceId,
-          regionId: body.regionId,
+          barangayId: checkBarangay.id,
+          municipalId: checkMunicipal.id,
+          provinceId: checkProvince.id,
+          regionId: checkRegion.id,
         },
       });
 

@@ -377,6 +377,7 @@ export const getAreaData = async (code: string, area: number) => {
     `https://psgc.gitlab.io/api/provinces/${code}/`,
     `https://psgc.gitlab.io/api/municipalities/${code}/`,
     `https://psgc.gitlab.io/api/barangays/${code}/`,
+    `https://psgc.gitlab.io/api/regions/${code}/`,
   ];
 
   try {
