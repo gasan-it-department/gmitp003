@@ -68,7 +68,7 @@ export const inventories = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const createInventory = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   try {
     const body = req.body as {
@@ -123,7 +123,7 @@ export const createInventory = async (
 
 export const viewContainerAuth = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.query as { id: string; userId: string };
   console.log("Containers: ", { params });
@@ -136,7 +136,7 @@ export const viewContainerAuth = async (
       const checkPrev = await tx.module.findFirst({
         where: {
           userId: params.userId,
-          moduleName: "container",
+          moduleName: "supplies",
         },
       });
 
@@ -164,6 +164,8 @@ export const viewContainerAuth = async (
       return data;
     });
 
+    console.log({ response });
+
     if (!response) {
       throw new NotFoundError("DATA NOT FOUND!");
     }
@@ -179,7 +181,7 @@ export const viewContainerAuth = async (
 
 export const inventoryLogsAccessList = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   try {
     const { id, lastCursor, limit, query } = req.query as PagingProps;
@@ -295,7 +297,7 @@ export const inventoryLogs = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const removeContainer = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   try {
     const { id, userId } = req.query as { id: string; userId: string };
@@ -330,7 +332,7 @@ export const removeContainer = async (
 
       if (items > 0 || stocks > 0 || dispensedLogs > 0 || recievedItems > 0) {
         throw new ValidationError(
-          "CANNOT DELETE CONTAINER WITH EXISTING RECORDS"
+          "CANNOT DELETE CONTAINER WITH EXISTING RECORDS",
         );
       }
       // const lists = await tx.

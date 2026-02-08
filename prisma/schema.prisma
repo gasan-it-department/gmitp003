@@ -18,9 +18,12 @@ model Line {
   provinceId              String
   regionId                String
   createdAt               DateTime                  @default(now())
-  status                  Int                       @default(1)
+  status                  Int                       @default(1) // 0 - deactivate or freeze, 1 - active, 2 - maintainance, 3- suspend
   adminProfileId          String?
   password                String?
+  hrmo                    User?                     @relation(name: "hrmo", fields: [userId], references: [id])
+  hrmoTelePhone           String?
+  hrmoEmail               String?
   Account                 Account[]
   Announcement            Announcement[]
   applications            Application[]
@@ -64,6 +67,17 @@ model Line {
   activityLogs            ActivityLogs[]
   receivingRooms          ReceivingRoom[]
   roomRegistrations       RoomRegistration[]
+  userId                  String?                   @unique
+  fillPositionInvitations FillPositionInvitation[]
+}
+
+model AdminLogs {
+  id        String   @id @default(uuid())
+  admin     Admin    @relation(fields: [adminId], references: [id])
+  adminId   String
+  action    Int      @default(0) // 0 - Add, 1 - Update, 2 - Remove
+  desc      String?
+  timestamp DateTime @default(now())
 }
 
 model ActivityLogs {
@@ -375,7 +389,7 @@ model SupplyOrder {
   supplierId              String?                @unique
   brand                   SupplyBrand[]
   supplier                Supplier?              @relation(fields: [supplierId], references: [id])
-  supply                  Supplies               @relation(fields: [suppliesId], references: [id])
+  supply                  Supplies               @relation(fields: [suppliesId], references: [id], onDelete: Cascade)
   SupplyBatchOrder        SupplyBatchOrder?      @relation(fields: [supplyBatchOrderId], references: [id])
   SupplyOrderItemReturn   SupplyOrderItemReturn?
   SupplyOrderStatus       SupplyOrderStatus[]
@@ -424,7 +438,7 @@ model SuppliesDataSet {
   inventoryBoxId String
   supplies       Supplies[]
   container      InventoryBox      @relation(fields: [inventoryBoxId], references: [id], onDelete: Cascade)
-  line           Line              @relation(fields: [lineId], references: [id])
+  line           Line              @relation(fields: [lineId], references: [id], onDelete: Cascade)
   unit           SuppliesQuality[]
   list           SupplyBatch[]
 }
@@ -452,6 +466,11 @@ model SupplyPriceTrack {
 
 model SupplyStockTrack {
   id                   String                 @id @default(uuid())
+  address              String?
+  row                  String?
+  col                  String?
+  rack                 String?
+  container            String?
   stock                Int                    @default(0)
   quantity             Int                    @default(0)
   perQuantity          Int                    @default(0)
@@ -485,24 +504,24 @@ model SupplyCategory {
 }
 
 model SupplyDispenseRecord {
-  id                 String           @id @default(uuid())
+  id                 String            @id @default(uuid())
   userId             String?
   departmentId       String?
-  quantity           String           @default("0")
-  supplyStockTrackId String
-  desc               String?          @default("N/A")
-  timestamp          DateTime         @default(now())
-  remarks            String           @default("N/A")
-  supplyItem         Supplies?        @relation(fields: [suppliesId], references: [id])
-  unit               Department?      @relation(fields: [departmentId], references: [id])
-  supply             SupplyStockTrack @relation(fields: [supplyStockTrackId], references: [id], onDelete: Cascade)
-  user               User?            @relation(name: "supplyRecipeint", fields: [userId], references: [id], onDelete: Cascade)
+  quantity           String            @default("0")
+  supplyStockTrackId String?
+  desc               String?           @default("N/A")
+  timestamp          DateTime          @default(now())
+  remarks            String            @default("N/A")
+  supplyItem         Supplies?         @relation(fields: [suppliesId], references: [id])
+  unit               Department?       @relation(fields: [departmentId], references: [id])
+  supply             SupplyStockTrack? @relation(fields: [supplyStockTrackId], references: [id], onDelete: SetDefault)
+  user               User?             @relation(name: "supplyRecipeint", fields: [userId], references: [id], onDelete: SetDefault)
   suppliesId         String?
-  dispensary         User?            @relation(name: "dispensary", fields: [dispensaryId], references: [id])
+  dispensary         User?             @relation(name: "dispensary", fields: [dispensaryId], references: [id])
   dispensaryId       String?
-  list               SupplyBatch?     @relation(fields: [supplyBatchId], references: [id], onDelete: Cascade)
+  list               SupplyBatch?      @relation(fields: [supplyBatchId], references: [id], onDelete: Cascade)
   supplyBatchId      String?
-  containerId        InventoryBox?    @relation(fields: [inventoryBoxId], references: [id], onDelete: Cascade)
+  containerId        InventoryBox?     @relation(fields: [inventoryBoxId], references: [id], onDelete: Cascade)
   inventoryBoxId     String?
 }
 
@@ -540,7 +559,7 @@ model SupplieRecieveHistory {
   supplierId            String?
   list                  SupplyBatch?         @relation(fields: [supplyBatchId], references: [id], onDelete: Cascade)
   supplyBatchId         String?
-  inventoryBox          InventoryBox?        @relation(fields: [inventoryBoxId], references: [id])
+  inventoryBox          InventoryBox?        @relation(fields: [inventoryBoxId], references: [id], onDelete: Cascade)
   inventoryBoxId        String?
 }
 
@@ -679,7 +698,7 @@ model SubmittedApplication {
   otherInfo               Json[]
   references              Json[]
   govId                   Json
-  status                  Int                       @default(0)
+  status                  Int                       @default(0) // 0 - submitted, 1 - viewed, 2 - concluded,  
   lineId                  String
   applicationProfilePicId String?                   @unique
   timestamp               DateTime                  @default(now())
@@ -738,6 +757,25 @@ model SubmittedApplication {
   jobPostId               String?
   unitPos                 UnitPosition?             @relation(fields: [unitPositionId], references: [id])
   unitPositionId          String?
+  fillPositionInvitations FillPositionInvitation?
+}
+
+model FillPositionInvitation {
+  id                     String                @id @default(uuid())
+  step                   Int                   @default(0)
+  line                   Line                  @relation(fields: [lineId], references: [id])
+  email                  String
+  message                String?
+  concluded              Boolean               @default(false)
+  unitPoistion           UnitPosition          @relation(fields: [unitPositionId], references: [id])
+  slot                   PositionSlot?         @relation(fields: [positionSlotId], references: [id])
+  concludedAt            DateTime?
+  timestamp              DateTime              @default(now())
+  unitPositionId         String
+  lineId                 String
+  positionSlotId         String?
+  applcation             SubmittedApplication? @relation(fields: [submittedApplicationId], references: [id])
+  submittedApplicationId String?               @unique
 }
 
 model ApplicationSkillTags {
@@ -827,7 +865,7 @@ model ApplicationConversation {
 
 model Department {
   id                   String                 @id @default(uuid())
-  name                 String                 @unique
+  name                 String?
   description          String?
   createdAt            DateTime               @default(now())
   headId               String?                @unique
@@ -865,9 +903,10 @@ model Group {
 }
 
 model Admin {
-  id       String @id @default(uuid())
-  username String
-  password String
+  id        String      @id @default(uuid())
+  username  String
+  password  String
+  adminLogs AdminLogs[]
 }
 
 model AdminProfile {
@@ -909,6 +948,7 @@ model Privilege {
 
 model User {
   id                               String                         @id @default(uuid())
+  active                           Int                            @default(1) // 0- inactive, 1 - Active, suspended
   email                            String
   createdAt                        DateTime                       @default(now())
   birthDate                        DateTime?
@@ -1019,6 +1059,7 @@ model User {
   roomRegistrationReceivers        RoomRegistrationReceiver[]
   RoomRegistrationConversationFrom RoomRegistrationConversation[] @relation("RoomRegistrationConversationFrom")
   roomRegistrationConversations    RoomRegistrationConversation[] @relation("RoomRegistrationConversationTo")
+  hrmoLin                          Line?                          @relation("hrmo")
 
   @@index([departmentId], map: "department_idx")
   @@index([firstName, lastName])
@@ -1082,10 +1123,10 @@ model Notification {
 
 model Position {
   id                   String                 @id @default(uuid())
-  name                 String                 @unique
+  name                 String
   description          String?
   createdAt            DateTime               @default(now())
-  itemNumber           String?                @unique
+  itemNumber           String?
   max                  Int                    @default(0)
   plantilla            Boolean                @default(false)
   salaryGradeId        String?
@@ -1104,35 +1145,37 @@ model Position {
 }
 
 model UnitPosition {
-  id                    String                 @id @default(uuid())
-  departmentId          String
-  positionId            String
-  designation           String?                @default("N/A")
-  timestamp             DateTime               @default(now())
-  lineId                String
-  fixToUnit             Boolean                @default(false)
-  itemNumber            String?                @default("N/A")
-  plantilla             Boolean                @default(false)
-  slot                  PositionSlot[]
-  unit                  Department             @relation(fields: [departmentId], references: [id], onDelete: Cascade)
-  line                  Line                   @relation(fields: [lineId], references: [id], onDelete: Cascade)
-  position              Position               @relation(fields: [positionId], references: [id], onDelete: Cascade)
-  jobPosts              JobPost[]
-  submittedApplications SubmittedApplication[]
+  id                      String                   @id @default(uuid())
+  departmentId            String
+  positionId              String
+  designation             String?                  @default("N/A")
+  timestamp               DateTime                 @default(now())
+  lineId                  String
+  fixToUnit               Boolean                  @default(false)
+  itemNumber              String?                  @default("N/A")
+  plantilla               Boolean                  @default(false)
+  slot                    PositionSlot[]
+  unit                    Department               @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  line                    Line                     @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  position                Position                 @relation(fields: [positionId], references: [id], onDelete: Cascade)
+  jobPosts                JobPost[]
+  submittedApplications   SubmittedApplication[]
+  fillPositionInvitations FillPositionInvitation[]
 }
 
 model PositionSlot {
-  id             String        @id @default(uuid())
-  positionId     String?
-  salaryGradeId  String?
-  userId         String?       @unique
-  occupied       Boolean       @default(false)
-  unitPositionId String?
-  designation    String?       @default("N/A")
-  pos            Position?     @relation(fields: [positionId], references: [id])
-  salaryGrade    SalaryGrade?  @relation(fields: [salaryGradeId], references: [id], onDelete: Cascade)
-  unitPosition   UnitPosition? @relation(fields: [unitPositionId], references: [id], onDelete: Cascade)
-  user           User?         @relation(fields: [userId], references: [id])
+  id                      String                   @id @default(uuid())
+  positionId              String?
+  salaryGradeId           String?
+  userId                  String?                  @unique
+  occupied                Boolean                  @default(false)
+  unitPositionId          String?
+  designation             String?                  @default("N/A")
+  pos                     Position?                @relation(fields: [positionId], references: [id])
+  salaryGrade             SalaryGrade?             @relation(fields: [salaryGradeId], references: [id], onDelete: Cascade)
+  unitPosition            UnitPosition?            @relation(fields: [unitPositionId], references: [id], onDelete: Cascade)
+  user                    User?                    @relation(fields: [userId], references: [id])
+  fillPositionInvitations FillPositionInvitation[]
 }
 
 model SalaryGrade {
@@ -1207,9 +1250,9 @@ model Announcement {
 
 model AnnouncementReaction {
   id             String       @id @default(uuid())
-  user           User?        @relation(fields: [userId], references: [id])
+  user           User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
   userId         String?
-  announcement   Announcement @relation(fields: [announcementId], references: [id])
+  announcement   Announcement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
   announcementId String
   reaction       Int          @default(0)
   timestamp      DateTime     @default(now())

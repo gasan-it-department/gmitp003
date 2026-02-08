@@ -118,21 +118,29 @@ export const addSupplyItem = async (req: FastifyRequest, res: FastifyReply) => {
       },
     });
 
-    if (checked) {
-      return res.code(400).send({ message: "Already Existed in Order list" });
-    }
     const code = await generateItemRef();
-    await prisma.$transaction([
-      prisma.supplyOrder.create({
-        data: {
-          desc: params.desc,
-          supplyBatchOrderId: params.orderId,
-          quantity: parseInt(params.quanlity, 10),
-          suppliesId: params.supplyId,
-          refNumber: code,
-        },
-      }),
-    ]);
+    const transaction = await prisma.$transaction(async (tx) => {
+      if (checked) {
+        const quantity = parseInt(params.quanlity, 10);
+        const total = checked.quantity;
+        await tx.supplyOrder.update({
+          where: { id: checked.id },
+          data: {
+            quantity: total + quantity,
+          },
+        });
+      } else {
+        await tx.supplyOrder.create({
+          data: {
+            desc: params.desc,
+            supplyBatchOrderId: params.orderId,
+            quantity: parseInt(params.quanlity, 10),
+            suppliesId: params.supplyId,
+            refNumber: code,
+          },
+        });
+      }
+    });
 
     return res.code(200).send({ message: "Success!" });
   } catch (error) {
@@ -142,7 +150,7 @@ export const addSupplyItem = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const removeOrderItem = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.query as DeleteOrderItemProps;
 
@@ -206,7 +214,7 @@ export const order = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const updateOrderItem = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const body = req.body as UpdateOrderItem;
 
@@ -379,11 +387,7 @@ export const fullFillOrder = async (req: FastifyRequest, res: FastifyReply) => {
       const status = item.status !== "OK" ? item.status : "OK";
       const existed = stocks.find((i) => i.suppliesId === item.suppliesId);
       const actualStock = item.perQuantity * item.receivedQuantity;
-      if (
-        existed &&
-        item.perQuantity === existed.perQuantity &&
-        item.quality === existed.quality
-      ) {
+      if (existed) {
         operations.push(
           prisma.supplyStockTrack.update({
             where: { id: existed.id },
@@ -400,7 +404,7 @@ export const fullFillOrder = async (req: FastifyRequest, res: FastifyReply) => {
               quantity: item.quantity,
               quality: item.quality,
             },
-          })
+          }),
         );
       } else {
         operations.push(
@@ -421,7 +425,7 @@ export const fullFillOrder = async (req: FastifyRequest, res: FastifyReply) => {
               quality: item.quality,
               desc: item.desc,
             },
-          })
+          }),
         );
       }
       operations.push(
@@ -456,10 +460,9 @@ export const fullFillOrder = async (req: FastifyRequest, res: FastifyReply) => {
             perQuantity: item.perQuantity,
             pricePerItem: item.price || 0.0,
             condition: item.condition,
-            supplyBatchId: order.lineId,
-            timestamp: "2025-08-14T07:38:01.125Z",
+            supplyBatchId: order.supplyBatchId,
           },
-        })
+        }),
       );
     });
 
@@ -644,7 +647,7 @@ export const saveItemOrder = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const purchaseRequest = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.query as PagingProps;
   console.log("Params: ", params);
@@ -743,7 +746,7 @@ export const purchaseRequest = async (
 
 export const purchaseRequestInfo = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.query as { id: string };
 
@@ -769,7 +772,7 @@ export const purchaseRequestInfo = async (
 
 export const purchaseRequestList = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.query as PagingProps;
   if (!params.id) throw new ValidationError("BAD_REQUEST");

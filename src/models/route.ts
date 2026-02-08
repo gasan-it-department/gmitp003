@@ -444,3 +444,20 @@ export type PdfPage = {
   text: string;
   charCount: number;
 };
+
+export type LineUserRegister = {
+  firstname: string;
+  lastname: string;
+  username: string;
+  password: string;
+  teleNumber: string;
+  email: string;
+  lineId: string;
+  personalEmail: string;
+  personalPhoneNumber: string | undefined;
+  unitPosId: string;
+  sgId: string;
+  slotId?: string;
+  applicationId?: string;
+  linkId?: string;
+};

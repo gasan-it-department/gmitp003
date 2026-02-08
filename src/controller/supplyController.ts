@@ -141,7 +141,7 @@ export const newOrder = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const dispenseSupply = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const body = req.body as DispenseItemProps;
 
@@ -188,7 +188,7 @@ export const dispenseSupply = async (
     // Check if enough stock
     if (toDispense > currentStockPieces) {
       throw new ValidationError(
-        `Insufficient stock. Available: ${currentStockPieces}, Requested: ${toDispense}`
+        `Insufficient stock. Available: ${currentStockPieces}, Requested: ${toDispense}`,
       );
     }
 
@@ -336,7 +336,7 @@ export const dispenseSupply = async (
           throw new AppError(
             "FOREIGN_KEY_CONSTRAINT",
             400,
-            "Invalid reference"
+            "Invalid reference",
           );
         case "P2025":
           throw new AppError("RECORD_NOT_FOUND", 404, "Record not found");
@@ -522,7 +522,7 @@ export const dispenseItem = async (req: FastifyRequest, res: FastifyReply) => {
           throw new AppError(
             "FOREIGN_KEY_CONSTRAINT",
             400,
-            "Invalid reference"
+            "Invalid reference",
           );
         case "P2025":
           throw new AppError("RECORD_NOT_FOUND", 404, "Record not found");
@@ -635,7 +635,7 @@ export const supplyList = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const timebaseSupplyReport = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.query as PagingProps;
   if (!params.id) throw new ValidationError("BAD_REQUEST");
@@ -759,7 +759,7 @@ export const categories = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const supplyDispenseTransaction = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.query as PagingProps;
   if (!params.id) throw new ValidationError("INVALID REQUIRED ID");
@@ -930,7 +930,7 @@ export const supplyDispenseTransaction = async (
 
 export const supplyTimeBaseReport = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.query as PagingProps;
   console.log({ params });
@@ -965,7 +965,6 @@ export const supplyTimeBaseReport = async (
 
     console.log("Range: ", { years });
 
-    // Get yearStart: for "2025-2026" get 2026, for "2025" get 2025
     const yearStart = years.length > 1 ? years[years.length - 1] : years[0];
     const yearEnd = years.length > 1 ? years[years.length - 1] : years[0];
 
@@ -986,57 +985,12 @@ export const supplyTimeBaseReport = async (
       firstHalfStart: firstHalfStart.toISOString(),
       secondHalfEnd: secondHalfEnd.toISOString(),
       secondHalfStart: secondHalfStart.toISOString(),
-      yearStart: finalYearStart,
     });
 
     const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
     const limit = params.limit ? parseInt(params.limit) : 20;
 
-    const supplies = await prisma.supplyStockTrack.findMany({
-      where: {
-        supplyBatchId: params.id,
-      },
-      include: {
-        supply: {
-          select: {
-            id: true,
-            item: true,
-            SupplieRecieveHistory: {
-              where: {
-                supplyBatchId: params.id,
-              },
-              select: {
-                id: true,
-                perQuantity: true,
-                suppliesId: true,
-                pricePerItem: true,
-                quantity: true,
-                quality: true,
-                timestamp: true,
-              },
-              orderBy: {
-                timestamp: "asc",
-              },
-            },
-            supplyDispenseRecords: {
-              select: {
-                suppliesId: true,
-                quantity: true,
-                timestamp: true,
-              },
-            },
-            SuppliesDataSet: {
-              select: {
-                id: true,
-                title: true,
-              },
-            },
-          },
-        },
-      },
-    });
-
-    console.log(JSON.stringify(supplies, null, 2));
+    //console.log(JSON.stringify(supplies, null, 2));
 
     const response = await prisma.supplies.findMany({
       where: {
@@ -1085,9 +1039,8 @@ export const supplyTimeBaseReport = async (
       take: limit,
       cursor,
     });
-    console.log({ response });
 
-    // Group by suppliesDataSetId
+    console.log({ response });
 
     const processedData = response.map((item) => {
       console.log("Entry");
@@ -1105,7 +1058,7 @@ export const supplyTimeBaseReport = async (
           }
           return base;
         },
-        0
+        0,
       );
 
       const secondhalfRecieved = item.SupplieRecieveHistory.reduce(
@@ -1119,7 +1072,7 @@ export const supplyTimeBaseReport = async (
           }
           return base;
         },
-        0
+        0,
       );
 
       const firstHalfCost = item.SupplieRecieveHistory.reduce((base, acc) => {
@@ -1152,7 +1105,7 @@ export const supplyTimeBaseReport = async (
           }
           return base;
         },
-        0
+        0,
       );
 
       const secondHalfDispense = item.supplyDispenseRecords.reduce(
@@ -1166,7 +1119,7 @@ export const supplyTimeBaseReport = async (
           }
           return base;
         },
-        0
+        0,
       );
       const totalQuantity = firstHalfRecieved + secondhalfRecieved;
       const totalInsuance = firstHalfdispense + secondHalfDispense;
@@ -1220,7 +1173,7 @@ export const supplyTimeBaseReport = async (
 
 export const removeStockInList = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const body = req.query as {
     id: string;
@@ -1239,34 +1192,70 @@ export const removeStockInList = async (
     !body.listId ||
     !body.userId
   ) {
-    throw new ValidationError("INVALID REQUIRED ID");
+    throw new ValidationError("INVALID_REQUIRED_ID");
   }
 
   try {
-    // First, fetch the stock record outside of transaction
-    // to minimize transaction time
-    const stock = await prisma.supplyStockTrack.findUnique({
-      where: {
-        id: body.id,
-      },
-      select: {
-        id: true,
-        suppliesId: true,
-        quantity: true,
-        perQuantity: true,
-        quality: true,
-      },
-    });
+    // First, check if all required related records exist
+    const [stock, inventory, supplyBatch, line] = await Promise.all([
+      prisma.supplyStockTrack.findUnique({
+        where: { id: body.id },
+        select: {
+          id: true,
+          suppliesId: true,
+          quantity: true,
+          perQuantity: true,
+          quality: true,
+          // Add relation checks
+        },
+      }),
+      prisma.inventoryBox.findUnique({
+        where: { id: body.inventoryId },
+        select: { id: true },
+      }),
+      prisma.supplyBatch.findUnique({
+        where: { id: body.listId },
+        select: { id: true },
+      }),
+      prisma.line.findUnique({
+        where: { id: body.lineId },
+        select: { id: true },
+      }),
+    ]);
 
     if (!stock) {
       throw new ValidationError("STOCK_NOT_FOUND");
     }
+    if (!inventory) {
+      throw new ValidationError("INVENTORY_NOT_FOUND");
+    }
+    if (!supplyBatch) {
+      throw new ValidationError("SUPPLY_BATCH_NOT_FOUND");
+    }
+    if (!line) {
+      throw new ValidationError("LINE_NOT_FOUND");
+    }
 
-    // Execute transaction with timeout and optimized operations
+    // Execute transaction
     const response = await prisma.$transaction(
       async (tx) => {
+        // First, check if there are any dependent records that might cause null constraint
+        // This depends on your schema - adjust based on actual relations
+
+        // Option 1: If there are dependent records, handle them first
+        // Example: Clear or update related records before delete
+        // await tx.someRelatedModel.updateMany({
+        //   where: { supplyStockTrackId: body.id },
+        //   data: { supplyStockTrackId: null } // or another valid value
+        // });
+
+        // Option 2: Check if deletion is allowed
+        const canDelete = await tx.supplyStockTrack.findUnique({
+          where: { id: body.id },
+        });
+
         // Delete the stock record
-        await tx.supplyStockTrack.delete({
+        const deletedStock = await tx.supplyStockTrack.delete({
           where: {
             id: body.id,
           },
@@ -1279,21 +1268,29 @@ export const removeStockInList = async (
             supplyBatchId: body.listId,
             userId: body.userId,
             suppliesId: stock.suppliesId,
-            action: 3,
+            action: 3, // 0 - add, 1 - update, 3 - remove
             quantity: stock.quantity,
             perQuantity: stock.perQuantity,
             quality: stock.quality || "N/A",
             inventoryBoxId: body.inventoryId,
+            // If your schema requires linking to the deleted stock,
+            // you might need to store the ID differently or skip it
+            // supplyStockTrackId: body.id, // This might cause null constraint if NOT NULL
           },
-          select: { id: true }, // Only select what you need
+          select: { id: true },
         });
 
-        return { success: true, transactionId: transaction.id };
+        return {
+          success: true,
+          transactionId: transaction.id,
+          deletedStockId: deletedStock.id,
+        };
       },
       {
-        maxWait: 10000, // Maximum time to wait for transaction
-        timeout: 15000, // Increase timeout to 15 seconds
-      }
+        maxWait: 10000,
+        timeout: 15000,
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable, // Add isolation level
+      },
     );
 
     if (!response.success) {
@@ -1303,41 +1300,67 @@ export const removeStockInList = async (
     return res.code(200).send({
       message: "OK",
       transactionId: response.transactionId,
+      deletedStockId: response.deletedStockId,
     });
   } catch (error) {
     console.error("Error in Remove Item:", error);
 
-    // Handle specific transaction timeout
+    // Handle specific Prisma errors
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      if (error.code === "P2028") {
-        // Transaction timeout error code
-        console.error("Transaction timeout occurred");
-        throw new AppError(
-          "TRANSACTION_TIMEOUT",
-          408, // Request Timeout
-          "Transaction took too long to complete. Please try again with fewer operations."
-        );
+      switch (error.code) {
+        case "P2011":
+          console.error("Null constraint violation:", error.meta);
+          throw new AppError(
+            "DELETION_CONSTRAINT_VIOLATION",
+            400,
+            "Cannot delete this record due to database constraints. Please check related records.",
+          );
+        case "P2025":
+          console.error("Record not found for deletion:", error.meta);
+          throw new ValidationError("RECORD_NOT_FOUND_FOR_DELETION");
+        case "P2028":
+          console.error("Transaction timeout occurred");
+          throw new AppError(
+            "TRANSACTION_TIMEOUT",
+            408,
+            "Transaction took too long to complete. Please try again.",
+          );
+        case "P2003":
+          console.error("Foreign key constraint failed:", error.meta);
+          throw new AppError(
+            "FOREIGN_KEY_CONSTRAINT",
+            400,
+            "Cannot delete due to foreign key constraints.",
+          );
+        default:
+          console.error("Prisma error code:", error.code, error.meta);
+          throw new AppError(
+            "DB_CONNECTION_ERROR",
+            500,
+            "Database error occurred",
+          );
       }
-
-      console.error("Prisma error code:", error.code);
-      throw new AppError("DB_CONNECTION_ERROR", 500, "Database error occurred");
     }
 
     if (error instanceof ValidationError) {
       throw error;
     }
 
-    if (error instanceof Error) {
-      console.error("Error stack:", error.stack);
+    if (error instanceof AppError) {
+      throw error;
     }
 
+    console.error(
+      "Unexpected error stack:",
+      error instanceof Error ? error.stack : error,
+    );
     throw new AppError("INTERNAL_ERROR", 500, "An unexpected error occurred");
   }
 };
 
 export const supplyTransactionInfo = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const query = req.query as { id: string };
   console.log({ query });
@@ -1414,7 +1437,7 @@ export const supplyTransactionInfo = async (
 
 export const userSupplyDispenseRecords = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const query = req.query as PagingProps;
   console.log({ query });
@@ -1486,7 +1509,7 @@ export const userSupplyDispenseRecords = async (
 
 export const unitSupplyDispenseRecords = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const query = req.query as PagingProps;
   console.log("Unit: ", { query });

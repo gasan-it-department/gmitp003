@@ -7,7 +7,7 @@ import { AppError, ValidationError } from "../errors/errors";
 
 export const authController = async (
   request: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   try {
     const { username, password } = request.body as AuthUser;
@@ -48,28 +48,32 @@ export const authController = async (
     }
 
     const token = await res.jwtSign({ id: user.id, username: user.username });
-    // if (user.line?.status && user.line.status === 1) {
-    //   return res.code(200).send({
-    //     message: "Line must be freezed or removed",
-    //     error: 4,
-    //     data: {
-    //       username: user.username,
-    //       token: token,
-    //       id: user.id,
-    //     },
-    //   });
-    // }
-    // if (user.lineId === null) {
-    //   return res.code(200).send({
-    //     message: "User is not assigned to a line",
-    //     error: 3,
-    //     data: {
-    //       username: user.username,
-    //       token: token,
-    //       id: user.id,
-    //     },
-    //   });
-    // }
+    if (user.line && user.line.status === 0) {
+      console.log("Get");
+
+      return res.code(200).send({
+        message: "Line Deactivated",
+        error: 4,
+        data: {
+          username: user.username,
+          token: token,
+          id: user.id,
+        },
+      });
+    }
+    if (user.lineId === null) {
+      return res.code(200).send({
+        message: "User is not assigned to a line",
+        error: 3,
+        data: {
+          username: user.username,
+          token: token,
+          id: user.id,
+        },
+      });
+    }
+    console.log({ user });
+
     res.code(200).send({
       data: {
         username: user.username,
@@ -92,7 +96,7 @@ export const authController = async (
 
 export const registerController = async (
   request: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const data = request.body as AuthUser;
   console.log(data);

@@ -83,7 +83,7 @@ app.register(cors, {
   origin: [
     "http://localhost:5173",
     "https://gasanmarinduque.xyz",
-    "https://g671jwjj-5173.asse.devtunnels.ms",
+    "https://gxcgxlpr-5173.asse.devtunnels.ms",
   ], // Allow all origins
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH"], // Allowed HTTP methods
   allowedHeaders: [

@@ -6,7 +6,6 @@ import { PagingProps } from "../models/route";
 
 export const groupList = async (req: FastifyRequest, res: FastifyReply) => {
   const params = req.query as PagingProps;
-  console.log("Params", params);
 
   if (!params.id) throw new ValidationError("INVALID_REQUEST");
   try {
@@ -30,6 +29,13 @@ export const groupList = async (req: FastifyRequest, res: FastifyReply) => {
       take: limit,
       cursor: cursor,
       skip: cursor ? 1 : 0,
+      include: {
+        _count: {
+          select: {
+            users: true,
+          },
+        },
+      },
     });
 
     const newLastCursorId =
@@ -60,8 +66,14 @@ export const createGroup = async (req: FastifyRequest, res: FastifyReply) => {
       throw new ValidationError("INVALID_REQUEST");
     }
 
-    const existingGroup = await prisma.department.findUnique({
-      where: { name: body.title, lineId: body.lineId },
+    const existingGroup = await prisma.department.findFirst({
+      where: {
+        name: {
+          contains: body.title,
+          mode: "insensitive",
+        },
+        lineId: body.lineId,
+      },
     });
 
     if (existingGroup) {

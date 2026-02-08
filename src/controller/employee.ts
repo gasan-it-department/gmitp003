@@ -182,7 +182,6 @@ export const searchUser = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const employees = async (req: FastifyRequest, res: FastifyReply) => {
   const params = req.query as PagingProps;
-  console.log({ params });
 
   if (!params.id) throw new ValidationError("BAD_REQUEST");
 
@@ -256,6 +255,12 @@ export const employees = async (req: FastifyRequest, res: FastifyReply) => {
             },
           },
         },
+        department: {
+          select: {
+            name: true,
+            id: true,
+          },
+        },
       },
     });
 
@@ -325,7 +330,6 @@ export const decryptUserData = async (
   res: FastifyReply,
 ) => {
   const params = req.query as { userProfileId: string };
-  console.log("User Prof: ", { params });
 
   if (!params.userProfileId) throw new ValidationError("INVALID REQUIRED ID");
 
@@ -346,6 +350,13 @@ export const decryptUserData = async (
             status: true,
           },
         },
+        department: {
+          select: {
+            name: true,
+          },
+        },
+        email: true,
+        emailIv: true,
         submittedApplications: {
           select: {
             firstname: true,
@@ -445,6 +456,7 @@ export const decryptUserData = async (
       modules: targetUser.modules,
       firstName: targetUser.firstName,
       lastName: targetUser.lastName,
+      department: targetUser.department,
     };
 
     // Decrypt submitted application if it exists
@@ -518,19 +530,10 @@ export const decryptUserData = async (
         targetUser.submittedApplications.resProvinceIv,
       );
 
-      console.log({
-        permaBarangayCode,
-        permaMunicipalCode,
-        permaProvinceCode,
-        resBarangayCode,
-        resMuicipalCode,
-        resProvinceCode,
-      });
-
       // Decrypt each field and assign to decryptedApplication
       decryptedApplication.email = await decryptField(
-        application.email,
-        application.emailIv,
+        targetUser.email,
+        targetUser.emailIv,
       );
       decryptedApplication.birthDate = await decryptField(
         application.birthDate,
@@ -635,8 +638,6 @@ export const decryptUserData = async (
 
     return res.code(200).send(decryptedUser);
   } catch (error) {
-    console.log(error);
-
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DATABASE_CONNECTION_ERROR", 500, "DB_FAILED");
     }

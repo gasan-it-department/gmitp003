@@ -5,6 +5,8 @@ import { AppError, NotFoundError, ValidationError } from "../errors/errors";
 
 export const personnelList = async (req: FastifyRequest, res: FastifyReply) => {
   const { lastCursor, query, limit, id } = req.query as PagingProps;
+  console.log({ id });
+
   if (!id) throw new ValidationError("INVALID_REQUEST");
   try {
     const cursor = lastCursor ? { id: lastCursor } : undefined;
@@ -19,7 +21,19 @@ export const personnelList = async (req: FastifyRequest, res: FastifyReply) => {
       orderBy: {
         lastName: "asc",
       },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        middleName: true,
+        Position: {
+          select: {
+            name: true,
+          },
+        },
+      },
     });
+    console.log({ response });
 
     const newLastCursorId =
       response.length > 0 ? response[response.length - 1].id : null;

@@ -4,11 +4,11 @@ import { NewAnnouncement, PagingProps } from "../models/route";
 import { AppError, NotFoundError, ValidationError } from "../errors/errors";
 import { EncryptionService } from "../service/encryption";
 import { announcementStatus } from "../utils/helper";
+import { sendEmail } from "../middleware/handler";
 //
 
 export const announcements = async (req: FastifyRequest, res: FastifyReply) => {
   const params = req.query as PagingProps;
-  console.log({ params });
 
   if (!params.id) throw new ValidationError("INVALID REQUIRED ID");
 
@@ -60,7 +60,7 @@ export const announcements = async (req: FastifyRequest, res: FastifyReply) => {
             } catch (decryptError) {
               console.error(
                 `Failed to decrypt title for announcement ${id}:`,
-                decryptError
+                decryptError,
               );
               decryptedTitle = "[Encrypted - Decryption Failed]";
             }
@@ -70,12 +70,12 @@ export const announcements = async (req: FastifyRequest, res: FastifyReply) => {
             try {
               decryptedContent = await EncryptionService.decrypt(
                 content,
-                contentIv
+                contentIv,
               );
             } catch (decryptError) {
               console.error(
                 `Failed to decrypt title for announcement ${id}:`,
-                decryptError
+                decryptError,
               );
               decryptedContent = "[Encrypted - Decryption Failed]";
             }
@@ -97,7 +97,7 @@ export const announcements = async (req: FastifyRequest, res: FastifyReply) => {
             status: item.status,
           };
         }
-      })
+      }),
     );
 
     // Get cursor for pagination
@@ -115,8 +115,6 @@ export const announcements = async (req: FastifyRequest, res: FastifyReply) => {
       hasMore,
     });
   } catch (error) {
-    console.error("Error in announcements endpoint:", error);
-
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
     }
@@ -128,13 +126,13 @@ export const announcements = async (req: FastifyRequest, res: FastifyReply) => {
     throw new AppError(
       "ANNOUNCEMENTS_FETCH_FAILED",
       500,
-      "Failed to fetch announcements"
+      "Failed to fetch announcements",
     );
   }
 };
 export const createNewAnnouncement = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const body = req.body as NewAnnouncement;
 
@@ -167,10 +165,9 @@ export const createNewAnnouncement = async (
 
 export const announcementData = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.query as { id: string; userId: string };
-  console.log({ params });
 
   if (!params.id || !params.userId)
     throw new ValidationError("INVALID REQUIRED ID");
@@ -252,7 +249,7 @@ export const announcementData = async (
 
 export const publishAnnouncement = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const body = req.body as {
     id: string;
@@ -260,6 +257,7 @@ export const publishAnnouncement = async (
     content: string;
     authorId: string;
     lineId: string;
+    status: number;
   };
   console.log({ body });
 
@@ -278,13 +276,22 @@ export const publishAnnouncement = async (
     if (!title || !content) {
       throw new ValidationError("FAILED ENCRYPTION");
     }
+    const sent: string[] = [];
+    const fail: string[] = [];
+
     const response = await prisma.$transaction(async (tx) => {
+      // const users = await tx.user.findMany({
+      //   where: {
+      //     status: "",
+      //   },
+      // });
       const announcement = await tx.announcement.update({
         data: {
           title: title.encryptedData,
           titleIv: title.iv,
           content: content.encryptedData,
           contentIv: content.iv,
+          status: body.status,
         },
         where: {
           id: body.id,
@@ -318,7 +325,7 @@ export const publishAnnouncement = async (
 
 export const announcementUpdateStatus = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const body = req.body as {
     id: string;
@@ -365,7 +372,7 @@ export const announcementUpdateStatus = async (
 
 export const viewAnnouncement = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const body = req.body as { id: string; userId: string };
 
@@ -401,7 +408,7 @@ export const viewAnnouncement = async (
 
 export const markOkayAnnouncement = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.body as { id: string; userId: string };
   console.log("React: ", { params });
@@ -463,6 +470,57 @@ export const markOkayAnnouncement = async (
       data: response,
     });
   } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+export const removeAnnouncement = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as { id: string; lineId: string; userId: string };
+  console.log({ params });
+
+  if (!params.id || !params.lineId || !params.userId) {
+    throw new ValidationError("INVALID REQUIRED FIELD");
+  }
+  try {
+    const response = await prisma.$transaction(async (tx) => {
+      const announcement = await tx.announcement.delete({
+        where: {
+          id: params.id,
+        },
+      });
+
+      const decryptedAnnouncement = announcement.titleIv
+        ? await EncryptionService.decrypt(
+            announcement.title,
+            announcement.titleIv,
+          )
+        : undefined;
+
+      await tx.humanResourcesLogs.create({
+        data: {
+          lineId: params.lineId,
+          userId: params.userId,
+          action: "REMOVE",
+          desc: `REMOVE ANNOUNCEMENT: ${decryptedAnnouncement || "Unknown"}`,
+        },
+      });
+      return true;
+    });
+
+    if (!response) {
+      throw new ValidationError("TRANSACTION FAILED");
+    }
+
+    return res.code(200).send({ message: "OK" });
+  } catch (error) {
+    console.log(error);
+
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
     }

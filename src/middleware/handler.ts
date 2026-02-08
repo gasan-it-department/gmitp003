@@ -7,7 +7,7 @@ import axios from "axios";
 
 export const tempAuthenticated = async (
   request: FastifyRequest,
-  reply: FastifyReply
+  reply: FastifyReply,
 ) => {
   try {
     const authHeader = request.headers.authorization;
@@ -44,7 +44,7 @@ export const tempAuthenticated = async (
 
 export const adminAuthenticated = async (
   request: FastifyRequest,
-  reply: FastifyReply
+  reply: FastifyReply,
 ) => {
   try {
     const authHeader = request.headers.authorization;
@@ -81,7 +81,7 @@ export const adminAuthenticated = async (
 
 export const authenticated = async (
   request: FastifyRequest,
-  reply: FastifyReply
+  reply: FastifyReply,
 ) => {
   try {
     const authHeader = request.headers.authorization;
@@ -99,9 +99,21 @@ export const authenticated = async (
       where: {
         id: decoded.id,
       },
+      select: {
+        id: true,
+        line: {
+          select: {
+            status: true,
+          },
+        },
+      },
     });
     if (!user) {
       throw new Error("User belonging to this token no longer exists");
+    }
+
+    if (user.line && user.line.status !== 1) {
+      throw new Error("Unauthorized line accessed");
     }
 
     request.user = user;
@@ -118,7 +130,7 @@ export const authenticated = async (
 
 export const medicineAccessAuth = async (
   request: FastifyRequest,
-  reply: FastifyReply
+  reply: FastifyReply,
 ) => {
   try {
     const params = request.query as {
@@ -174,7 +186,7 @@ export const generatedBoxCode = async () => {
 
 export const viewContainerAuth = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   try {
     const params = req.query as { id: string; userId: string };
@@ -316,7 +328,7 @@ export const sendEmail = async (
   sub: string,
   to: string,
   text: string,
-  title: string
+  title: string,
 ) => {
   try {
     console.log({ sub, text, to, title });
@@ -372,7 +384,7 @@ export const getAreaData = async (code: string, area: number) => {
 
     if (!response.ok) {
       console.warn(
-        `Failed to fetch area data for code ${code}, area ${area}: Status ${response.status}`
+        `Failed to fetch area data for code ${code}, area ${area}: Status ${response.status}`,
       );
       return null;
     }
@@ -389,7 +401,7 @@ export const getAreaData = async (code: string, area: number) => {
   } catch (error) {
     console.error(
       `Error fetching area data for code ${code}, area ${area}:`,
-      error
+      error,
     );
     return null;
   }
@@ -427,3 +439,5 @@ export const phNumberFormat = (number: string): string => {
   // If none of the above, return as is (or handle other cases)
   return cleaned;
 };
+
+export const lineStatus = ["Suspended", "Active", "Maintainance"];

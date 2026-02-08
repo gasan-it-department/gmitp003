@@ -43,7 +43,7 @@ export const itemExcelFile = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const dataSetSupplies = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   try {
     const body = req.body as { id: string };
@@ -110,11 +110,11 @@ export const dataSetSupplies = async (
     // Set proper headers
     res.header(
       "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     );
     res.header(
       "Content-Disposition",
-      "attachment; filename=SupporterReport.xlsx"
+      "attachment; filename=SupporterReport.xlsx",
     );
     res.header("Access-Control-Expose-Headers", "Content-Disposition");
 
@@ -179,7 +179,7 @@ export const dataSetSupplies = async (
 
 export const exportSupplyExcel = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.query as {
     id: string;
@@ -236,6 +236,12 @@ export const exportSupplyExcel = async (
     const firstHalfEnd = new Date(finalYearStart, 5, 30, 23, 59, 59, 999); // June 30
     const secondHalfStart = new Date(finalYearStart, 6, 1); // July 1
     const secondHalfEnd = new Date(finalYearStart, 11, 31, 23, 59, 59, 999); // December 31
+    console.log({
+      finalYearStart,
+      firstHalfEnd,
+      secondHalfEnd,
+      secondHalfStart,
+    });
 
     const [file, data] = await prisma.$transaction([
       prisma.supplytExcelExport.findUnique({
@@ -331,7 +337,7 @@ export const exportSupplyExcel = async (
             }
             return base;
           },
-          0
+          0,
         );
 
         const secondhalfRecieved = item.SupplieRecieveHistory.reduce(
@@ -344,7 +350,7 @@ export const exportSupplyExcel = async (
             }
             return base;
           },
-          0
+          0,
         );
 
         const firstHalfCost = item.SupplieRecieveHistory.reduce((base, acc) => {
@@ -367,7 +373,7 @@ export const exportSupplyExcel = async (
             }
             return base;
           },
-          0
+          0,
         );
 
         const firstHalfdispense = item.supplyDispenseRecords.reduce(
@@ -381,7 +387,7 @@ export const exportSupplyExcel = async (
             }
             return base;
           },
-          0
+          0,
         );
 
         const secondHalfDispense = item.supplyDispenseRecords.reduce(
@@ -395,7 +401,7 @@ export const exportSupplyExcel = async (
             }
             return base;
           },
-          0
+          0,
         );
         const totalQuantity = firstHalfRecieved + secondhalfRecieved;
         const totalInsuance = firstHalfdispense + secondHalfDispense;
@@ -477,7 +483,7 @@ export const exportSupplyExcel = async (
             totalBalanceAmount: number;
           };
         }
-      >
+      >,
     );
 
     const groupedDataArray = Object.values(groupedData);
@@ -800,11 +806,11 @@ export const exportSupplyExcel = async (
     // Send back to user
     res.header(
       "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     );
     res.header(
       "Content-Disposition",
-      `attachment; filename="SupplyReport_${file?.file_name || "export"}.xlsx"`
+      `attachment; filename="SupplyReport_${file?.file_name || "export"}.xlsx"`,
     );
 
     return res.send(excelBuffer);
@@ -819,7 +825,7 @@ export const exportSupplyExcel = async (
 
 export const importUserSupplyRsiExcel = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.body as { id: string; itemIds: string[] };
 
@@ -896,7 +902,7 @@ export const importUserSupplyRsiExcel = async (
       throw new AppError(
         "FAILED_TO_FETCH_TEMPLATE",
         500,
-        `Failed to fetch Excel template: ${response.status} ${response.statusText}`
+        `Failed to fetch Excel template: ${response.status} ${response.statusText}`,
       );
     }
 
@@ -918,15 +924,14 @@ export const importUserSupplyRsiExcel = async (
     }
 
     console.log(
-      `Template loaded: ${worksheet.name}, Rows: ${worksheet.rowCount}`
+      `Template loaded: ${worksheet.name}, Rows: ${worksheet.rowCount}`,
     );
 
     // Modify ONLY cells C, G, H starting from row 9
     const startRow = 9;
     worksheet.getRow(6).getCell("A").value = "Recipient:";
-    worksheet
-      .getRow(6)
-      .getCell("B").value = `${user.firstName} ${user.lastName}`;
+    worksheet.getRow(6).getCell("B").value =
+      `${user.firstName} ${user.lastName}`;
     worksheet.getRow(6).getCell("A").value = "Recipient:";
     worksheet.getRow(5).getCell("B").value = `${
       user.department?.name || "N/A"
@@ -938,7 +943,7 @@ export const importUserSupplyRsiExcel = async (
       const row = worksheet.getRow(rowNumber);
 
       row.getCell("A").value = index + 1; // Serial number
-      row.getCell("B").value = item.supply.quality || "N/A";
+      row.getCell("B").value = item.supply?.quality || "N/A";
       // Column C: Item description
       const cellC = row.getCell("C");
       cellC.value = `${item.supplyItem?.item || "N/A"} - ${item.desc || "N/A"}`;
@@ -961,11 +966,11 @@ export const importUserSupplyRsiExcel = async (
     // Send the file
     res.header(
       "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     );
     res.header(
       "Content-Disposition",
-      `attachment; filename="RIS_2_${user.firstName}_${user.lastName}.xlsx"`
+      `attachment; filename="RIS_2_${user.firstName}_${user.lastName}.xlsx"`,
     );
 
     return res.send(excelBuffer);
@@ -983,14 +988,14 @@ export const importUserSupplyRsiExcel = async (
     throw new AppError(
       "UNKNOWN_ERROR",
       500,
-      error instanceof Error ? error.message : "An unknown error occurred"
+      error instanceof Error ? error.message : "An unknown error occurred",
     );
   }
 };
 
 export const importUnitSupplyRsiExcel = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.body as { id: string; itemIds: string[] };
 
@@ -1061,7 +1066,7 @@ export const importUnitSupplyRsiExcel = async (
       throw new AppError(
         "FAILED_TO_FETCH_TEMPLATE",
         500,
-        `Failed to fetch Excel template: ${response.status} ${response.statusText}`
+        `Failed to fetch Excel template: ${response.status} ${response.statusText}`,
       );
     }
 
@@ -1083,7 +1088,7 @@ export const importUnitSupplyRsiExcel = async (
     }
 
     console.log(
-      `Template loaded: ${worksheet.name}, Rows: ${worksheet.rowCount}`
+      `Template loaded: ${worksheet.name}, Rows: ${worksheet.rowCount}`,
     );
 
     // Modify ONLY cells C, G, H starting from row 9
@@ -1096,7 +1101,7 @@ export const importUnitSupplyRsiExcel = async (
       const row = worksheet.getRow(rowNumber);
 
       row.getCell("A").value = index + 1; // Serial number
-      row.getCell("B").value = item.supply.quality || "N/A";
+      row.getCell("B").value = item.supply?.quality || "N/A";
       // Column C: Item description
       const cellC = row.getCell("C");
       cellC.value = `${item.supplyItem?.item || "N/A"} - ${item.desc || "N/A"}`;
@@ -1119,11 +1124,11 @@ export const importUnitSupplyRsiExcel = async (
     // Send the file
     res.header(
       "Content-Type",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     );
     res.header(
       "Content-Disposition",
-      `attachment; filename="RIS_2_${unit.name}.xlsx"`
+      `attachment; filename="RIS_2_${unit.name}.xlsx"`,
     );
 
     return res.send(excelBuffer);
@@ -1139,7 +1144,7 @@ export const importUnitSupplyRsiExcel = async (
     throw new AppError(
       "UNKNOWN_ERROR",
       500,
-      error instanceof Error ? error.message : "An unknown error occurred"
+      error instanceof Error ? error.message : "An unknown error occurred",
     );
   }
 };

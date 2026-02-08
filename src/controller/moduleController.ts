@@ -3,6 +3,7 @@ import { prisma, Prisma } from "../barrel/prisma";
 import { PagingProps } from "../models/route";
 import { AppError, NotFoundError, ValidationError } from "../errors/errors";
 import { sendEmail } from "../middleware/handler";
+import { EncryptionService } from "../service/encryption";
 
 export const modules = async (req: FastifyRequest, res: FastifyReply) => {
   const params = req.query as { id: string; indexes: string }; // indexes is a string
@@ -23,11 +24,9 @@ export const modules = async (req: FastifyRequest, res: FastifyReply) => {
       },
       where: {
         lineId: params.id,
-        moduleIndex: {
-          in: indexes.map((index) => index),
-        },
       },
     });
+    console.log({ response });
 
     const modulesWithUserCount = response.map((module) => ({
       moduleIndex: module.moduleIndex,
@@ -133,7 +132,7 @@ export const moduleUsers = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const addModuleAccess = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const body = req.body as {
     userId: string;
@@ -182,8 +181,21 @@ export const addModuleAccess = async (
           firstName: true,
           lastName: true,
           Position: true,
+          email: true,
+          emailIv: true,
         },
       });
+
+      if (!currentUser) {
+        throw new ValidationError("CURRENT USER NOT FOUND");
+      }
+
+      const decryptedData = currentUser.emailIv
+        ? await EncryptionService.decrypt(
+            currentUser.email,
+            currentUser.emailIv,
+          )
+        : undefined;
 
       // Create module access
       const access = await tx.module.create({
@@ -207,7 +219,7 @@ export const addModuleAccess = async (
           } has granted you access to the ${
             body.module
           } module with ${getPrivilegeLevel(
-            body.privilege
+            body.privilege,
           )} privileges. You can now access this module from your dashboard.`,
           path: `${body.module}`,
         },
@@ -234,12 +246,14 @@ Best regards,
 System Administrator
       `;
 
-      await sendEmail(
-        emailSubject,
-        user.email,
-        emailContent,
-        "module-access-granted"
-      );
+      if (decryptedData) {
+        await sendEmail(
+          emailSubject,
+          decryptedData,
+          emailContent,
+          "module-access-granted",
+        );
+      }
 
       return "OK";
     });
@@ -270,7 +284,7 @@ function getPrivilegeLevel(privilege: number): string {
 
 export const userAccessModule = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.query as { userId: string };
   console.log({ params });
@@ -359,7 +373,7 @@ export const removeAccess = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const updateModuleAccess = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const body = req.body as {
     id: string;

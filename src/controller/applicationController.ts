@@ -1136,7 +1136,7 @@ Dear ${formData.firstName} ${formData.lastName},
           
           We will inform you of any further instructions regarding the next steps in the hiring process once your application has been reviewed.
           
-          You can check the status of your application by clicking this link: ${officialUrl}/public/application/${application.id}
+          You can check the status of your application by clicking this link: ${officialUrl}public/application/${application.id}
           
           Sincerely,
           The HR Team

@@ -8,42 +8,48 @@ import {
   announcementUpdateStatus,
   viewAnnouncement,
   markOkayAnnouncement,
+  removeAnnouncement,
 } from "../controller/announcementController";
 
 export const announcement = (fastify: FastifyInstance) => {
   fastify.get(
     "/announcement/list",
     { preHandler: authenticated },
-    announcements
+    announcements,
   );
   fastify.post(
     "/announcement/new",
     { preHandler: authenticated },
-    createNewAnnouncement
+    createNewAnnouncement,
   );
   fastify.get(
     "/announcement/data",
     { preHandler: authenticated },
-    announcementData
+    announcementData,
   );
   fastify.patch(
     "/announcement/publish",
     { preHandler: authenticated },
-    publishAnnouncement
+    publishAnnouncement,
   );
   fastify.patch(
     "/announcement/status/update",
     { preHandler: authenticated },
-    announcementUpdateStatus
+    announcementUpdateStatus,
   );
   fastify.patch(
     "/announcement/view-announcement",
     { preHandler: authenticated },
-    viewAnnouncement
+    viewAnnouncement,
   );
   fastify.patch(
     "/announcement/toogle-react",
     { preHandler: authenticated },
-    markOkayAnnouncement
+    markOkayAnnouncement,
+  );
+  fastify.delete(
+    "/announcement/delete",
+    { preHandler: authenticated },
+    removeAnnouncement,
   );
 };
