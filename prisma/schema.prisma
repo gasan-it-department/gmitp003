@@ -69,6 +69,22 @@ model Line {
   roomRegistrations       RoomRegistration[]
   userId                  String?                   @unique
   fillPositionInvitations FillPositionInvitation[]
+  lineInvitations         LineInvitation?
+}
+
+model LineInvitation {
+  id                     String                @id @default(uuid())
+  email                  String?
+  line                   Line?                 @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  lineId                 String?               @unique
+  status                 Int                   @default(0) // 0 - pending, 1 - concluded
+  application            SubmittedApplication? @relation(fields: [submittedApplicationId], references: [id])
+  timestamp              DateTime              @default(now())
+  submittedApplicationId String?               @unique
+  unitPosition           UnitPosition          @relation(fields: [unitPositionId], references: [id])
+  unitPositionId         String
+  posSlot                PositionSlot          @relation(fields: [positionSlotId], references: [id])
+  positionSlotId         String
 }
 
 model AdminLogs {
@@ -758,6 +774,7 @@ model SubmittedApplication {
   unitPos                 UnitPosition?             @relation(fields: [unitPositionId], references: [id])
   unitPositionId          String?
   fillPositionInvitations FillPositionInvitation?
+  lineInvitations         LineInvitation?
 }
 
 model FillPositionInvitation {
@@ -1114,11 +1131,11 @@ model Notification {
   content     String
   createdAt   DateTime @default(now())
   recipientId String
-  senderId    String
+  senderId    String?
   path        String?
   isRead      Boolean  @default(false)
   recipient   User     @relation("ReceivedNotifications", fields: [recipientId], references: [id], onDelete: Cascade)
-  sender      User     @relation("SentNotifications", fields: [senderId], references: [id], onDelete: Cascade)
+  sender      User?    @relation("SentNotifications", fields: [senderId], references: [id], onDelete: Cascade)
 }
 
 model Position {
@@ -1161,6 +1178,7 @@ model UnitPosition {
   jobPosts                JobPost[]
   submittedApplications   SubmittedApplication[]
   fillPositionInvitations FillPositionInvitation[]
+  lineInvitations         LineInvitation[]
 }
 
 model PositionSlot {
@@ -1176,6 +1194,7 @@ model PositionSlot {
   unitPosition            UnitPosition?            @relation(fields: [unitPositionId], references: [id], onDelete: Cascade)
   user                    User?                    @relation(fields: [userId], references: [id])
   fillPositionInvitations FillPositionInvitation[]
+  lineInvitations         LineInvitation[]
 }
 
 model SalaryGrade {

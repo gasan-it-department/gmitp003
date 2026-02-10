@@ -11,11 +11,9 @@ import { getAreaData, sendEmail } from "../middleware/handler";
 import { EncryptionService } from "../service/encryption";
 import { semaphoreKey } from "../class/Semaphore";
 import cloudinary from "../class/Cloundinary";
-import axios from "axios";
+
 import fs from "fs";
 import path from "path";
-
-const officialUrl = process.env.VITE_LOCAL_FRONTEND_URL;
 
 const frontEnd = process.env.VITE_LOCAL_FRONTEND_URL;
 export const positionList = async (req: FastifyRequest, res: FastifyReply) => {

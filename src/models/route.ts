@@ -460,4 +460,5 @@ export type LineUserRegister = {
   slotId?: string;
   applicationId?: string;
   linkId?: string;
+  lineInvitationId?: string;
 };

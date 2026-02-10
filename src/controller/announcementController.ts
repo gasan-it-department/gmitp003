@@ -527,3 +527,45 @@ export const removeAnnouncement = async (
     throw error;
   }
 };
+
+export const publicAnnouncement = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as PagingProps;
+
+  if (!params.id) {
+    throw new ValidationError("INVALID REQUIRED FIELD");
+  }
+
+  try {
+    const limit = params.limit ? parseInt(params.limit, 10) : 5;
+    const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
+
+    const response = await prisma.announcement.findMany({
+      where: {
+        lineId: params.id,
+        status: 1,
+      },
+      take: limit,
+      cursor,
+      skip: cursor ? 1 : 0,
+      orderBy: {
+        createdAt: "desc",
+      },
+    });
+
+    const newLastCursorId =
+      response.length > 0 ? response[response.length - 1].id : null;
+    const hasMore = limit === response.length;
+
+    return res
+      .code(200)
+      .send({ list: response, lastCursor: newLastCursorId, hasMore });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};

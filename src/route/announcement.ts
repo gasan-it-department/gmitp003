@@ -9,6 +9,7 @@ import {
   viewAnnouncement,
   markOkayAnnouncement,
   removeAnnouncement,
+  publicAnnouncement,
 } from "../controller/announcementController";
 
 export const announcement = (fastify: FastifyInstance) => {
@@ -51,5 +52,10 @@ export const announcement = (fastify: FastifyInstance) => {
     "/announcement/delete",
     { preHandler: authenticated },
     removeAnnouncement,
+  );
+  fastify.get(
+    "/announcement/public",
+    { preHandler: authenticated },
+    publicAnnouncement,
   );
 };

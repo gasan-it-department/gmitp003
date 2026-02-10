@@ -10,6 +10,8 @@ import {
   lineUpdateStatus,
   deleteLine,
   registerLine,
+  checkLineInvitation,
+  userDataRegister,
 } from "../controller/lineController";
 export const lineRoutes = async (fastify: FastifyInstance) => {
   fastify.post("/create-line", { preHandler: adminAuthenticated }, createLine);
@@ -31,4 +33,6 @@ export const lineRoutes = async (fastify: FastifyInstance) => {
     { preHandler: authenticated },
     backUpInventoryLineData,
   );
+  fastify.get("/line/invitation", checkLineInvitation);
+  fastify.post("/line/user/register", userDataRegister);
 };

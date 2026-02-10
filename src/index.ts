@@ -55,6 +55,7 @@ const io = new Server(server, {
       "http://localhost:5173",
       "https://gasanmarinduque.xyz",
       "https://g671jwjj-5173.asse.devtunnels.ms",
+      "https://lgu-portal.xyz",
     ],
     methods: ["GET", "POST"],
     credentials: true,
@@ -84,6 +85,7 @@ app.register(cors, {
     "http://localhost:5173",
     "https://gasanmarinduque.xyz",
     "https://gxcgxlpr-5173.asse.devtunnels.ms",
+    "https://lgu-portal.xyz",
   ], // Allow all origins
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH"], // Allowed HTTP methods
   allowedHeaders: [
