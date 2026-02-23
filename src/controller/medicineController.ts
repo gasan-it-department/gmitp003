@@ -3,7 +3,7 @@ import { prisma, Prisma } from "../barrel/prisma";
 import { AppError, NotFoundError, ValidationError } from "../errors/errors";
 
 //
-import fs from "fs";
+
 import path from "path";
 import ExcelJS from "exceljs";
 import XLSX from "xlsx";
@@ -15,7 +15,7 @@ import { getQuarter } from "../utils/date";
 
 export const medicineStorage = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.query as PagingProps;
 
@@ -52,7 +52,7 @@ export const medicineStorage = async (
 
 export const addMedicineStorage = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const body = req.body as {
     name: string;
@@ -143,7 +143,7 @@ export const medicineList = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const addMedFromExcel = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   try {
     // Check if the request is multipart
@@ -234,7 +234,7 @@ export const multiAddMed = async (req: FastifyRequest, res: FastifyReply) => {
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
       console.log(
-        `Processing chunk ${i + 1}/${chunks.length} with ${chunk.length} IDs`
+        `Processing chunk ${i + 1}/${chunks.length} with ${chunk.length} IDs`,
       );
 
       // Process the chunk (replace with your actual logic)
@@ -323,7 +323,7 @@ export const addStorageMed = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const medicineLogList = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.query as PagingProps;
 
@@ -462,7 +462,7 @@ export const storageMeds = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const addStorageMedInList = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const body = req.body as {
     medicineId: string;
@@ -524,7 +524,7 @@ export const addStorageMedInList = async (
 
       if (stock) {
         console.log(
-          "Found existing stock in the same storage with matching criteria"
+          "Found existing stock in the same storage with matching criteria",
         );
         const stockExpirationISO = stock.expiration
           ?.toISOString()
@@ -543,7 +543,7 @@ export const addStorageMedInList = async (
         console.log("Per unit equal?", body.perUnit === stock?.perQuantity);
         console.log(
           "Same storage?",
-          stock.medicineStorageId === body.storageId
+          stock.medicineStorageId === body.storageId,
         );
       } else {
         console.log("No matching stock found in this storage, creating new");
@@ -617,7 +617,7 @@ export const addStorageMedInList = async (
 };
 export const storageMedList = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.query as PagingProps;
 
@@ -677,7 +677,7 @@ export const storageMedList = async (
 
 export const newPrescriptionCount = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.query as { id: string };
   if (!params.id) throw new ValidationError("BAD_REQUEST");
@@ -700,7 +700,7 @@ export const newPrescriptionCount = async (
 
 export const medicineNotification = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.query as PagingProps;
 
@@ -739,7 +739,7 @@ export const medicineNotification = async (
 
 export const viewNotification = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.body as { id: string };
 
@@ -778,7 +778,7 @@ export const viewNotification = async (
 
 export const transferMedicine = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const body = req.body as {
     quantity: number;
@@ -847,7 +847,7 @@ export const transferMedicine = async (
       await tx.medicineLogs.create({
         data: {
           action: 2,
-          message: `Trasnfered ${stock.medicine.name} (${stock.medicine.serialNumber}) ${body.quantity} stock/s from ${from.name} to ${to.name}`,
+          message: `Trasnfered ${stock.medicine?.name || "Unknown Medicine"} (${stock.medicine?.serialNumber || "Unknown Medicine"}) ${body.quantity} stock/s from ${from.name} to ${to.name}`,
           userId: body.userId,
         },
       });
@@ -911,7 +911,7 @@ export const removeStock = async (req: FastifyRequest, res: FastifyReply) => {
         data: {
           action: 0,
           userId: body.userId,
-          message: `REMOVE: medicine - ${stock.medicine.name} (${stock.medicine.serialNumber}) from storage - ${stock.MedicineStorage?.name} (${stock.MedicineStorage?.refNumber})`,
+          message: `REMOVE: medicine - ${stock.medicine?.name || "Unknown Medicine"} (${stock.medicine?.serialNumber || "Unknown Serial Number"}) from storage - ${stock.MedicineStorage?.name || "Unknown Storage"} (${stock.MedicineStorage?.refNumber || "Unknown Reference Number"})`,
         },
       });
 
@@ -930,7 +930,7 @@ export const removeStock = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const updateMedicineStock = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.body as { id: string; quantity: number; userId: string };
 
@@ -958,7 +958,7 @@ export const updateMedicineStock = async (
       await tx.medicineLogs.create({
         data: {
           userId: params.userId,
-          message: `UPDAED: Added stock to medicine: ${stock.medicine.name} | Quantity: ${quantity}`,
+          message: `UPDAED: Added stock to medicine: ${stock.medicine?.name} | Quantity: ${quantity}`,
           action: 3,
         },
       });
@@ -979,7 +979,7 @@ export const updateMedicineStock = async (
 
 export const medicineTransactions = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.query as PagingProps;
 
@@ -1023,6 +1023,55 @@ export const medicineTransactions = async (
     return res
       .code(200)
       .send({ list: response, lastCursor: newLastCursorId, hasMore });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+export const removeMedicine = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as { id: string; userId: string };
+
+  if (!params.id || !params.userId) {
+    throw new ValidationError("INVALID REQUIRED ID");
+  }
+
+  try {
+    const response = await prisma.$transaction(async (tx) => {
+      const medicine = await tx.medicine.findUnique({
+        where: {
+          id: params.id,
+        },
+      });
+
+      if (!medicine) throw new NotFoundError("Medicine not found!");
+
+      await tx.medicine.delete({
+        where: {
+          id: params.id,
+        },
+      });
+
+      await tx.medicineLogs.create({
+        data: {
+          action: 0,
+          userId: params.userId,
+          message: `REMOVED MEDICINE - ${medicine.name}`,
+        },
+      });
+
+      return true;
+    });
+
+    if (!response) {
+      throw new ValidationError("TRANSACTION FAILED");
+    }
+    return res.code(200).send({ message: "OK" });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");

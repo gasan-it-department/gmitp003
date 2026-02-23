@@ -6,6 +6,10 @@ import {
   signatories,
   roomRegister,
   signatoryRegistry,
+  roomRequest,
+  updateStatus,
+  deleteRoomRequest,
+  roomRequestDetails,
 } from "../controller/documentController";
 
 export const document = (fastify: FastifyInstance) => {
@@ -20,5 +24,25 @@ export const document = (fastify: FastifyInstance) => {
     "/document/signatory-registry",
     { preHandler: authenticated },
     signatoryRegistry,
+  );
+  fastify.get(
+    "/document/room-request",
+    { preHandler: authenticated },
+    roomRequest,
+  );
+  fastify.patch(
+    "/document/update/status",
+    { preHandler: authenticated },
+    updateStatus,
+  );
+  fastify.delete(
+    "/document/request/delete",
+    { preHandler: authenticated },
+    deleteRoomRequest,
+  );
+  fastify.get(
+    "/document/details",
+    { preHandler: authenticated },
+    roomRequestDetails,
   );
 };

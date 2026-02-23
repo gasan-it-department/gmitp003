@@ -1,6 +1,5 @@
 // socket/notificationSocket.ts
 import { DefaultEventsMap, Server } from "socket.io";
-import { io } from "..";
 
 // Define types for better TypeScript support
 interface NotificationData {
@@ -17,7 +16,7 @@ export class NotificationSocket {
   private connectedUsers = new Map<string, string>();
 
   constructor(
-    io: Server<DefaultEventsMap, DefaultEventsMap, DefaultEventsMap, any>
+    io: Server<DefaultEventsMap, DefaultEventsMap, DefaultEventsMap, any>,
   ) {
     this.io = io;
     this.setupEventHandlers();
@@ -73,7 +72,7 @@ export class NotificationSocket {
         const userId = this.connectedUsers.get(socket.id);
         if (userId) {
           console.log(
-            `User ${userId} disconnected from notifications. Reason: ${reason}`
+            `User ${userId} disconnected from notifications. Reason: ${reason}`,
           );
           this.connectedUsers.delete(socket.id);
         } else {
@@ -91,7 +90,7 @@ export class NotificationSocket {
   // Method to send notification to specific user
   public sendToUser(
     userId: string,
-    notification: Omit<NotificationData, "id" | "createdAt">
+    notification: Omit<NotificationData, "id" | "createdAt">,
   ) {
     const fullNotification: NotificationData = {
       ...notification,
@@ -106,7 +105,7 @@ export class NotificationSocket {
   // Method to send notification to all users in a line
   public sendToLine(
     lineId: string,
-    notification: Omit<NotificationData, "id" | "createdAt">
+    notification: Omit<NotificationData, "id" | "createdAt">,
   ) {
     const fullNotification: NotificationData = {
       ...notification,
@@ -120,7 +119,7 @@ export class NotificationSocket {
 
   // Method to send notification to admin users
   public sendToAdmins(
-    notification: Omit<NotificationData, "id" | "createdAt">
+    notification: Omit<NotificationData, "id" | "createdAt">,
   ) {
     const fullNotification: NotificationData = {
       ...notification,

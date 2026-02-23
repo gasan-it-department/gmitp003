@@ -55,7 +55,7 @@ export const notifications = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const viewNotifcation = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const body = req.body as { id: string; userId: string };
 
@@ -73,6 +73,29 @@ export const viewNotifcation = async (
     });
 
     if (!response) throw new ValidationError("TRANSACTION FAILED");
+    return res.code(200).send({ message: "OK" });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_ERROR", 500, "DB_FAILED");
+    }
+    throw error;
+  }
+};
+
+export const markAsRead = async (req: FastifyRequest, res: FastifyReply) => {
+  const body = req.body as { id: string };
+
+  if (!body.id) throw new ValidationError("INVALID REQURIED ID");
+  try {
+    await prisma.notification.update({
+      where: {
+        id: body.id,
+      },
+      data: {
+        isRead: true,
+      },
+    });
+
     return res.code(200).send({ message: "OK" });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {

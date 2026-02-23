@@ -12,6 +12,10 @@ import {
   positionCheckInvitation,
   positionRegister,
   submitApplication,
+  positionRecords,
+  positionApplications,
+  unitPositionRecord,
+  removeUnitPosition,
 } from "../controller/positionController";
 import { positionListSchema, addPostionSchema } from "../models/request";
 export const position = (fastify: FastifyInstance) => {
@@ -42,4 +46,24 @@ export const position = (fastify: FastifyInstance) => {
   fastify.get("/position/check-invitation", positionCheckInvitation);
   fastify.post("/position/register", submitApplication);
   fastify.post("/position/account-register", positionRegister);
+  fastify.get(
+    "/position/records",
+    { preHandler: authenticated },
+    positionRecords,
+  );
+  fastify.get(
+    "/position/applications",
+    { preHandler: authenticated },
+    positionApplications,
+  );
+  fastify.get(
+    "/position/history",
+    { preHandler: authenticated },
+    unitPositionRecord,
+  );
+  fastify.delete(
+    "/position/remove",
+    { preHandler: authenticated },
+    removeUnitPosition,
+  );
 };

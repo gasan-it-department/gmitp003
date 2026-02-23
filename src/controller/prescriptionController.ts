@@ -22,7 +22,7 @@ export const prescriptions = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const createPrescriptions = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const body = req.body as PrescriptionProps;
   console.log(body);
@@ -107,7 +107,7 @@ export const createPrescriptions = async (
 
 export const prescriptionList = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.query as PagingProps;
 
@@ -168,7 +168,7 @@ export const prescriptionList = async (
 
 export const prescriptionData = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.query as { id: string };
 
@@ -239,7 +239,7 @@ export const prescriptionData = async (
 
 export const prescriptionPrescribeMed = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.query as PagingProps;
   if (!params.id) throw new ValidationError("BAD_REQUEST");
@@ -322,7 +322,7 @@ export const prescriptionPrescribeMed = async (
 
 export const prescriptionProgres = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.query as PagingProps;
   if (!params.id) throw new ValidationError("BAD_REQUEST");
@@ -360,7 +360,7 @@ export const prescriptionProgres = async (
 
 export const prescriptionDispense = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const body = req.body as PrescriptionDispenseProps;
   console.log("Request body:", body);
@@ -400,6 +400,13 @@ export const prescriptionDispense = async (
             in: stockIds,
           },
         },
+        include: {
+          MedicineStorage: {
+            select: {
+              id: true,
+            },
+          },
+        },
       });
       console.log("Log 3 - Medicine stocks found:", medicineStocks);
 
@@ -410,7 +417,7 @@ export const prescriptionDispense = async (
       console.log("Log 3.5 - Updating prescribeMedicine records");
       const totalStocks = Array.from(stocks.values()).reduce(
         (sum, value) => sum + parseInt(value, 10),
-        0
+        0,
       );
       await Promise.all(
         body.prescribeMed.map((item) =>
@@ -422,8 +429,8 @@ export const prescriptionDispense = async (
               releaseQuantity: totalStocks,
               remark: item.remark,
             },
-          })
-        )
+          }),
+        ),
       );
 
       const transaction = await tx.medicineTransaction.create({
@@ -438,14 +445,12 @@ export const prescriptionDispense = async (
       });
       console.log("Log 5 - Transaction created:", transaction.id);
 
-      // Process medicine stocks sequentially for better debugging
-
       for (let i = 0; i < medicineStocks.length; i++) {
         const item = medicineStocks[i];
 
         try {
           const toDispense = body.prescribeMed.find(
-            (med) => med.medId === item.medicineId
+            (med) => med.medId === item.medicineId,
           );
           console.log("Log 6 - To dispense:", toDispense);
 
@@ -466,7 +471,7 @@ export const prescriptionDispense = async (
             "ToRelease:",
             toRelease,
             "Loose: ",
-            currentStockPieces
+            currentStockPieces,
           );
 
           if (toRelease > currentStockPieces) {
@@ -511,15 +516,6 @@ export const prescriptionDispense = async (
 
           // Also calculate expected remaining pieces
           const expectedRemainingPieces = currentStockPieces - toRelease;
-
-          console.log("Remaining calculation:", {
-            remainingFullBoxes,
-            openedBoxRemainingPieces,
-            remainingPieces,
-            expectedRemainingPieces,
-            check: remainingPieces === expectedRemainingPieces,
-          });
-
           // For the update, we need to handle boxes correctly
           // If we have an opened box with remaining pieces, it counts as 1 box
           totalBoxesAfter =
@@ -543,14 +539,15 @@ export const prescriptionDispense = async (
             },
           });
 
-          // await tx.medicineTransactionItem.create({
-          //   data: {
-          //     medicineTransactionId: transaction.id,
-          //     prescribeQuantity: toDispense.prescribeQuantity,
-          //     releasedQuantity: toDispense.quantity,
-          //     precribeMedicineId: toDispense.medId,
-          //   },
-          // });
+          await tx.medicineTransactionItem.create({
+            data: {
+              medicineTransactionId: transaction.id,
+              prescribeQuantity: toDispense.prescribeQuantity,
+              releasedQuantity: toDispense.quantity,
+              precribeMedicineId: toDispense.medId,
+              medicineStorageId: item.MedicineStorage?.id,
+            },
+          });
         } catch (innerError) {
           throw innerError; // Re-throw to fail the transaction
         }
@@ -561,7 +558,7 @@ export const prescriptionDispense = async (
           status: 2,
           progress: {
             create: {
-              step: 1,
+              step: 4,
             },
           },
         },
@@ -609,7 +606,7 @@ export const prescriptionDispense = async (
 
 export const prescriptionProgress = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.query as PagingProps;
   console.log(params);
@@ -650,7 +647,7 @@ export const prescriptionProgress = async (
 
 export const prescriptionProgressUpdate = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const body = req.body as { id: string; userId: string; progress: number };
 
@@ -681,7 +678,7 @@ export const prescriptionProgressUpdate = async (
 
 export const prescribeTransaction = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.query as PagingProps;
   if (!params.id) throw new ValidationError("INVALID REQUIRED ID");

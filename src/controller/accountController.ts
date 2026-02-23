@@ -9,6 +9,7 @@ import { EncryptionService } from "../service/encryption";
 export const accountList = async (req: FastifyRequest, res: FastifyReply) => {
   try {
     const params = req.query as PagingProps;
+    console.log({ params });
 
     const filter: any = {};
     if (params.query) {
@@ -77,7 +78,7 @@ export const accountList = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const sendResetPasswordLink = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const body = req.body as {
     accountId: string;
@@ -141,7 +142,7 @@ export const sendResetPasswordLink = async (
       account.User.emailIv &&
       (await EncryptionService.decrypt(
         account.User.email,
-        account.User.emailIv
+        account.User.emailIv,
       ));
 
     if (!decryptedEmail) throw new ValidationError("FAILED TO SEND RESET LINK");
@@ -209,7 +210,7 @@ ${line.province.name}, Philippines
 
 export const resetUserPassword = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const body = req.body as {
     accountId: string;

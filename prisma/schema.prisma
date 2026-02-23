@@ -70,6 +70,8 @@ model Line {
   userId                  String?                   @unique
   fillPositionInvitations FillPositionInvitation[]
   lineInvitations         LineInvitation?
+  archiveDocuments        ArchiveDocument[]
+  documents               Document[]
 }
 
 model LineInvitation {
@@ -765,13 +767,13 @@ model SubmittedApplication {
   ApplicationSkillTags    ApplicationSkillTags[]
   otps                    OtpVerification[]
   profilePic              ApplicationProfilePic?    @relation(fields: [applicationProfilePicId], references: [id])
-  line                    Line                      @relation(fields: [lineId], references: [id])
+  line                    Line                      @relation(fields: [lineId], references: [id], onDelete: Cascade)
   forPosition             Position?                 @relation(fields: [positionId], references: [id])
-  user                    User?                     @relation(fields: [userId], references: [id])
+  user                    User?                     @relation(fields: [userId], references: [id], onDelete: Cascade)
   userId                  String?                   @unique
-  jobPost                 JobPost?                  @relation(fields: [jobPostId], references: [id])
+  jobPost                 JobPost?                  @relation(fields: [jobPostId], references: [id], onDelete: SetNull)
   jobPostId               String?
-  unitPos                 UnitPosition?             @relation(fields: [unitPositionId], references: [id])
+  unitPos                 UnitPosition?             @relation(fields: [unitPositionId], references: [id], onDelete: SetNull)
   unitPositionId          String?
   fillPositionInvitations FillPositionInvitation?
   lineInvitations         LineInvitation?
@@ -780,12 +782,12 @@ model SubmittedApplication {
 model FillPositionInvitation {
   id                     String                @id @default(uuid())
   step                   Int                   @default(0)
-  line                   Line                  @relation(fields: [lineId], references: [id])
+  line                   Line                  @relation(fields: [lineId], references: [id], onDelete: SetDefault)
   email                  String
   message                String?
   concluded              Boolean               @default(false)
   unitPoistion           UnitPosition          @relation(fields: [unitPositionId], references: [id])
-  slot                   PositionSlot?         @relation(fields: [positionSlotId], references: [id])
+  slot                   PositionSlot?         @relation(fields: [positionSlotId], references: [id], onDelete: SetDefault)
   concludedAt            DateTime?
   timestamp              DateTime              @default(now())
   unitPositionId         String
@@ -800,7 +802,7 @@ model ApplicationSkillTags {
   tags                   String?
   submittedApplicationId String
   timestamp              DateTime             @default(now())
-  applicant              SubmittedApplication @relation(fields: [submittedApplicationId], references: [id])
+  applicant              SubmittedApplication @relation(fields: [submittedApplicationId], references: [id], onDelete: Cascade)
 }
 
 model ApplicationAttachedFile {
@@ -812,7 +814,7 @@ model ApplicationAttachedFile {
   timestamp              DateTime              @default(now())
   submittedApplicationId String?
   file_url_Iv            String
-  SubmittedApplication   SubmittedApplication? @relation(fields: [submittedApplicationId], references: [id])
+  SubmittedApplication   SubmittedApplication? @relation(fields: [submittedApplicationId], references: [id], onDelete: Cascade)
 }
 
 model ApplicationProfilePic {
@@ -874,7 +876,7 @@ model ApplicationConversation {
   lineId                 String
   messageIv              String
   fromHr                 Boolean                 @default(true)
-  line                   Line                    @relation(fields: [lineId], references: [id])
+  line                   Line                    @relation(fields: [lineId], references: [id], onDelete: Cascade)
   applicant              SubmittedApplication    @relation(fields: [submittedApplicationId], references: [id])
   hrAdmin                User?                   @relation("hrAdminResponse", fields: [userId], references: [id])
   assets                 ApplicationConvoAsset[]
@@ -941,7 +943,7 @@ model Account {
   role              String             @default("user")
   status            Int                @default(1)
   lineId            String?
-  line              Line?              @relation(fields: [lineId], references: [id])
+  line              Line?              @relation(fields: [lineId], references: [id], onDelete: Cascade)
   User              User?
   accountResetLinks AccountResetLink[]
 }
@@ -1044,11 +1046,11 @@ model User {
   SupplyOrderStatus                SupplyOrderStatus[]
   transferTo                       TransferredSupplies[]          @relation("transferTo")
   TransferredSupplies              TransferredSupplies[]
-  account                          Account?                       @relation(fields: [accountId], references: [id])
-  barangay                         Barangay?                      @relation(fields: [barangayId], references: [id])
-  department                       Department?                    @relation("DepartmentMembers", fields: [departmentId], references: [id])
+  account                          Account?                       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  barangay                         Barangay?                      @relation(fields: [barangayId], references: [id], onDelete: Cascade)
+  department                       Department?                    @relation("DepartmentMembers", fields: [departmentId], references: [id], onDelete: SetNull)
   Group                            Group?                         @relation(fields: [groupId], references: [id])
-  line                             Line?                          @relation(fields: [lineId], references: [id])
+  line                             Line?                          @relation(fields: [lineId], references: [id], onDelete: Cascade)
   municipal                        Municipal?                     @relation(fields: [municipalId], references: [id])
   Position                         Position?                      @relation(fields: [positionId], references: [id])
   privilege                        Privilege?                     @relation(fields: [privilegeId], references: [id])
@@ -1077,6 +1079,7 @@ model User {
   RoomRegistrationConversationFrom RoomRegistrationConversation[] @relation("RoomRegistrationConversationFrom")
   roomRegistrationConversations    RoomRegistrationConversation[] @relation("RoomRegistrationConversationTo")
   hrmoLin                          Line?                          @relation("hrmo")
+  unitPositionHistories            UnitPositionHistory[]
 
   @@index([departmentId], map: "department_idx")
   @@index([firstName, lastName])
@@ -1088,9 +1091,9 @@ model Module {
   moduleName  String
   moduleIndex String
   privilege   Int
-  user        User   @relation(fields: [userId], references: [id])
+  user        User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   userId      String
-  line        Line   @relation(fields: [lineId], references: [id])
+  line        Line   @relation(fields: [lineId], references: [id], onDelete: Cascade)
   lineId      String
 }
 
@@ -1101,20 +1104,20 @@ model UserProfilePicture {
   file_type      String?
   file_public_id String
   file_url       String
-  user           User?    @relation(fields: [userId], references: [id])
+  user           User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
   timestamp      DateTime @default(now())
   userId         String?  @unique
 }
 
 model SalaryTransactionRecord {
   id        String   @id @default(uuid())
-  userId    String
+  userId    String?
   period    String
   periodIv  String
   timestamp DateTime @default(now())
   value     String
   valueIv   String
-  user      User     @relation(fields: [userId], references: [id])
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
 }
 
 model LogRecord {
@@ -1179,6 +1182,18 @@ model UnitPosition {
   submittedApplications   SubmittedApplication[]
   fillPositionInvitations FillPositionInvitation[]
   lineInvitations         LineInvitation[]
+  unitPositionHistories   UnitPositionHistory[]
+}
+
+model UnitPositionHistory {
+  id             String       @id @default(uuid())
+  unitPost       UnitPosition @relation(fields: [unitPositionId], references: [id])
+  unitPositionId String
+  slot           PositionSlot @relation(fields: [positionSlotId], references: [id])
+  positionSlotId String
+  user           User         @relation(fields: [userId], references: [id], onDelete: SetDefault)
+  timestamp      DateTime     @default(now())
+  userId         String
 }
 
 model PositionSlot {
@@ -1192,9 +1207,10 @@ model PositionSlot {
   pos                     Position?                @relation(fields: [positionId], references: [id])
   salaryGrade             SalaryGrade?             @relation(fields: [salaryGradeId], references: [id], onDelete: Cascade)
   unitPosition            UnitPosition?            @relation(fields: [unitPositionId], references: [id], onDelete: Cascade)
-  user                    User?                    @relation(fields: [userId], references: [id])
+  user                    User?                    @relation(fields: [userId], references: [id], onDelete: SetNull)
   fillPositionInvitations FillPositionInvitation[]
   lineInvitations         LineInvitation[]
+  unitPositionHistories   UnitPositionHistory[]
 }
 
 model SalaryGrade {
@@ -1220,7 +1236,7 @@ model HumanResourcesLogs {
   timestamp DateTime @default(now())
   tab       Int      @default(1)
   line      Line     @relation(fields: [lineId], references: [id], onDelete: Cascade)
-  user      User     @relation(fields: [userId], references: [id])
+  user      User     @relation(fields: [userId], references: [id], onDelete: SetDefault)
 }
 
 model SalaryGradeHistory {
@@ -1242,7 +1258,7 @@ model Leave {
   reason    String?
   status    String   @default("pending")
   createdAt DateTime @default(now())
-  user      User     @relation(fields: [userId], references: [id])
+  user      User     @relation(fields: [userId], references: [id], onDelete: SetDefault)
 }
 
 model Announcement {
@@ -1461,13 +1477,15 @@ model ReceivingRoom {
 }
 
 model RoomReceiver {
-  id              String         @id @default(uuid())
-  user            User?          @relation(fields: [userId], references: [id])
-  userId          String?        @unique
-  nickname        String?
-  receivingRoom   ReceivingRoom? @relation(fields: [receivingRoomId], references: [id], onDelete: Cascade)
-  receivingRoomId String?
-  type            Int            @default(0) // 0- secondary, 1- primary
+  id               String            @id @default(uuid())
+  user             User?             @relation(fields: [userId], references: [id])
+  userId           String?           @unique
+  nickname         String?
+  receivingRoom    ReceivingRoom?    @relation(fields: [receivingRoomId], references: [id], onDelete: Cascade)
+  receivingRoomId  String?
+  type             Int               @default(0) // 0- secondary, 1- primary
+  archiveDocuments ArchiveDocument[]
+  documents        Document[]
 }
 
 model Signatory {
@@ -1493,6 +1511,18 @@ model ReceivedMarkFile {
   receivingRooms ReceivingRoom?
 }
 
+model ArchiveDocument {
+  id             String        @id @default(uuid())
+  status         Int           @default(1) // 1- active
+  document       Document?     @relation(fields: [documentId], references: [id])
+  documentId     String?       @unique
+  line           Line?         @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  lineId         String?
+  room           RoomReceiver? @relation(fields: [roomReceiverId], references: [id], onDelete: SetNull)
+  timestamp      DateTime      @default(now())
+  roomReceiverId String?
+}
+
 model Document {
   id                   String              @id @default(uuid())
   type                 Int                 @default(0)
@@ -1506,6 +1536,11 @@ model Document {
   userId               String
   signatureQueueRoom   SignatureQueueRoom? @relation(fields: [signatureQueueRoomId], references: [id])
   signatureQueueRoomId String?
+  archiveDocuments     ArchiveDocument?
+  room                 RoomReceiver?       @relation(fields: [roomReceiverId], references: [id])
+  roomReceiverId       String?
+  line                 Line                @relation(fields: [lineId], references: [id])
+  lineId               String
 }
 
 model DocumentPage {
@@ -1678,19 +1713,20 @@ model MedicineAlert {
 }
 
 model MedicineStorage {
-  id                    String                  @id @default(uuid())
-  refNumber             String                  @unique
-  name                  String
-  desc                  String
-  timestamp             String
-  lineId                String
-  departmentId          String
-  status                Int                     @default(1)
-  stocks                MedicineStock[]
-  unit                  Department              @relation(fields: [departmentId], references: [id], onDelete: SetDefault)
-  line                  Line                    @relation(fields: [lineId], references: [id], onDelete: Cascade)
-  MedicineStorageAccess MedicineStorageAccess[]
-  MedicineTransaction   MedicineTransaction[]
+  id                       String                    @id @default(uuid())
+  refNumber                String                    @unique
+  name                     String
+  desc                     String
+  timestamp                String
+  lineId                   String
+  departmentId             String
+  status                   Int                       @default(1)
+  stocks                   MedicineStock[]
+  unit                     Department                @relation(fields: [departmentId], references: [id], onDelete: SetDefault)
+  line                     Line                      @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  MedicineStorageAccess    MedicineStorageAccess[]
+  MedicineTransaction      MedicineTransaction[]
+  medicineTransactionItems MedicineTransactionItem[]
 }
 
 model MedicineNotification {
@@ -1707,7 +1743,7 @@ model MedicineNotification {
   type         Int         @default(1)
   unit         Department? @relation(fields: [departmentId], references: [id])
   line         Line        @relation(fields: [lineId], references: [id], onDelete: Cascade)
-  user         User        @relation(fields: [userId], references: [id])
+  user         User        @relation(fields: [userId], references: [id], onDelete: SetDefault)
 }
 
 model MedicineStorageAccess {
@@ -1716,8 +1752,8 @@ model MedicineStorageAccess {
   previlege         Int             @default(0)
   userId            String
   timestamp         DateTime        @default(now())
-  medicineStorage   MedicineStorage @relation(fields: [medicineStorageId], references: [id])
-  user              User            @relation(fields: [userId], references: [id])
+  medicineStorage   MedicineStorage @relation(fields: [medicineStorageId], references: [id], onDelete: Cascade)
+  user              User            @relation(fields: [userId], references: [id], onDelete: SetDefault)
 }
 
 model MedicineLogs {
@@ -1728,7 +1764,7 @@ model MedicineLogs {
   userId    String
   lineId    String?
   line      Line?    @relation(fields: [lineId], references: [id], onDelete: Cascade)
-  user      User     @relation(fields: [userId], references: [id])
+  user      User     @relation(fields: [userId], references: [id], onDelete: SetDefault)
 }
 
 model Medicine {
@@ -1760,7 +1796,7 @@ model MedicineTransaction {
   action                  Int                       @default(0) // 0 - pending, 1 - 
   line                    Line                      @relation(fields: [lineId], references: [id], onDelete: Cascade)
   storage                 MedicineStorage?          @relation(fields: [medicineStorageId], references: [id])
-  prescription            Prescription?             @relation(fields: [prescriptionId], references: [id])
+  prescription            Prescription?             @relation(fields: [prescriptionId], references: [id], onDelete: SetDefault)
   user                    User?                     @relation(fields: [userId], references: [id], onDelete: Cascade)
   MedicineTransactionItem MedicineTransactionItem[]
 }
@@ -1772,7 +1808,9 @@ model MedicineTransactionItem {
   prescribeQuantity     Int                 @default(0)
   releasedQuantity      Int                 @default(0)
   presTranscription     MedicineTransaction @relation(fields: [medicineTransactionId], references: [id], onDelete: Cascade)
-  prescribeMed          PrecribeMedicine?   @relation(fields: [precribeMedicineId], references: [id])
+  prescribeMed          PrecribeMedicine?   @relation(fields: [precribeMedicineId], references: [id], onDelete: SetNull)
+  storage               MedicineStorage?    @relation(fields: [medicineStorageId], references: [id], onDelete: SetNull)
+  medicineStorageId     String?
 }
 
 model MedicineQuality {
@@ -1797,7 +1835,7 @@ model MedicineStock {
   quality            String               @default("box")
   quantity           Int                  @default(1)
   perQuantity        Int                  @default(1)
-  medicineId         String
+  medicineId         String?
   quarter            Int
   timestamp          DateTime             @default(now())
   expiration         DateTime?
@@ -1807,9 +1845,9 @@ model MedicineStock {
   threshold          Int                  @default(5)
   price              MedicinePriceTrack[]
   stock              MedicineQuality?
-  line               Line                 @relation(fields: [lineId], references: [id])
-  medicine           Medicine             @relation(fields: [medicineId], references: [id])
-  MedicineStorage    MedicineStorage?     @relation(fields: [medicineStorageId], references: [id])
+  line               Line                 @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  medicine           Medicine?            @relation(fields: [medicineId], references: [id], onDelete: Cascade)
+  MedicineStorage    MedicineStorage?     @relation(fields: [medicineStorageId], references: [id], onDelete: SetNull)
   medicineAlets      MedicineAlert[]
 }
 
@@ -1824,7 +1862,7 @@ model MedicineTrack {
 
 model MedicineReceivedRecords {
   id          String   @id @default(uuid())
-  medicine    Medicine @relation(fields: [medicineId], references: [id])
+  medicine    Medicine @relation(fields: [medicineId], references: [id], onDelete: Cascade)
   medicineId  String
   quantity    Int      @default(1)
   perQuantity Int      @default(1)

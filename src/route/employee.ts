@@ -12,6 +12,7 @@ import {
   decryptUserData,
   userModuleAccess,
   supsendAccount,
+  deleteUser,
 } from "../controller/employee";
 
 //models, interface
@@ -25,12 +26,13 @@ export const employee = (fastify: FastifyInstance) => {
   fastify.get(
     "/user/view-profile",
     { preHandler: authenticated },
-    viewUserProfile
+    viewUserProfile,
   );
   fastify.get(
     "/user/module-access",
     { preHandler: authenticated },
-    userModuleAccess
+    userModuleAccess,
   );
   fastify.patch("/user/suspend", { preHandler: authenticated }, supsendAccount);
+  fastify.delete("/user/delete", { preHandler: authenticated }, deleteUser);
 };

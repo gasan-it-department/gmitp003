@@ -255,6 +255,11 @@ export const employees = async (req: FastifyRequest, res: FastifyReply) => {
             },
           },
         },
+        Position: {
+          select: {
+            name: true,
+          },
+        },
         department: {
           select: {
             name: true,
@@ -272,8 +277,6 @@ export const employees = async (req: FastifyRequest, res: FastifyReply) => {
       .code(200)
       .send({ list: response, lastCursor: newLastCursorId, hasMore });
   } catch (error) {
-    console.log(error);
-
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DATABASE_CONNECTION_ERROR", 500, "DB_FAILED");
     }
@@ -739,6 +742,52 @@ export const userModuleAccess = async (
 
     return res.code(200).send({ message: "OK" });
   } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+export const deleteUser = async (req: FastifyRequest, res: FastifyReply) => {
+  const params = req.query as { id: string; userId: string; lineId: string };
+  console.log({ params });
+
+  if (!params.id || !params.lineId || !params.userId) {
+    throw new ValidationError("INVALID REQUIRED ID");
+  }
+
+  if (params.id === params.userId) {
+    throw new ValidationError("INVALID ID");
+  }
+
+  try {
+    const response = await prisma.$transaction(async (tx) => {
+      const account = await tx.account.delete({
+        where: {
+          id: params.id,
+        },
+      });
+
+      await tx.humanResourcesLogs.create({
+        data: {
+          userId: params.userId,
+          lineId: params.lineId,
+          action: "DELETE",
+          desc: `REMOVE USER: ${account.username} `,
+        },
+      });
+      return true;
+    });
+
+    if (!response) {
+      throw new ValidationError("TRANSACTION FAILED");
+    }
+
+    return res.code(200).send({ message: "OK" });
+  } catch (error) {
+    console.log(error);
+
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
     }

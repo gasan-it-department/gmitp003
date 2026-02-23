@@ -40,6 +40,7 @@ export const positionList = async (req: FastifyRequest, res: FastifyReply) => {
                 grade: true,
               },
             },
+            occupied: true,
           },
         },
         position: {
@@ -814,7 +815,6 @@ export const positionRegister = async (
           userId: true,
         },
       });
-      console.log({ slot });
 
       const application = await tx.submittedApplication.findUnique({
         where: {
@@ -1448,5 +1448,180 @@ export const submitApplication = async (
       message: "Failed to submit application",
       error: err instanceof Error ? err.message : "Unknown error",
     });
+  }
+};
+
+export const positionRecords = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as { id: string };
+
+  if (!params.id) {
+    throw new ValidationError("INVALID REQUIRED ID");
+  }
+  try {
+    const response = await prisma.unitPosition.findUnique({
+      where: {
+        id: params.id,
+      },
+      include: {
+        position: {
+          select: {
+            name: true,
+            id: true,
+          },
+        },
+        unit: {
+          select: {
+            name: true,
+          },
+        },
+        _count: {
+          select: {
+            slot: true,
+            submittedApplications: true,
+          },
+        },
+      },
+    });
+
+    if (!response) {
+      throw new NotFoundError("UNIT POSITION NOT FOUND");
+    }
+
+    return res.code(200).send(response);
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("Database operation failed", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+export const positionApplications = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as PagingProps;
+
+  if (!params.id) {
+    throw new ValidationError("INVALID REQUIRED ID");
+  }
+
+  try {
+    const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
+    const limit = params.limit ? parseInt(params.limit, 10) : 20;
+
+    const response = await prisma.submittedApplication.findMany({
+      where: {
+        unitPositionId: params.id,
+      },
+      cursor,
+      skip: cursor ? 1 : 0,
+      take: limit,
+      orderBy: {
+        timestamp: "desc",
+      },
+    });
+
+    const newLastCursorId =
+      response.length > 0 ? response[response.length - 1].id : null;
+    const hasMore = response.length === limit;
+
+    return res
+      .code(200)
+      .send({ list: response, lastCursor: newLastCursorId, hasMore });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("Database operation failed", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+export const unitPositionRecord = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as PagingProps;
+
+  if (!params.id) {
+    throw new ValidationError("INVALID REQUIRED ID");
+  }
+
+  try {
+    const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
+    const limit = params.limit ? parseInt(params.limit, 10) : 20;
+
+    const response = await prisma.unitPositionHistory.findMany({
+      where: {
+        unitPositionId: params.id,
+      },
+      include: {
+        user: {
+          select: {
+            firstName: true,
+            lastName: true,
+          },
+        },
+      },
+      cursor,
+      skip: cursor ? 1 : 0,
+      take: limit,
+      orderBy: {
+        timestamp: "desc",
+      },
+    });
+
+    const newLastCursorId =
+      response.length > 0 ? response[response.length - 1].id : null;
+    const hasMore = response.length === limit;
+
+    return res
+      .code(200)
+      .send({ list: response, hasMore, lastCursor: newLastCursorId });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("Database operation failed", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+export const removeUnitPosition = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as { id: string; userId: string; lineId: string };
+
+  if (!params.id || !params.userId || !params.lineId) {
+    throw new ValidationError("INVALID REQUIRED ID");
+  }
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      await tx.unitPosition.delete({
+        where: {
+          id: params.id,
+        },
+      });
+      await tx.medicineLogs.create({
+        data: {
+          action: 4,
+          message: `Removed unit position with ID ${params.id}`,
+          userId: params.userId,
+          lineId: params.lineId,
+        },
+      });
+    });
+    return res
+      .code(200)
+      .send({ message: "Unit position removed successfully" });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("Database operation failed", 500, "DB_ERROR");
+    }
+    throw error;
   }
 };

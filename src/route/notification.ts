@@ -3,6 +3,7 @@ import { FastifyInstance } from "../barrel/fastify";
 import { notificationSocket } from "..";
 import { authenticated, sendEmail } from "../middleware/handler";
 import {
+  markAsRead,
   notifications,
   viewNotifcation,
 } from "../controller/notificationController";
@@ -63,11 +64,16 @@ export const notification = (fastify: FastifyInstance) => {
   fastify.get(
     "/notification/list",
     { preHandler: authenticated },
-    notifications
+    notifications,
   );
   fastify.patch(
     "/notification/view",
     { preHandler: authenticated },
-    viewNotifcation
+    viewNotifcation,
+  );
+  fastify.patch(
+    "/notification/mark-as-read",
+    { preHandler: authenticated },
+    markAsRead,
   );
 };

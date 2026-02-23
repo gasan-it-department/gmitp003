@@ -16,24 +16,25 @@ import {
   transferMedicine,
   removeStock,
   medicineTransactions,
+  removeMedicine,
 } from "../controller/medicineController";
 
 export const medicine = (fastify: FastifyInstance) => {
   fastify.get(
     "/medicine/storage",
     { preHandler: authenticated },
-    medicineStorage
+    medicineStorage,
   );
   fastify.get("/medicine/logs", { preHandler: authenticated }, medicineLogList);
   fastify.post(
     "/medicine/storage/add-storage-location",
     { preHandler: authenticated },
-    addMedicineStorage
+    addMedicineStorage,
   );
   fastify.get(
     "/medicine/storage-list",
     { preHandler: authenticated },
-    medicineList
+    medicineList,
   );
 
   fastify.get("/medicine/items", { preHandler: authenticated }, storageMeds);
@@ -43,38 +44,43 @@ export const medicine = (fastify: FastifyInstance) => {
   fastify.post(
     "/storage/add-medicine",
     { preHandler: authenticated },
-    addStorageMedInList
+    addStorageMedInList,
   );
   fastify.get(
     "/medicine/new/notif",
     { preHandler: authenticated },
-    newPrescriptionCount
+    newPrescriptionCount,
   );
   fastify.get(
     "/medicine/notifications",
     { preHandler: authenticated },
-    medicineNotification
+    medicineNotification,
   );
   fastify.patch(
     "/medicine/notification/view",
     { preHandler: authenticated },
-    viewNotification
+    viewNotification,
   );
 
   fastify.patch(
     "/medicine/transfer",
     { preHandler: authenticated },
-    transferMedicine
+    transferMedicine,
   );
 
   fastify.delete(
     "/storage/medicine/remove",
     { preHandler: authenticated },
-    removeStock
+    removeStock,
   );
   fastify.get(
     "/medicine/transactions",
     { preHandler: authenticated },
-    medicineTransactions
+    medicineTransactions,
+  );
+  fastify.delete(
+    "/medicine/remove",
+    { preHandler: authenticated },
+    removeMedicine,
   );
 };

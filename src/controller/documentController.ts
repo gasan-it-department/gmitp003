@@ -160,6 +160,7 @@ export const roomRegister = async (req: FastifyRequest, res: FastifyReply) => {
   if (!req.isMultipart()) {
     throw new ValidationError("INVALID_REQUEST");
   }
+  console.log("Clicked");
 
   try {
     const tmpDir = path.join(process.cwd(), "tmp_uploads");
@@ -347,28 +348,6 @@ export const roomRegister = async (req: FastifyRequest, res: FastifyReply) => {
   }
 };
 
-// Helper function to save file to disk (optional)
-async function saveFileToDisk(
-  buffer: Buffer,
-  filename: string,
-): Promise<string> {
-  const fs = require("fs").promises;
-  const path = require("path");
-
-  // Create uploads directory if it doesn't exist
-  const uploadDir = path.join(__dirname, "../../uploads/signatures");
-  await fs.mkdir(uploadDir, { recursive: true });
-
-  // Generate unique filename
-  const uniqueFilename = `${Date.now()}-${filename}`;
-  const filePath = path.join(uploadDir, uniqueFilename);
-
-  // Write file
-  await fs.writeFile(filePath, buffer);
-
-  return uniqueFilename;
-}
-
 export const signatoryRegistry = async (
   req: FastifyRequest,
   res: FastifyReply,
@@ -380,7 +359,7 @@ export const signatoryRegistry = async (
     throw new ValidationError("MISSING_USER_ID");
   }
   try {
-    const [roomRegistration, signatory] = await prisma.$transaction([
+    const [roomRegistration, signatory, room] = await prisma.$transaction([
       prisma.roomRegistration.findFirst({
         where: {
           userId: params.userId,
@@ -391,14 +370,297 @@ export const signatoryRegistry = async (
           userId: params.userId,
         },
       }),
+      prisma.receivingRoom.findFirst({
+        where: {
+          signatory: {
+            some: {
+              userId: params.userId,
+            },
+          },
+        },
+      }),
     ]);
-    console.log({ roomRegistration, signatory });
+    console.log({ roomRegistration, signatory, room });
 
-    if (!roomRegistration || !signatory) {
-      throw new NotFoundError("NO_REGISTRY_FOUND");
+    return res.code(200).send({ roomRegistration, signatory, room });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+export const roomRequest = async (req: FastifyRequest, res: FastifyReply) => {
+  const params = req.query as PagingProps;
+
+  if (!params.id) {
+    throw new ValidationError("INVALID REQUIRED ID");
+  }
+
+  try {
+    const cursor = params.lastCursor ? { id: params.id } : undefined;
+    const limit = params.limit ? parseInt(params.limit, 10) : 20;
+
+    // Start with base filter
+    const filter: any = {
+      lineId: params.id,
+    };
+
+    // Add status filter if provided
+    if (
+      params.status &&
+      typeof params.status === "string" &&
+      params.status !== "all"
+    ) {
+      filter.status = parseInt(params.status, 10);
     }
 
-    return res.code(200).send({ roomRegistration, signatory });
+    // Add search filter if query provided
+    if (params.query && params.query.trim()) {
+      const searchTerms = params.query.trim().split(/\s+/);
+      const searchQuery = params.query.trim();
+
+      // Create user filter for the relation
+      filter.user = {
+        OR: [
+          // Search in firstname
+          { firstName: { contains: searchQuery, mode: "insensitive" } },
+          // Search in lastname
+          { lastName: { contains: searchQuery, mode: "insensitive" } },
+          // Search in email
+          { email: { contains: searchQuery, mode: "insensitive" } },
+          // Search in username if exists
+          { username: { contains: searchQuery, mode: "insensitive" } },
+          // Also search address directly on roomRegistration
+        ],
+      };
+
+      // If multiple search terms, also search for combinations
+      if (searchTerms.length > 1) {
+        // Add AND conditions for each term (more strict search)
+        filter.user.OR.push({
+          AND: searchTerms.map((term) => ({
+            OR: [
+              { firstName: { contains: term, mode: "insensitive" } },
+              { lastName: { contains: term, mode: "insensitive" } },
+            ],
+          })),
+        });
+      }
+    }
+
+    console.log("Filter:", JSON.stringify(filter, null, 2));
+
+    const response = await prisma.roomRegistration.findMany({
+      where: filter,
+      take: limit + 1, // Take one extra to check if there are more
+      skip: cursor ? 1 : 0,
+      cursor,
+      orderBy: {
+        timestamp: "desc",
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            username: true,
+          },
+        },
+        line: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+      },
+    });
+
+    // Check if there are more items
+    const hasMore = response.length > limit;
+    const items = hasMore ? response.slice(0, -1) : response;
+
+    const newLastCursorId =
+      items.length > 0 ? items[items.length - 1].id : null;
+
+    return res.code(200).send({
+      list: items,
+      lastCursor: newLastCursorId,
+      hasMore,
+    });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      console.error("Prisma error:", error);
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    console.error("Room request error:", error);
+    throw error;
+  }
+};
+
+export const updateStatus = async (req: FastifyRequest, res: FastifyReply) => {
+  const body = req.body as {
+    id: string;
+    status: number;
+    lineId: string;
+    userId: string;
+  };
+
+  if (!body.id || !body.lineId || !body.status || !body.userId) {
+    throw new ValidationError("");
+  }
+
+  try {
+    const response = await prisma.$transaction(async (tx) => {
+      const resolve: any = {};
+      if (body.status === 1) {
+        resolve.dateApproved = new Date().toISOString();
+      }
+      if (body.status === 2) {
+        resolve.dateRejected = new Date().toISOString();
+      }
+      const request = await tx.roomRegistration.update({
+        where: {
+          id: body.id,
+        },
+        data: {
+          status: body.status,
+          ...resolve,
+        },
+      });
+
+      if (body.status === 1) {
+        await tx.notification.create({
+          data: {
+            recipientId: request.userId,
+            content: `You can now access and manage Document.`,
+            title: "Document Room Approved",
+            senderId: body.userId,
+          },
+        });
+      }
+
+      await tx.humanResourcesLogs.create({
+        data: {
+          lineId: body.lineId,
+          userId: body.userId,
+          action: "UPDATE",
+          desc: `UPDATE ROOM REQUEST`,
+        },
+      });
+      return true;
+    });
+
+    if (!response) {
+      throw new ValidationError("TRANSACTION FAILED");
+    }
+    return res.code(200).send({ message: "OK" });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+export const deleteRoomRequest = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as { id: string; userId: string; lineId: string };
+
+  if (!params.id || !params.lineId || !params.userId) {
+    throw new ValidationError("INVALID REQUIRED ID");
+  }
+
+  try {
+    const response = await prisma.$transaction(async (tx) => {
+      const request = await tx.roomRegistration.delete({
+        where: {
+          id: params.id,
+        },
+        include: {
+          user: {
+            select: {
+              username: true,
+            },
+          },
+        },
+      });
+
+      await tx.humanResourcesLogs.create({
+        data: {
+          action: "DELETE",
+          desc: `DELETE DOCUMENT ROOM REQUEST: ${request.user.username}`,
+          userId: params.userId,
+          lineId: params.lineId,
+        },
+      });
+      return true;
+    });
+
+    if (!response) {
+      throw new ValidationError("TRANSACTION FAILED");
+    }
+
+    return res.code(200).send({ message: "OK" });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+export const roomRequestDetails = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as { id: string };
+
+  if (!params.id) {
+    throw new ValidationError("INVALID REQUIRED ID");
+  }
+
+  try {
+    const response = await prisma.roomRegistration.findUnique({
+      where: {
+        id: params.id,
+      },
+      include: {
+        receivers: {
+          select: {
+            id: true,
+            userId: true,
+            user: {
+              select: {
+                lastName: true,
+                firstName: true,
+                username: true,
+              },
+            },
+          },
+        },
+        roomRegistrationSignatures: true,
+        user: {
+          select: {
+            username: true,
+            lastName: true,
+            firstName: true,
+            id: true,
+          },
+        },
+      },
+    });
+
+    if (!response) {
+      throw new NotFoundError("REQUEST NOT FOUND");
+    }
+
+    return res.code(200).send(response);
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");

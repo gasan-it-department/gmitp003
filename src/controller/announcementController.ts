@@ -215,7 +215,6 @@ export const announcementData = async (
       createdAt,
       author,
     } = data;
-    console.log({ data });
 
     const decryptedData = await Promise.all([
       titleIv ? EncryptionService.decrypt(title, titleIv) : titleIv,
@@ -259,7 +258,6 @@ export const publishAnnouncement = async (
     lineId: string;
     status: number;
   };
-  console.log({ body });
 
   if (!body.lineId || !body.authorId || !body.id) {
     throw new ValidationError("INVALID REQUIRED ID");
@@ -533,35 +531,115 @@ export const publicAnnouncement = async (
   res: FastifyReply,
 ) => {
   const params = req.query as PagingProps;
+  console.log({ params });
 
   if (!params.id) {
     throw new ValidationError("INVALID REQUIRED FIELD");
   }
 
   try {
-    const limit = params.limit ? parseInt(params.limit, 10) : 5;
+    const filter: any = {
+      lineId: params.id,
+      status: 1,
+    };
     const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
+    const take = params.limit ? parseInt(params.limit, 10) : 20;
 
-    const response = await prisma.announcement.findMany({
-      where: {
-        lineId: params.id,
-        status: 1,
-      },
-      take: limit,
+    if (params.query) {
+      filter.title = {
+        contains: params.query,
+        mode: "insensitive",
+      };
+    }
+
+    const announcements = await prisma.announcement.findMany({
+      where: filter,
       cursor,
+      take: take,
       skip: cursor ? 1 : 0,
+      select: {
+        id: true,
+        title: true,
+        titleIv: true,
+        createdAt: true,
+        status: true,
+        content: true,
+        contentIv: true,
+      },
       orderBy: {
-        createdAt: "desc",
+        createdAt: "desc", // Added ordering
       },
     });
 
-    const newLastCursorId =
-      response.length > 0 ? response[response.length - 1].id : null;
-    const hasMore = limit === response.length;
+    // Decrypt all titles in parallel
+    const decryptedAnnouncements = await Promise.all(
+      announcements.map(async (item) => {
+        try {
+          const { title, titleIv, id, createdAt, content, contentIv } = item;
 
-    return res
-      .code(200)
-      .send({ list: response, lastCursor: newLastCursorId, hasMore });
+          // Decrypt the title if IV exists
+          let decryptedTitle = title;
+          let decryptedContent = content;
+          if (title && titleIv) {
+            try {
+              decryptedTitle = await EncryptionService.decrypt(title, titleIv);
+            } catch (decryptError) {
+              console.error(
+                `Failed to decrypt title for announcement ${id}:`,
+                decryptError,
+              );
+              decryptedTitle = "[Encrypted - Decryption Failed]";
+            }
+          }
+
+          if (content && contentIv) {
+            try {
+              decryptedContent = await EncryptionService.decrypt(
+                content,
+                contentIv,
+              );
+            } catch (decryptError) {
+              console.error(
+                `Failed to decrypt title for announcement ${id}:`,
+                decryptError,
+              );
+              decryptedContent = "[Encrypted - Decryption Failed]";
+            }
+          }
+
+          return {
+            id,
+            title: decryptedTitle,
+            createdAt,
+            status: item.status,
+            content: decryptedContent,
+          };
+        } catch (error) {
+          console.error(`Error processing announcement ${item.id}:`, error);
+          return {
+            id: item.id,
+            title: "[Error Processing]",
+            createdAt: item.createdAt,
+            status: item.status,
+          };
+        }
+      }),
+    );
+
+    // Get cursor for pagination
+    const newLastCursorId =
+      decryptedAnnouncements.length > 0
+        ? decryptedAnnouncements[decryptedAnnouncements.length - 1].id
+        : null;
+
+    // Check if there are more items (using original announcements count)
+    const hasMore = announcements.length === take;
+
+    return res.code(200).send({
+      list: decryptedAnnouncements,
+      lastCursor: newLastCursorId,
+      hasMore,
+    });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");

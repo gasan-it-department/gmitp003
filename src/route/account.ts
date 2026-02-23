@@ -9,16 +9,13 @@ import {
 export const accounts = (fastify: FastifyInstance) => {
   fastify.get(
     "/accounts",
-    {
-      preHandler: authenticated,
-      schema: controllerListSchema,
-    },
-    accountList
+
+    accountList,
   );
   fastify.post(
     "/account/send-reset-link",
     { preHandler: authenticated },
-    sendResetPasswordLink
+    sendResetPasswordLink,
   );
   fastify.patch("/account/user/reset-password", resetUserPassword);
 };

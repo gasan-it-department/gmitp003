@@ -173,10 +173,6 @@ export const dispenseSupply = async (
     const currentStockPieces = stock.stock;
     const toDispense = parseInt(body.quantity, 10);
 
-    console.log("Stock data:", {
-      stock,
-    });
-
     // Check if database consistency issue
     if (currentStockPieces !== currentBoxes * perBox) {
       console.warn(`Database inconsistency:
@@ -1407,6 +1403,13 @@ export const supplyTransactionInfo = async (
             stock: true,
           },
         },
+        supplyItem: {
+          select: {
+            item: true,
+            id: true,
+            code: true,
+          },
+        },
       },
     });
 
@@ -1541,6 +1544,12 @@ export const unitSupplyDispenseRecords = async (
               },
             },
             stock: true,
+          },
+        },
+        supplyItem: {
+          select: {
+            item: true,
+            id: true,
           },
         },
       },

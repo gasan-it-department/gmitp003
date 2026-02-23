@@ -3,6 +3,7 @@ import {
   createGroup,
   groupList,
   unitInfo,
+  deleteUnit,
 } from "../controller/groupController";
 import { groupListSchema } from "../models/request";
 import { authenticated } from "../middleware/handler";
@@ -12,8 +13,9 @@ export const unit = async (fasitfy: FastifyInstance) => {
   fasitfy.get(
     "/line-units",
     { preHandler: authenticated, schema: groupListSchema },
-    groupList
+    groupList,
   );
   fasitfy.get("/unit-info", { preHandler: authenticated }, unitInfo);
   fasitfy.get("/unit/search", { preHandler: authenticated }, searchUnit);
+  fasitfy.delete("/unit/delete", { preHandler: authenticated }, deleteUnit);
 };

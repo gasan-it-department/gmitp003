@@ -111,7 +111,6 @@ export const createGroup = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const unitInfo = async (req: FastifyRequest, res: FastifyReply) => {
   const params = req.query as { id: string };
-  console.log("Params: ", params);
 
   if (!params.id) throw new ValidationError("INVALID_REQUEST");
   try {
@@ -119,12 +118,58 @@ export const unitInfo = async (req: FastifyRequest, res: FastifyReply) => {
       where: {
         id: params.id,
       },
+      include: {
+        _count: {
+          select: {
+            users: true,
+          },
+        },
+      },
     });
 
     if (!unit) {
       throw new NotFoundError("UNIT_NOT_FOUND");
     }
     return res.code(200).send(unit);
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_EROR", 500, "DB_FAILED");
+    }
+    throw error;
+  }
+};
+
+export const deleteUnit = async (req: FastifyRequest, res: FastifyReply) => {
+  const params = req.query as { id: string; userId: string; lineId: string };
+
+  if (!params.id || !params.lineId || !params.userId) {
+    throw new ValidationError("INVALID REQUIRED ID");
+  }
+  try {
+    const response = await prisma.$transaction(async (tx) => {
+      const unit = await tx.department.delete({
+        where: {
+          id: params.id,
+        },
+      });
+
+      await tx.humanResourcesLogs.create({
+        data: {
+          userId: params.userId,
+          lineId: params.lineId,
+          action: "REMOVE",
+          desc: `REMOVE UNIT: ${unit.name}`,
+        },
+      });
+
+      return true;
+    });
+
+    if (!response) {
+      throw new ValidationError("TRANSACTION FAILED");
+    }
+
+    return res.code(200).send({ message: "OK" });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_EROR", 500, "DB_FAILED");
