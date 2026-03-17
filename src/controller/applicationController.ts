@@ -289,7 +289,6 @@ export const createPobJobRequirements = async (
           fs.writeFileSync(tmpPath, buffer);
 
           try {
-            // Determine resource type based on file extension
             const fileExtension = path.extname(part.filename).toLowerCase();
             const isDocument = [
               ".pdf",
@@ -300,10 +299,9 @@ export const createPobJobRequirements = async (
               ".xlsx",
             ].includes(fileExtension);
 
-            // Upload to Cloudinary with proper resource type
             const result = await cloudinary.uploader.upload(tmpPath, {
               folder: "job_requirements_assets",
-              resource_type: isDocument ? "raw" : "auto", // Use "raw" for documents
+              resource_type: isDocument ? "raw" : "auto",
               type: "upload",
               use_filename: true,
               unique_filename: true,
