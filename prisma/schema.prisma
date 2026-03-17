@@ -72,6 +72,7 @@ model Line {
   lineInvitations         LineInvitation?
   archiveDocuments        ArchiveDocument[]
   documents               Document[]
+  documentActivityLogs    DocumentActivityLogs[]
 }
 
 model LineInvitation {
@@ -966,120 +967,122 @@ model Privilege {
 }
 
 model User {
-  id                               String                         @id @default(uuid())
-  active                           Int                            @default(1) // 0- inactive, 1 - Active, suspended
-  email                            String
-  createdAt                        DateTime                       @default(now())
-  birthDate                        DateTime?
-  departmentId                     String?
-  firstName                        String
-  lastName                         String
-  level                            Int                            @default(1)
-  middleName                       String?
-  positionId                       String?
-  salaryGradeId                    String?
-  status                           String                         @default("Regular")
-  suffix                           String?
-  username                         String                         @unique
-  accountId                        String?                        @unique
-  barangayId                       String?
-  municipalId                      String?
-  provinceId                       String?
-  regionId                         String?
-  step                             Int                            @default(1)
-  type                             String                         @default("M")
-  lineId                           String?
-  gender                           String?                        @default("--/--")
-  profilePicture                   String?
-  privilegeId                      String?                        @unique
-  groupId                          String?
-  term                             DateTime?
-  emailIv                          String?
-  phoneNumber                      String?
-  phoneNumberIv                    String?
-  statusIV                         String?
-  usernameIv                       String?
-  firstNameIv                      String?
-  lastNameIv                       String?
-  Accomplishment                   Accomplishment[]
-  headResponse                     AccomplishmentResponse[]       @relation("Head")
-  AdminInbox                       AdminInbox[]
-  Announcement                     Announcement[]
-  Application                      Application[]
-  ApplicationConversation          ApplicationConversation[]      @relation("hrAdminResponse")
-  ApplicationResponse              ApplicationResponse[]          @relation("from")
-  bdayRecipient                    BirthdayNoticeResponse[]       @relation("Recipient")
-  bdaySender                       BirthdayNoticeResponse[]       @relation("Sender")
-  GrantContainer                   ContainerAllowedUser[]         @relation("GrantBy")
-  ContainerAllowedUser             ContainerAllowedUser[]
-  headedDepartment                 Department?                    @relation("DepartmentHead")
-  chief                            Group[]                        @relation("Chief")
-  HumanResourcesLogs               HumanResourcesLogs[]
-  InventoryAccessLogs              InventoryAccessLogs[]
-  InventoryBox                     InventoryBox[]                 @relation("createdBy")
-  Leave                            Leave[]
-  LogRecord                        LogRecord[]
-  MedicineLogs                     MedicineLogs[]
-  MedicineNotification             MedicineNotification[]
-  MedicineStorageAccess            MedicineStorageAccess[]
-  MedicineTransaction              MedicineTransaction[]
-  receivedNotifications            Notification[]                 @relation("ReceivedNotifications")
-  sentNotifications                Notification[]                 @relation("SentNotifications")
-  PositionSlot                     PositionSlot?
-  respondedBy                      Prescription[]                 @relation("respondedBy")
-  processBy                        Prescription[]                 @relation("processBy")
-  prescriptionSender               PrescriptionComment[]          @relation("prescriptionSender")
-  PrescriptionComment              PrescriptionComment[]
-  ProfilePicture                   ProfilePicture?
-  Promotions                       Promotion[]
-  SalaryTransactionRecord          SalaryTransactionRecord[]
-  Signature                        Signature[]
-  SignatureQueueRoom               SignatureQueueRoom[]
-  SignatureQueueRoomApprover       SignatureQueueRoomApprover[]
-  requestFrom                      SignatureRequest[]             @relation("fromUser")
-  requestTo                        SignatureRequest[]             @relation("toUser")
-  Supplies                         Supplies[]
-  SuppliesRecord                   SuppliesRecord[]
-  SupplyBatchAccess                SupplyBatchAccess[]
-  SupplyBatchOrder                 SupplyBatchOrder[]
-  SupplyIncharge                   SupplyIncharge[]
-  SupplyOrderStatus                SupplyOrderStatus[]
-  transferTo                       TransferredSupplies[]          @relation("transferTo")
-  TransferredSupplies              TransferredSupplies[]
-  account                          Account?                       @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  barangay                         Barangay?                      @relation(fields: [barangayId], references: [id], onDelete: Cascade)
-  department                       Department?                    @relation("DepartmentMembers", fields: [departmentId], references: [id], onDelete: SetNull)
-  Group                            Group?                         @relation(fields: [groupId], references: [id])
-  line                             Line?                          @relation(fields: [lineId], references: [id], onDelete: Cascade)
-  municipal                        Municipal?                     @relation(fields: [municipalId], references: [id])
-  Position                         Position?                      @relation(fields: [positionId], references: [id])
-  privilege                        Privilege?                     @relation(fields: [privilegeId], references: [id])
-  province                         Province?                      @relation(fields: [provinceId], references: [id])
-  region                           Region?                        @relation(fields: [regionId], references: [id])
-  SalaryGrade                      SalaryGrade?                   @relation(fields: [salaryGradeId], references: [id])
-  UserKeyPair                      UserKeyPair?
-  modules                          Module[]
-  userProfilePictures              UserProfilePicture?
-  supplyRecipient                  SupplyDispenseRecord[]         @relation("supplyRecipeint")
-  dispensary                       SupplyDispenseRecord[]         @relation("dispensary")
-  viewingBy                        ProfileView[]                  @relation("viewingBy")
-  targetUser                       ProfileView[]                  @relation("targetUser")
-  submittedApplications            SubmittedApplication?
-  announcementMentions             AnnouncementMentions[]
-  announcementViews                AnnouncementViews[]
-  announcementReactions            AnnouncementReaction[]
-  supplyTransactions               SupplyTransaction[]
-  inventoryLogs                    InventoryLogs[]
-  activityLogs                     ActivityLogs[]
-  documents                        Document[]
-  roomReceivers                    RoomReceiver?
-  signatories                      Signatory[]
+  id                         String                       @id @default(uuid())
+  active                     Int                          @default(1) // 0- inactive, 1 - Active, suspended
+  email                      String
+  createdAt                  DateTime                     @default(now())
+  birthDate                  DateTime?
+  departmentId               String?
+  firstName                  String
+  lastName                   String
+  level                      Int                          @default(1)
+  middleName                 String?
+  positionId                 String?
+  salaryGradeId              String?
+  status                     String                       @default("Regular")
+  suffix                     String?
+  username                   String                       @unique
+  accountId                  String?                      @unique
+  barangayId                 String?
+  municipalId                String?
+  provinceId                 String?
+  regionId                   String?
+  step                       Int                          @default(1)
+  type                       String                       @default("M")
+  lineId                     String?
+  gender                     String?                      @default("--/--")
+  profilePicture             String?
+  privilegeId                String?                      @unique
+  groupId                    String?
+  term                       DateTime?
+  emailIv                    String?
+  phoneNumber                String?
+  phoneNumberIv              String?
+  statusIV                   String?
+  usernameIv                 String?
+  firstNameIv                String?
+  lastNameIv                 String?
+  Accomplishment             Accomplishment[]
+  headResponse               AccomplishmentResponse[]     @relation("Head")
+  AdminInbox                 AdminInbox[]
+  Announcement               Announcement[]
+  Application                Application[]
+  ApplicationConversation    ApplicationConversation[]    @relation("hrAdminResponse")
+  ApplicationResponse        ApplicationResponse[]        @relation("from")
+  bdayRecipient              BirthdayNoticeResponse[]     @relation("Recipient")
+  bdaySender                 BirthdayNoticeResponse[]     @relation("Sender")
+  GrantContainer             ContainerAllowedUser[]       @relation("GrantBy")
+  ContainerAllowedUser       ContainerAllowedUser[]
+  headedDepartment           Department?                  @relation("DepartmentHead")
+  chief                      Group[]                      @relation("Chief")
+  HumanResourcesLogs         HumanResourcesLogs[]
+  InventoryAccessLogs        InventoryAccessLogs[]
+  InventoryBox               InventoryBox[]               @relation("createdBy")
+  Leave                      Leave[]
+  LogRecord                  LogRecord[]
+  MedicineLogs               MedicineLogs[]
+  MedicineNotification       MedicineNotification[]
+  MedicineStorageAccess      MedicineStorageAccess[]
+  MedicineTransaction        MedicineTransaction[]
+  receivedNotifications      Notification[]               @relation("ReceivedNotifications")
+  sentNotifications          Notification[]               @relation("SentNotifications")
+  PositionSlot               PositionSlot?
+  respondedBy                Prescription[]               @relation("respondedBy")
+  processBy                  Prescription[]               @relation("processBy")
+  prescriptionSender         PrescriptionComment[]        @relation("prescriptionSender")
+  PrescriptionComment        PrescriptionComment[]
+  ProfilePicture             ProfilePicture?
+  Promotions                 Promotion[]
+  SalaryTransactionRecord    SalaryTransactionRecord[]
+  Signature                  Signature[]
+  SignatureQueueRoom         SignatureQueueRoom[]
+  SignatureQueueRoomApprover SignatureQueueRoomApprover[]
+  requestFrom                SignatureRequest[]           @relation("fromUser")
+  requestTo                  SignatureRequest[]           @relation("toUser")
+  Supplies                   Supplies[]
+  SuppliesRecord             SuppliesRecord[]
+  SupplyBatchAccess          SupplyBatchAccess[]
+  SupplyBatchOrder           SupplyBatchOrder[]
+  SupplyIncharge             SupplyIncharge[]
+  SupplyOrderStatus          SupplyOrderStatus[]
+  transferTo                 TransferredSupplies[]        @relation("transferTo")
+  TransferredSupplies        TransferredSupplies[]
+  account                    Account?                     @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  barangay                   Barangay?                    @relation(fields: [barangayId], references: [id], onDelete: Cascade)
+  department                 Department?                  @relation("DepartmentMembers", fields: [departmentId], references: [id], onDelete: SetNull)
+  Group                      Group?                       @relation(fields: [groupId], references: [id])
+  line                       Line?                        @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  municipal                  Municipal?                   @relation(fields: [municipalId], references: [id])
+  Position                   Position?                    @relation(fields: [positionId], references: [id])
+  privilege                  Privilege?                   @relation(fields: [privilegeId], references: [id])
+  province                   Province?                    @relation(fields: [provinceId], references: [id])
+  region                     Region?                      @relation(fields: [regionId], references: [id])
+  SalaryGrade                SalaryGrade?                 @relation(fields: [salaryGradeId], references: [id])
+  UserKeyPair                UserKeyPair?
+  modules                    Module[]
+  userProfilePictures        UserProfilePicture?
+  supplyRecipient            SupplyDispenseRecord[]       @relation("supplyRecipeint")
+  dispensary                 SupplyDispenseRecord[]       @relation("dispensary")
+  viewingBy                  ProfileView[]                @relation("viewingBy")
+  targetUser                 ProfileView[]                @relation("targetUser")
+  submittedApplications      SubmittedApplication?
+  announcementMentions       AnnouncementMentions[]
+  announcementViews          AnnouncementViews[]
+  announcementReactions      AnnouncementReaction[]
+  supplyTransactions         SupplyTransaction[]
+  inventoryLogs              InventoryLogs[]
+  activityLogs               ActivityLogs[]
+  documents                  Document[]
+
   roomRegistrations                RoomRegistration[]
-  roomRegistrationReceivers        RoomRegistrationReceiver[]
-  RoomRegistrationConversationFrom RoomRegistrationConversation[] @relation("RoomRegistrationConversationFrom")
-  roomRegistrationConversations    RoomRegistrationConversation[] @relation("RoomRegistrationConversationTo")
-  hrmoLin                          Line?                          @relation("hrmo")
+  roomRegistrationReceivers        RoomRegistrationAuthorizedUser[]
+  RoomRegistrationConversationFrom RoomRegistrationConversation[]   @relation("RoomRegistrationConversationFrom")
+  roomRegistrationConversations    RoomRegistrationConversation[]   @relation("RoomRegistrationConversationTo")
+  hrmoLin                          Line?                            @relation("hrmo")
   unitPositionHistories            UnitPositionHistory[]
+  roomAuthorizedUsers              RoomAuthorizedUser[]
+  submittedDocuments               SubmittedDocument[]
+  documentActivityLogs             DocumentActivityLogs[]
 
   @@index([departmentId], map: "department_idx")
   @@index([firstName, lastName])
@@ -1409,17 +1412,17 @@ model AccomplishmentResponse {
 }
 
 model RoomRegistration {
-  id                            String                         @id @default(uuid())
+  id                            String                           @id @default(uuid())
   address                       String
-  line                          Line                           @relation(fields: [lineId], references: [id], onDelete: Cascade)
-  user                          User                           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  line                          Line                             @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  user                          User                             @relation(fields: [userId], references: [id], onDelete: Cascade)
   userId                        String
-  status                        Int                            @default(1) // 0- pending, 1- approved, 2- rejected
-  receivers                     RoomRegistrationReceiver[]
+  status                        Int                              @default(0) // 0- pending, 1- approved, 2- rejected
+  authorizedUser                RoomRegistrationAuthorizedUser[]
   dateApproved                  DateTime?
   dateRejected                  DateTime?
   lastApprovedDate              DateTime?
-  timestamp                     DateTime                       @default(now())
+  timestamp                     DateTime                         @default(now())
   roomRegistrationSignatures    RoomRegistrationSignature?
   roomRegistrationConversations RoomRegistrationConversation[]
   lineId                        String
@@ -1437,8 +1440,9 @@ model RoomRegistrationSignature {
   timestamp          DateTime          @default(now())
 }
 
-model RoomRegistrationReceiver {
+model RoomRegistrationAuthorizedUser {
   id                 String           @id @default(uuid())
+  type               Int // 0- receiver, 1- signatory, 2 - operator
   roomRegistration   RoomRegistration @relation(fields: [roomRegistrationId], references: [id], onDelete: Cascade)
   roomRegistrationId String
   nickname           String?
@@ -1462,39 +1466,31 @@ model RoomRegistrationConversation {
 }
 
 model ReceivingRoom {
-  id                   String            @id @default(uuid())
-  code                 String            @unique
+  id                   String               @id @default(uuid())
+  code                 String               @unique
   address              String?
-  marker               ReceivedMarkFile? @relation(fields: [receivedMarkFileId], references: [id])
-  receivedMarkFileId   String?           @unique
-  timestamp            DateTime          @default(now())
+  marker               ReceivedMarkFile?    @relation(fields: [receivedMarkFileId], references: [id])
+  receivedMarkFileId   String?              @unique
+  timestamp            DateTime             @default(now())
   signatureQueueRoomId String?
-  line                 Line              @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  line                 Line                 @relation(fields: [lineId], references: [id], onDelete: Cascade)
   targetRooms          TargetRoom[]
-  receiver             RoomReceiver[]
-  signatory            Signatory[]
   lineId               String
+  archiveDocument      ArchiveDocument[]
+  authorizedUser       RoomAuthorizedUser[]
+  documents            Document[]
 }
 
-model RoomReceiver {
-  id               String            @id @default(uuid())
-  user             User?             @relation(fields: [userId], references: [id])
-  userId           String?           @unique
-  nickname         String?
-  receivingRoom    ReceivingRoom?    @relation(fields: [receivingRoomId], references: [id], onDelete: Cascade)
-  receivingRoomId  String?
-  type             Int               @default(0) // 0- secondary, 1- primary
-  archiveDocuments ArchiveDocument[]
-  documents        Document[]
-}
-
-model Signatory {
-  id                    String                 @id @default(uuid())
-  user                  User                   @relation(fields: [userId], references: [id])
-  userId                String
-  receivingRoom         ReceivingRoom?         @relation(fields: [receivingRoomId], references: [id])
-  receivingRoomId       String?
-  signatoryArrangements SignatoryArrangement[]
+model RoomAuthorizedUser {
+  id              String         @id @default(uuid())
+  type            Int            @default(0) // 0- receiver, 1- signatory, 2 - operator
+  user            User?          @relation(fields: [userId], references: [id], onDelete: SetNull)
+  userId          String?
+  status          Int            @default(1) // 0- inactive, 1- active, 
+  timestamp       DateTime       @default(now())
+  receivingRoom   ReceivingRoom? @relation(fields: [receivingRoomId], references: [id], onDelete: Cascade)
+  receivingRoomId String?
+  signature       Signature[]
 }
 
 model ReceivedMarkFile {
@@ -1512,35 +1508,62 @@ model ReceivedMarkFile {
 }
 
 model ArchiveDocument {
-  id             String        @id @default(uuid())
-  status         Int           @default(1) // 1- active
-  document       Document?     @relation(fields: [documentId], references: [id])
-  documentId     String?       @unique
-  line           Line?         @relation(fields: [lineId], references: [id], onDelete: Cascade)
-  lineId         String?
-  room           RoomReceiver? @relation(fields: [roomReceiverId], references: [id], onDelete: SetNull)
-  timestamp      DateTime      @default(now())
-  roomReceiverId String?
+  id                 String            @id @default(uuid())
+  status             Int               @default(1) // 1- active
+  document           Document?         @relation(fields: [documentId], references: [id])
+  documentId         String?           @unique
+  line               Line?             @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  lineId             String?
+  timestamp          DateTime          @default(now())
+  receivingRoom      ReceivingRoom?    @relation(fields: [receivingRoomId], references: [id])
+  receivingRoomId    String?
+  abstract           DocumentAbstract? @relation(fields: [documentAbstractId], references: [id])
+  documentAbstractId String?           @unique
 }
 
 model Document {
-  id                   String              @id @default(uuid())
-  type                 Int                 @default(0)
-  size                 Int                 @default(0)
-  orientation          Int                 @default(1) // 0- Landescape, 1 - Portrait
-  status               Int                 @default(0) // 0 - setting up, 1 - ready
+  id                   String                 @id @default(uuid())
+  docType              Int                    @default(0) // 0 - Ordinance, 1 - Resolution, 2 - Executive Order, 3 - Memorandum, 4 - Certificate, 5 - Others
+  type                 Int                    @default(0)
+  size                 Int                    @default(0)
+  orientation          Int                    @default(1) // 0- Landescape, 1 - Portrait
+  status               Int                    @default(0) // 0 - setting up, 1 - ready
+  original             Int                    @default(0) // 0 - No, 1 - Yes 
   title                String?
   pages                DocumentPage[]
-  user                 User                @relation(fields: [userId], references: [id])
-  timestamp            DateTime            @default(now())
-  userId               String
-  signatureQueueRoom   SignatureQueueRoom? @relation(fields: [signatureQueueRoomId], references: [id])
+  user                 User?                  @relation(fields: [userId], references: [id], onDelete: SetNull)
+  timestamp            DateTime               @default(now())
+  userId               String?
+  signatureQueueRoom   SignatureQueueRoom?    @relation(fields: [signatureQueueRoomId], references: [id])
   signatureQueueRoomId String?
   archiveDocuments     ArchiveDocument?
-  room                 RoomReceiver?       @relation(fields: [roomReceiverId], references: [id])
-  roomReceiverId       String?
-  line                 Line                @relation(fields: [lineId], references: [id])
+  line                 Line                   @relation(fields: [lineId], references: [id], onDelete: Cascade)
   lineId               String
+  file                 DecodedFile?
+  receivingRoom        ReceivingRoom?         @relation(fields: [receivingRoomId], references: [id], onDelete: SetNull)
+  receivingRoomId      String?
+  submittedDocuments   SubmittedDocument?
+  documentDuplicates   DocumentDuplicate[]
+  documentActivityLogs DocumentActivityLogs[]
+}
+
+model SubmittedDocument {
+  id          String       @id @default(uuid())
+  status      Int          @default(0) // 0 - sent, 1 - received, 2 - return
+  document    Document?    @relation(fields: [documentId], references: [id], onDelete: SetNull)
+  documentId  String?      @unique
+  user        User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  timestamp   DateTime     @default(now())
+  userId      String?
+  submittedTo TargetRoom[]
+}
+
+model DocumentDuplicate {
+  id         String   @id @default(uuid())
+  document   Document @relation(fields: [documentId], references: [id])
+  documentId String
+  number     Int      @default(0)
+  timestamp  DateTime @default(now())
 }
 
 model DocumentPage {
@@ -1554,6 +1577,25 @@ model DocumentPage {
   timestamp  DateTime        @default(now())
 }
 
+model DocumentAbstract {
+  id               String           @id @default(uuid())
+  title            String
+  content          String
+  timestamp        DateTime         @default(now())
+  archiveDocuments ArchiveDocument?
+}
+
+model DecodedFile {
+  id          String    @id @default(uuid())
+  fileName    String
+  fileSize    String
+  fileType    String
+  fileDecoded Bytes?    @db.ByteA
+  timestamp   DateTime  @default(now())
+  document    Document? @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  documentId  String?   @unique
+}
+
 model UserKeyPair {
   id         String   @id @default(uuid())
   userId     String   @unique
@@ -1565,19 +1607,21 @@ model UserKeyPair {
 }
 
 model Signature {
-  id        String    @id @default(uuid())
-  title     String
-  url       String
-  defalt    Boolean   @default(false)
-  timestamp DateTime  @default(now())
-  forRenew  DateTime?
-  userId    String
-  user      User      @relation(fields: [userId], references: [id])
+  id                   String              @id @default(uuid())
+  active               Boolean             @default(false)
+  title                String
+  defalt               Boolean             @default(false)
+  timestamp            DateTime            @default(now())
+  forRenew             DateTime?
+  userId               String
+  user                 User                @relation(fields: [userId], references: [id])
+  signature            Bytes?              @db.ByteA
+  roomAuthorizedUser   RoomAuthorizedUser? @relation(fields: [roomAuthorizedUserId], references: [id])
+  roomAuthorizedUserId String?
 }
 
 model SignatoryArrangement {
   id                   String              @id @default(uuid())
-  signatory            Signatory           @relation(fields: [signatoryId], references: [id])
   index                Int                 @default(0)
   status               Int                 @default(0) // 0 - waiting, 1 - signed,
   sign                 SignatureCoor[]
@@ -1585,11 +1629,11 @@ model SignatoryArrangement {
   timestamp            DateTime            @default(now())
   signatureQueueRoom   SignatureQueueRoom? @relation(fields: [signatureQueueRoomId], references: [id], onDelete: Cascade)
   signatureQueueRoomId String?
-  signatoryId          String
 }
 
 model SignatureQueueRoom {
   id                   String                       @id @default(uuid())
+  index                Int                          @default(0)
   title                String?
   userId               String
   status               Int                          @default(0) // 0 - setting up, 1 - ongoing, 2 - concluded
@@ -1613,6 +1657,8 @@ model TargetRoom {
   receivingRoomId      String?
   status               Int                 @default(0) // 0 - in-receiving, 1 - received, 2 - completed, 3 - concluded, 4 - cancelled
   receivedAt           DateTime?
+  submittedDocuments   SubmittedDocument?  @relation(fields: [submittedDocumentId], references: [id])
+  submittedDocumentId  String?
 }
 
 model SignatureQueueRoomApprover {
@@ -1674,6 +1720,21 @@ model SignatureFile {
   timestamp          DateTime         @default(now())
   signatureRequestId String
   SignatureRequest   SignatureRequest @relation(fields: [signatureRequestId], references: [id])
+}
+
+model DocumentActivityLogs {
+  id         String    @id @default(uuid())
+  doc        Document? @relation(fields: [documentId], references: [id], onDelete: SetNull)
+  documentId String?
+  user       User?     @relation(fields: [userId], references: [id], onDelete: SetDefault)
+  line       Line?     @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  userId     String?
+  title      String
+  desc       String
+  path       String?
+  action     Int       @default(0) // 0 - view, 1 - archived, 2 - request sign, 3 - approved sign req. , 4 - decline sign 
+  timestamp  DateTime  @default(now())
+  lineId     String?
 }
 
 model AdminModule {

@@ -462,3 +462,22 @@ export type LineUserRegister = {
   linkId?: string;
   lineInvitationId?: string;
 };
+
+export interface FileConvertToBufferProps {
+  buffer: Buffer;
+  fileName: string;
+  mimeType: string;
+  fileSize: number;
+  encoding: string;
+  fields: any;
+}
+
+export interface DocumentRoomApplicationProps {
+  address: string;
+  authorizedUser: {
+    userId: string;
+    type: "0";
+  }[];
+  userId: string;
+  lineId: string;
+}

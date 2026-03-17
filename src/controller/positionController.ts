@@ -18,7 +18,6 @@ import path from "path";
 const frontEnd = process.env.VITE_LOCAL_FRONTEND_URL;
 export const positionList = async (req: FastifyRequest, res: FastifyReply) => {
   const params = req.query as PagingProps;
-  console.log("Pos: ", params);
 
   if (!params.id) throw new ValidationError("BAD_REQUEST");
   try {
@@ -1624,4 +1623,11 @@ export const removeUnitPosition = async (
     }
     throw error;
   }
+};
+
+export const vacantPosition = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as { userId: string; id: string; lineId: string };
 };

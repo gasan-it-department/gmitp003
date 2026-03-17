@@ -47,6 +47,7 @@ import errorHandlerPlugin from "./plugin/errorHandlers";
 
 //
 import { EncryptionService } from "./service/encryption";
+import { testGemini } from "./utils/gemini";
 const app = fastify();
 const server = createServer(app.server);
 const io = new Server(server, {
@@ -175,10 +176,9 @@ app.get("/", async (request, reply) => {
   );
   return { encrypt, decrypt };
 });
-app.get("/health", async (request: FastifyRequest, reply: FastifyReply) => {
-  const data = await prisma.user.findMany();
-
-  return { status: "ok", data };
+app.get("/test/ai", async (request: FastifyRequest, reply: FastifyReply) => {
+  await testGemini();
+  return { status: "ok" };
 });
 
 app.listen({ port: 3000 }, (err, address) => {

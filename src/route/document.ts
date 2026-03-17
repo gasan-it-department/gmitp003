@@ -3,13 +3,17 @@ import { authenticated } from "../middleware/handler";
 
 import {
   addDocument,
-  signatories,
+  authorizedUsers,
   roomRegister,
   signatoryRegistry,
   roomRequest,
   updateStatus,
   deleteRoomRequest,
   roomRequestDetails,
+  archives,
+  archiveFile,
+  rooms,
+  room,
 } from "../controller/documentController";
 
 export const document = (fastify: FastifyInstance) => {
@@ -17,7 +21,7 @@ export const document = (fastify: FastifyInstance) => {
   fastify.get(
     "/document/signatories",
     { preHandler: authenticated },
-    signatories,
+    authorizedUsers,
   );
   fastify.post("/document/room/register", roomRegister);
   fastify.get(
@@ -45,4 +49,8 @@ export const document = (fastify: FastifyInstance) => {
     { preHandler: authenticated },
     roomRequestDetails,
   );
+  fastify.get("/document/archives", { preHandler: authenticated }, archives);
+  fastify.post("/document/archive/file", archiveFile);
+  fastify.get("/document/rooms", { preHandler: authenticated }, rooms);
+  fastify.get("/document/room", { preHandler: authenticated }, room);
 };

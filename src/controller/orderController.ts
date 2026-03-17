@@ -78,6 +78,12 @@ export const orderItemList = async (req: FastifyRequest, res: FastifyReply) => {
             brand: true,
           },
         },
+        supplieRecieveHistories: {
+          where: {},
+          select: {
+            timestamp: true,
+          },
+        },
       },
     });
 
@@ -482,7 +488,6 @@ export const fullFillOrder = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const saveItemOrder = async (req: FastifyRequest, res: FastifyReply) => {
   const body = req.body as FullfilledItemOrderProps;
-  console.log({ body });
 
   if (
     !body.id ||
@@ -578,8 +583,6 @@ export const saveItemOrder = async (req: FastifyRequest, res: FastifyReply) => {
           ...orderOptionalData,
         },
       });
-
-      console.log({ updatedOrder });
 
       // if (stock) {
       //   await tx.supplyStockTrack.update({

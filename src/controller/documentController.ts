@@ -38,7 +38,13 @@ export const addDocument = async (req: FastifyRequest, res: FastifyReply) => {
 };
 
 import PDFParser from "pdf2json";
-import { PdfParsedData, PdfPage, PagingProps } from "../models/route";
+import {
+  PdfParsedData,
+  PdfPage,
+  PagingProps,
+  DocumentRoomApplicationProps,
+} from "../models/route";
+import { getFileType } from "../utils/document";
 
 async function parsePdfWithPdf2Json(buffer: Buffer): Promise<PdfParsedData> {
   return new Promise((resolve, reject) => {
@@ -91,23 +97,31 @@ async function parsePdfWithPdf2Json(buffer: Buffer): Promise<PdfParsedData> {
   });
 }
 
-export const signatories = async (req: FastifyRequest, res: FastifyReply) => {
+export const authorizedUsers = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
   const params = req.query as PagingProps;
 
   if (!params.query) {
     return res.code(200).send({ list: [], lastCursor: null, hasMore: false });
   }
 
+  if (!params.type && typeof params.type != "number") {
+    throw new ValidationError("INVALID TYPE");
+  }
+
   try {
     const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
     const limit = params.limit ? parseInt(params.limit) : 10;
 
-    const response = await prisma.signatory.findMany({
+    const response = await prisma.roomAuthorizedUser.findMany({
       where: {
         user: {
           firstName: { contains: params.query, mode: "insensitive" },
           lastName: { contains: params.query, mode: "insensitive" },
         },
+        type: params.type,
       },
       skip: cursor ? 1 : 0,
       take: limit,
@@ -156,177 +170,57 @@ export const signatories = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const roomRegister = async (req: FastifyRequest, res: FastifyReply) => {
   // Check if it's multipart request
+  const body = req.body as DocumentRoomApplicationProps;
 
-  if (!req.isMultipart()) {
-    throw new ValidationError("INVALID_REQUEST");
+  if (
+    !body.address ||
+    !body.lineId ||
+    !body.userId ||
+    body.authorizedUser.length === 0
+  ) {
+    throw new ValidationError("INVALID REQUIRED ID");
   }
-  console.log("Clicked");
 
   try {
-    const tmpDir = path.join(process.cwd(), "tmp_uploads");
-
-    let lineId: string | null = null;
-    let address: string | null = null;
-    let receivers: any[] = [];
-    let signature: Buffer | null = null;
-    let userId: string | null = null;
-    let signatureFilename: string | null = null;
-    let signatureMimetype: string | null = null;
-
-    const files: Array<{
-      fieldname: string;
-      filename: string;
-      mimetype: string;
-      buffer: Buffer;
-    }> = [];
-
-    const parts = req.parts();
-
-    for await (const part of parts) {
-      if (part.type === "field") {
-        switch (part.fieldname) {
-          case "lineId":
-            lineId = part.value as string;
-            break;
-          case "address":
-            address = part.value as string;
-            break;
-          case "userId":
-            userId = part.value as string;
-            break;
-          case "receivers":
-            receivers = JSON.parse(part.value as string);
-            break;
-          default:
-            console.log(`Unknown field: ${part.fieldname} = ${part.value}`);
-        }
-      } else if (part.type === "file") {
-        // Handle file uploads
-        const chunks: Buffer[] = [];
-
-        for await (const chunk of part.file) {
-          chunks.push(chunk);
-        }
-
-        const fileBuffer = Buffer.concat(chunks);
-
-        // Check if this is the signature file
-        if (part.fieldname === "signature") {
-          signature = fileBuffer;
-          signatureFilename = part.filename;
-          signatureMimetype = part.mimetype;
-        }
-
-        files.push({
-          fieldname: part.fieldname,
-          filename: part.filename,
-          mimetype: part.mimetype,
-          buffer: fileBuffer,
-        });
-      }
-    }
-
-    if (!lineId) {
-      throw new ValidationError("MISSING_FIELD");
-    }
-
-    if (!address) {
-      throw new ValidationError("MISSING_FIELD");
-    }
-
-    if (!signature) {
-      throw new ValidationError("MISSING_FIELD");
-    }
-
-    if (!userId) {
-      throw new ValidationError("MISSING_FIELD");
-    }
-
-    const allowedSignatureTypes = ["image/png"];
-    if (
-      signatureMimetype &&
-      !allowedSignatureTypes.includes(signatureMimetype)
-    ) {
-      throw new ValidationError("INVALID_FILE_TYPE");
-    }
-
-    const maxFileSize = 5 * 1024 * 1024; // 5MB
-    if (signature && signature.length > maxFileSize) {
-      throw new ValidationError("FILE_TOO_LARGE");
-    }
-
-    // If you want to save files to disk
-    // for (const file of files) {
-    //   await saveFileToDisk(file.buffer, file.filename);
-    // }
     const response = await prisma.$transaction(async (tx) => {
-      const user = await tx.user.findUnique({ where: { id: userId! } });
-      if (!user) throw new ValidationError("USER_NOT_FOUND");
-      if (receivers.length === 0) throw new ValidationError("NO_RECEIVERS");
-      const checkedReceiver = await tx.user.findMany({
+      const checkUser = await tx.roomAuthorizedUser.findMany({
         where: {
-          id: { in: receivers.map((item) => item.userId) },
+          userId: {
+            in: body.authorizedUser.map((item) => item.userId),
+          },
         },
       });
 
-      if (checkedReceiver.length !== receivers.length) {
-        throw new ValidationError("INVALID_RECEIVERS");
+      if (checkUser.length > 0) {
+        return {
+          status: 1,
+          existedUserId: [...checkUser.map((item) => item.userId)],
+        };
       }
-
-      const safe = signatureFilename!.replace(/[^\w.-]/g, "_");
-      const tmpPath = path.join(tmpDir, safe);
-      fs.writeFileSync(tmpPath, signature!);
-      const uploadedSignatureFilename = await cloudinary.uploader.upload(
-        tmpPath,
-        {
-          folder: "document_signature",
-          resource_type: "auto",
-          use_filename: true,
-          unique_filename: true,
-        },
-      );
-      if (!uploadedSignatureFilename.secure_url) {
-        throw new ValidationError("SIGNATURE_UPLOAD_FAILED");
-      }
-      const roomRegistration = await tx.roomRegistration.create({
+      const request = await tx.roomRegistration.create({
         data: {
-          lineId: lineId,
-          address,
-          userId,
-          receivers: {
+          address: body.address,
+          authorizedUser: {
             createMany: {
-              data: checkedReceiver.map((item) => {
-                return { userId: item.id, nickname: item.firstName };
+              data: body.authorizedUser.map((user) => {
+                return {
+                  userId: user.userId,
+                  type: parseInt(user.type, 10),
+                };
               }),
             },
           },
-          roomRegistrationSignatures: {
-            create: {
-              file_name: uploadedSignatureFilename.original_filename,
-              file_url: uploadedSignatureFilename.url,
-              file_public_id: uploadedSignatureFilename.public_id,
-            },
-          },
+          lineId: body.lineId,
+          userId: body.userId,
         },
       });
 
-      return roomRegistration;
+      return { status: 0, existedUserId: [], requestId: request.id };
     });
-
-    if (!response) {
-      throw new ValidationError("ROOM_REGISTRATION_FAILED");
-    }
-    console.log({ lineId, address, signature, receivers, userId });
-
-    // Send success response
-    return res.status(200).send({
-      message: "OK",
-      data: response,
-    });
+    return res.code(200).send(response);
   } catch (error) {
     console.log(error);
 
-    // Handle Prisma errors
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       if (error.code === "P2002") {
         throw new ValidationError("DUPLICATE_ENTRY");
@@ -339,7 +233,6 @@ export const roomRegister = async (req: FastifyRequest, res: FastifyReply) => {
       throw error;
     }
 
-    console.error("Unexpected error in roomRegister:", error);
     throw new AppError(
       "INTERNAL_SERVER_ERROR",
       500,
@@ -353,7 +246,6 @@ export const signatoryRegistry = async (
   res: FastifyReply,
 ) => {
   const params = req.query as { userId: string };
-  console.log("Reg: ", params);
 
   if (!params.userId) {
     throw new ValidationError("MISSING_USER_ID");
@@ -365,14 +257,23 @@ export const signatoryRegistry = async (
           userId: params.userId,
         },
       }),
-      prisma.signatory.findFirst({
+      prisma.roomAuthorizedUser.findFirst({
         where: {
           userId: params.userId,
+        },
+        include: {
+          signature: {
+            select: {
+              active: true,
+              title: true,
+              signature: true,
+            },
+          },
         },
       }),
       prisma.receivingRoom.findFirst({
         where: {
-          signatory: {
+          authorizedUser: {
             some: {
               userId: params.userId,
             },
@@ -380,7 +281,6 @@ export const signatoryRegistry = async (
         },
       }),
     ]);
-    console.log({ roomRegistration, signatory, room });
 
     return res.code(200).send({ roomRegistration, signatory, room });
   } catch (error) {
@@ -510,29 +410,52 @@ export const updateStatus = async (req: FastifyRequest, res: FastifyReply) => {
   };
 
   if (!body.id || !body.lineId || !body.status || !body.userId) {
-    throw new ValidationError("");
+    throw new ValidationError("INVALID REQUIRED ID");
   }
 
   try {
     const response = await prisma.$transaction(async (tx) => {
-      const resolve: any = {};
-      if (body.status === 1) {
-        resolve.dateApproved = new Date().toISOString();
-      }
-      if (body.status === 2) {
-        resolve.dateRejected = new Date().toISOString();
-      }
+      const dateUpdated: any = {};
+
       const request = await tx.roomRegistration.update({
         where: {
           id: body.id,
         },
         data: {
           status: body.status,
-          ...resolve,
+        },
+        include: {
+          authorizedUser: true,
         },
       });
 
       if (body.status === 1) {
+        dateUpdated.dateApproved = new Date().toISOString();
+      }
+
+      if (body.status === 2) {
+        dateUpdated.dateRejected = new Date().toISOString();
+      }
+
+      const room = await tx.receivingRoom.create({
+        data: {
+          address: request.address,
+          code: `RM-${Math.random().toString(36).slice(2, 9).toUpperCase()}`,
+          lineId: request.lineId,
+        },
+      });
+
+      if (body.status === 1) {
+        await tx.roomAuthorizedUser.createMany({
+          data: request.authorizedUser.map((item) => {
+            return {
+              userId: item.userId,
+              type: item.type,
+              receivingRoomId: room.id,
+            };
+          }),
+        });
+
         await tx.notification.create({
           data: {
             recipientId: request.userId,
@@ -551,12 +474,14 @@ export const updateStatus = async (req: FastifyRequest, res: FastifyReply) => {
           desc: `UPDATE ROOM REQUEST`,
         },
       });
+
       return true;
     });
 
     if (!response) {
       throw new ValidationError("TRANSACTION FAILED");
     }
+
     return res.code(200).send({ message: "OK" });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
@@ -631,7 +556,7 @@ export const roomRequestDetails = async (
         id: params.id,
       },
       include: {
-        receivers: {
+        authorizedUser: {
           select: {
             id: true,
             userId: true,
@@ -665,6 +590,208 @@ export const roomRequestDetails = async (
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
     }
+    throw error;
+  }
+};
+
+export const archives = async (req: FastifyRequest, res: FastifyReply) => {
+  const params = req.query as PagingProps;
+  console.log("PARAMS:", params);
+
+  if (!params.id) {
+    throw new ValidationError("INVALID REQUIRED ID");
+  }
+
+  try {
+    const cursor = params.lastCursor ? { id: params.id } : undefined;
+    const limit = params.limit ? parseInt(params.limit, 10) : 20;
+
+    const response = await prisma.archiveDocument.findMany({
+      where: {
+        receivingRoomId: params.id,
+      },
+      take: limit,
+      skip: cursor ? 1 : 0,
+      cursor,
+      orderBy: {
+        timestamp: "desc",
+      },
+    });
+
+    const newLastCursorId =
+      response.length > 0 ? response[response.length - 1].id : null;
+    const hasMore = response.length === limit;
+    console.log("REsponse: ", response);
+
+    return res.code(200).send({
+      list: response,
+      lastCursor: newLastCursorId,
+      hasMore,
+    });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+export const archiveFile = async (req: FastifyRequest, res: FastifyReply) => {
+  const isMultipart = req.isMultipart();
+
+  if (!isMultipart) throw new ValidationError("INVALID MULTIPARTS");
+
+  try {
+    const parts = req.parts();
+    console.log(JSON.stringify(parts, null, 2));
+
+    let file: any;
+    const formData: any = {};
+
+    for await (let part of parts) {
+      if (part.type === "file") {
+        const buffers = [];
+        for await (const chunk of part.file) buffers.push(chunk);
+        file = {
+          fieldname: part.fieldname,
+          filename: part.filename,
+          mimetype: part.mimetype,
+          buffer: Buffer.concat(buffers),
+        };
+      } else {
+        formData[part.fieldname] = part.value;
+      }
+    }
+
+    console.log({ file, formData: JSON.stringify(formData) });
+
+    if (!formData.userId || !formData.lineId) {
+      throw new ValidationError("INVALID REQUIRED ID");
+    }
+    if (!file) {
+      throw new ValidationError("INVALID FILE");
+    }
+    const fileType = getFileType({
+      mimetype: file.mimetype,
+      filename: file.filename,
+      buffer: file.buffer,
+    });
+    const response = await prisma.$transaction(async (tx) => {
+      const doc = await tx.document.create({
+        data: {
+          file: {
+            create: {
+              fileName: file.filename,
+              fileDecoded: file.buffer,
+              fileSize: file.buffer.length,
+              fileType: fileType,
+            },
+          },
+          docType: 1,
+          size: file.buffer.length,
+          title: formData.title,
+          lineId: formData.lineId,
+          userId: formData.userId,
+          archiveDocuments: {
+            create: {
+              abstract: {
+                create: {
+                  content: formData.abstract,
+                  title: `${formData.title} - ABSTRACT`,
+                },
+              },
+              receivingRoomId: undefined,
+            },
+          },
+        },
+      });
+      await tx.documentActivityLogs.create({
+        data: {
+          userId: formData.userId,
+          lineId: formData.lineId,
+          title: `Archived - ${file.filename}`,
+          desc: `Document "${formData.title}" was archived with abstract: ${formData.abstract?.substring(0, 50)}${formData.abstract?.length > 50 ? "..." : ""}`,
+          action: 1,
+          documentId: doc.id,
+        },
+      });
+      return true;
+    });
+
+    if (!response) throw new ValidationError("TRANSACTION FAILED");
+    return res.code(200).send("OK");
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+export const rooms = async (req: FastifyRequest, res: FastifyReply) => {
+  const params = req.query as PagingProps;
+
+  if (!params.id) {
+    throw new ValidationError("INVALID REQUIRED ID");
+  }
+
+  try {
+    const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
+    const limit = params.limit ? parseInt(params.limit) : 20;
+
+    const response = await prisma.receivingRoom.findMany({
+      where: {
+        lineId: params.id,
+      },
+      take: limit,
+      skip: cursor ? 1 : 0,
+      orderBy: {
+        timestamp: "desc",
+      },
+    });
+
+    const newLastCursorId =
+      response.length > 0 ? response[response.length - 1].id : null;
+    const hasMore = response.length === limit;
+
+    return res
+      .code(200)
+      .send({ list: response, lastCursor: newLastCursorId, hasMore });
+  } catch (error) {
+    console.log("Error: ", error);
+
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION", 500, "DB_FAILED");
+    }
+
+    throw error;
+  }
+};
+
+export const room = async (req: FastifyRequest, res: FastifyReply) => {
+  const params = req.query as { id: string };
+
+  if (!params.id) {
+    throw new ValidationError("INVALID REQUIRED ID");
+  }
+
+  try {
+    const response = await prisma.receivingRoom.findUnique({
+      where: {
+        id: params.id,
+      },
+    });
+
+    if (!response) {
+      throw new NotFoundError("ROOM NOT FOUND");
+    }
+
+    return res.code(200).send(response);
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION", 500, "DB_FAILED");
+    }
+
     throw error;
   }
 };

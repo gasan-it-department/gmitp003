@@ -12,7 +12,6 @@ const randomFillAsync = promisify(randomFill);
 
 const algorithm = "aes-192-cbc";
 const password = process.env.JWT_SECRET || "your-secure-password";
-console.log(password);
 
 export interface EncryptedData {
   encryptedData: string;
