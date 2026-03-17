@@ -61,7 +61,6 @@ export const applications = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const postJob = async (req: FastifyRequest, res: FastifyReply) => {
   const body = req.body as PostNewJobProps;
-  console.log("Post: ", body);
 
   if (!body.id || !body.lineId) throw new ValidationError("BAD_REQUEST");
   try {
@@ -79,7 +78,6 @@ export const postJob = async (req: FastifyRequest, res: FastifyReply) => {
         },
       });
       if (!position) throw new NotFoundError("Position not found!");
-      console.log({ position });
 
       const check = await tx.jobPost.findFirst({
         where: {
@@ -127,8 +125,6 @@ export const postJob = async (req: FastifyRequest, res: FastifyReply) => {
     if (!response) throw new AppError("Something went wrong", 500, "DB_ERROR");
     return res.code(200).send({ message: "OK", id: response });
   } catch (error) {
-    console.log(error);
-
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DATABASE_CONNECTION_FAILED", 500, "DB_ERROR");
     }
@@ -146,8 +142,6 @@ export const updatePostApplication = async (
     userId: string;
     lineId: string;
   };
-
-  console.log({ body });
 
   if (!body.id || !body.userId || !body.lineId)
     throw new ValidationError("INVALID REQUIRED ID");
@@ -185,8 +179,6 @@ export const updatePostApplication = async (
     if (!response) throw new ValidationError("TRANSACTION FAILED");
     return res.code(200).send({ message: "OK" });
   } catch (error) {
-    console.log(error);
-
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DATABASE_CONNECTION_FAILED", 500, "DB_ERROR");
     }
