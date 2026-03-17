@@ -112,7 +112,7 @@ export const addSupplyItem = async (req: FastifyRequest, res: FastifyReply) => {
       orderId: string;
       supplyId: string;
     };
-    console.log("Params new ORder: ", params);
+    // console.log("Params new ORder: ", params);
 
     if (!params.quanlity || !params.orderId || !params.supplyId) {
       return res.code(400).send({ message: "BAD REQUEST!" });
@@ -150,7 +150,10 @@ export const addSupplyItem = async (req: FastifyRequest, res: FastifyReply) => {
 
     return res.code(200).send({ message: "Success!" });
   } catch (error) {
-    console.log(error);
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("Database operation failed", 500, "DB_ERROR");
+    }
+    throw error;
   }
 };
 
