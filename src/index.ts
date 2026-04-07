@@ -6,6 +6,7 @@ import cors from "@fastify/cors";
 import { createServer } from "node:http";
 import { Server } from "socket.io";
 import { NotificationSocket } from "./class/NotificationSocket";
+import fastifyWebsocket from "@fastify/websocket";
 //routes
 import { auth } from "./route/auth";
 import { employee } from "./route/employee";
@@ -63,7 +64,8 @@ const io = new Server(server, {
   },
 });
 export const notificationSocket = new NotificationSocket(io);
-//
+//plugin
+app.register(fastifyWebsocket);
 app.register(errorHandlerPlugin);
 app.register(multipart, {
   attachFieldsToBody: false,
@@ -164,17 +166,23 @@ io.on("connection", (socket) => {
 
 //middleware
 app.get("/", async (request, reply) => {
-  const text = "JudePogdasdasd";
-  const encrypted = {
-    encryptedData: "05f9ee6af31971537b09794e0b35a988",
-    iv: "5c35cf0ccba9c91a56f5fbc76f178c57",
-  };
-  const encrypt = await EncryptionService.encrypt(text);
-  const decrypt = await EncryptionService.decrypt(
-    encrypted.encryptedData,
-    encrypted.iv,
-  );
-  return { encrypt, decrypt };
+  const docs = await prisma.document.findMany({
+    include: {
+      file: true,
+    },
+  });
+  return reply.code(200).send(docs);
+  // const text = "JudePogdasdasd";
+  // const encrypted = {
+  //   encryptedData: "05f9ee6af31971537b09794e0b35a988",
+  //   iv: "5c35cf0ccba9c91a56f5fbc76f178c57",
+  // };
+  // const encrypt = await EncryptionService.encrypt(text);
+  // const decrypt = await EncryptionService.decrypt(
+  //   encrypted.encryptedData,
+  //   encrypted.iv,
+  // );
+  // return { encrypt, decrypt };
 });
 app.get("/test/ai", async (request: FastifyRequest, reply: FastifyReply) => {
   await testGemini();

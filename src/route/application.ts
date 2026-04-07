@@ -24,6 +24,8 @@ import {
   applicationRegisterUser,
   updatePostApplication,
   sendPublicApplicationMessage,
+  deleteApplication,
+  applicationDeleteMany,
 } from "../controller/applicationController";
 
 export const application = (fastify: FastifyInstance) => {
@@ -119,5 +121,15 @@ export const application = (fastify: FastifyInstance) => {
     "/application/conclude",
     { preHandler: authenticated },
     concludeApplication,
+  );
+  fastify.delete(
+    "/application/delete",
+    { preHandler: authenticated },
+    deleteApplication,
+  );
+  fastify.post(
+    "/application/delete-selected",
+    { preHandler: authenticated },
+    applicationDeleteMany,
   );
 };

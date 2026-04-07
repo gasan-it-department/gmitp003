@@ -1,9 +1,8 @@
 import { FastifyRequest, FastifyReply } from "../barrel/fastify";
 import { Prisma, prisma } from "../barrel/prisma";
 import { AppError, NotFoundError, ValidationError } from "../errors/errors";
-import path from "path";
+import { embeddingService } from "../service/Embedding";
 import fs from "fs";
-import cloudinary from "../class/Cloundinary";
 
 export const addDocument = async (req: FastifyRequest, res: FastifyReply) => {
   if (!req.isMultipart()) {
@@ -44,7 +43,9 @@ import {
   PagingProps,
   DocumentRoomApplicationProps,
 } from "../models/route";
-import { getFileType } from "../utils/document";
+import { extractTextFromFile, getFileType } from "../utils/document";
+import path from "path";
+import { archiveDocType } from "../utils/helper";
 
 async function parsePdfWithPdf2Json(buffer: Buffer): Promise<PdfParsedData> {
   return new Promise((resolve, reject) => {
@@ -596,32 +597,246 @@ export const roomRequestDetails = async (
 
 export const archives = async (req: FastifyRequest, res: FastifyReply) => {
   const params = req.query as PagingProps;
-  console.log("PARAMS:", params);
 
   if (!params.id) {
     throw new ValidationError("INVALID REQUIRED ID");
   }
 
   try {
-    const cursor = params.lastCursor ? { id: params.id } : undefined;
     const limit = params.limit ? parseInt(params.limit, 10) : 20;
+    const searchTerms = params.query;
+
+    const where: any = {
+      lineId: params.id,
+    };
+
+    if (searchTerms && searchTerms.trim()) {
+      where.abstract = {
+        content: {
+          contains: searchTerms,
+          mode: "insensitive",
+        },
+      };
+    }
+
+    const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
 
     const response = await prisma.archiveDocument.findMany({
-      where: {
-        receivingRoomId: params.id,
-      },
       take: limit,
       skip: cursor ? 1 : 0,
       cursor,
       orderBy: {
         timestamp: "desc",
       },
+      select: {
+        id: true,
+        lineId: true,
+        abstract: true,
+        timestamp: true,
+        docType: true,
+      },
     });
 
     const newLastCursorId =
       response.length > 0 ? response[response.length - 1].id : null;
     const hasMore = response.length === limit;
-    console.log("REsponse: ", response);
+
+    return res.code(200).send({
+      list: response,
+      lastCursor: newLastCursorId,
+      hasMore,
+    });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+export const searchArchiveDocsAI = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as PagingProps & { query?: string };
+  console.log("Search Archives: ", { params });
+
+  try {
+    const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
+    const limit = params.limit ? parseInt(params.limit, 10) : 20;
+    const lineId = params.lineId as string | undefined;
+    const roomId = params.id;
+    const searchQuery = params.query?.trim();
+    await embeddingService.initialize();
+    const similar = params.query
+      ? await embeddingService.findSimilar(params.query, roomId, 20)
+      : [];
+
+    // Build search conditions for abstract content
+    // const buildAbstractSearch = () => {
+    //   if (!searchQuery) return {};
+
+    //   const searchTerms = searchQuery
+    //     .split(/\s+/)
+    //     .filter((term) => term.length > 0);
+
+    //   if (searchTerms.length === 1) {
+    //     return {
+    //       abstract: {
+    //         content: {
+    //           contains: searchTerms[0],
+    //           mode: "insensitive" as const,
+    //         },
+    //       },
+    //     };
+    //   }
+
+    //   // For multiple terms, match if any term is present in abstract
+    //   return {
+    //     OR: searchTerms.map((term) => ({
+    //       abstract: {
+    //         content: {
+    //           contains: term,
+    //           mode: "insensitive" as const,
+    //         },
+    //       },
+    //     })),
+    //   };
+    // };
+
+    // const response = await prisma.$transaction(async (tx) => {
+    //   const abstractSearch = buildAbstractSearch();
+
+    //   const roomArchive = await tx.archiveDocument.findMany({
+    //     where: {
+    //       receivingRoomId: roomId,
+    //       ...(searchQuery && abstractSearch),
+    //     },
+    //     take: limit,
+    //     skip: cursor ? 1 : 0,
+    //     cursor,
+    //     orderBy: {
+    //       timestamp: "desc",
+    //     },
+    //     select: {
+    //       id: true,
+    //       lineId: true,
+    //       abstract: true,
+    //       timestamp: true,
+    //       document: {
+    //         select: {
+    //           title: true,
+    //           id: true,
+    //         },
+    //       },
+    //     },
+    //   });
+
+    //   // Other archives search - from same line but different rooms
+    //   const otherArchives = await tx.archiveDocument.findMany({
+    //     where: {
+    //       lineId: lineId,
+    //       receivingRoomId: {
+    //         not: roomId,
+    //       },
+    //       ...(searchQuery && abstractSearch),
+    //     },
+    //     take: limit,
+    //     skip: cursor ? 1 : 0,
+    //     cursor,
+    //     orderBy: {
+    //       timestamp: "desc",
+    //     },
+    //     select: {
+    //       id: true,
+    //       lineId: true,
+    //       abstract: true,
+    //       timestamp: true,
+    //       document: {
+    //         select: {
+    //           title: true,
+    //           id: true,
+    //         },
+    //       },
+    //     },
+    //   });
+
+    //   return [...roomArchive, ...otherArchives];
+    // });
+
+    // // Sort combined results by timestamp
+    // const sortedResponse = response.sort(
+    //   (a, b) =>
+    //     new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
+    // );
+
+    const newLastCursor =
+      similar.length > 0 ? similar[similar.length - 1].id : null;
+    const hasMore = similar.length === limit;
+
+    return res.code(200).send({
+      list: similar,
+      hasMore,
+      lastCursor: newLastCursor,
+    });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+export const searchArchiveDocs = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as PagingProps & { query?: string };
+  console.log("Reg", { params });
+
+  try {
+    const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
+    const limit = params.limit ? parseInt(params.limit, 10) : 20;
+    const lineId = params.lineId as string | undefined;
+    const roomId = params.id;
+
+    const filter: any = {};
+    const searchQuery = params.query?.trim();
+
+    if (searchQuery) {
+      filter.document = {
+        title: {
+          contains: searchQuery,
+          mode: "insensitive",
+        },
+      };
+    }
+
+    const response = await prisma.$transaction(async (tx) => {
+      const lineArchives = await tx.archiveDocument.findMany({
+        where: {
+          lineId: lineId,
+          ...filter,
+        },
+        take: limit,
+        cursor,
+      });
+
+      const roomAcrhives = await tx.archiveDocument.findMany({
+        where: {
+          receivingRoomId: roomId,
+          ...filter,
+        },
+        take: limit,
+        cursor,
+      });
+
+      return [...roomAcrhives, ...lineArchives];
+    });
+
+    const newLastCursorId =
+      response.length > 0 ? response[response.length - 1].id : null;
+    const hasMore = response.length === limit;
 
     return res.code(200).send({
       list: response,
@@ -643,7 +858,6 @@ export const archiveFile = async (req: FastifyRequest, res: FastifyReply) => {
 
   try {
     const parts = req.parts();
-    console.log(JSON.stringify(parts, null, 2));
 
     let file: any;
     const formData: any = {};
@@ -663,19 +877,25 @@ export const archiveFile = async (req: FastifyRequest, res: FastifyReply) => {
       }
     }
 
-    console.log({ file, formData: JSON.stringify(formData) });
+    // console.log({ file, formData: JSON.stringify(formData) });
 
-    if (!formData.userId || !formData.lineId) {
+    if (!formData.userId || !formData.lineId || !formData.receivingRoomId) {
       throw new ValidationError("INVALID REQUIRED ID");
     }
+
     if (!file) {
       throw new ValidationError("INVALID FILE");
     }
+
     const fileType = getFileType({
       mimetype: file.mimetype,
       filename: file.filename,
       buffer: file.buffer,
     });
+
+    const docTypeIndex = formData.docType ? parseInt(formData.docType, 10) : 0;
+    const docType = archiveDocType[docTypeIndex];
+
     const response = await prisma.$transaction(async (tx) => {
       const doc = await tx.document.create({
         data: {
@@ -683,28 +903,62 @@ export const archiveFile = async (req: FastifyRequest, res: FastifyReply) => {
             create: {
               fileName: file.filename,
               fileDecoded: file.buffer,
-              fileSize: file.buffer.length,
+              fileSize: file.buffer.length.toString(),
               fileType: fileType,
             },
           },
-          docType: 1,
+          docType: docTypeIndex,
           size: file.buffer.length,
           title: formData.title,
           lineId: formData.lineId,
           userId: formData.userId,
-          archiveDocuments: {
+          receivingRoomId: formData.receivingRoomId,
+        },
+      });
+
+      const abstractVector = await embeddingService.generateEmbedding(
+        formData.abstract,
+      );
+
+      const titleVector = await embeddingService.generateEmbedding(
+        formData.title,
+      );
+
+      const typeVector = await embeddingService.generateEmbedding(docType);
+
+      await tx.archiveDocument.create({
+        data: {
+          abstract: {
             create: {
-              abstract: {
+              content: formData.abstract,
+              title: `${formData.title}`,
+              embedding: {
                 create: {
-                  content: formData.abstract,
-                  title: `${formData.title} - ABSTRACT`,
+                  vector: [...abstractVector, ...titleVector, ...typeVector],
+                  model: "Xenova/all-MiniLM-L6-v2",
+                  dimensions: 384,
                 },
               },
-              receivingRoomId: undefined,
+            },
+          },
+          receivingRoom: {
+            connect: {
+              id: formData.receivingRoomId,
+            },
+          },
+          document: {
+            connect: {
+              id: doc.id,
+            },
+          },
+          line: {
+            connect: {
+              id: formData.lineId,
             },
           },
         },
       });
+
       await tx.documentActivityLogs.create({
         data: {
           userId: formData.userId,
@@ -715,12 +969,15 @@ export const archiveFile = async (req: FastifyRequest, res: FastifyReply) => {
           documentId: doc.id,
         },
       });
+
       return true;
     });
 
     if (!response) throw new ValidationError("TRANSACTION FAILED");
+
     return res.code(200).send("OK");
   } catch (error) {
+    console.log({ error });
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
     }
@@ -792,6 +1049,310 @@ export const room = async (req: FastifyRequest, res: FastifyReply) => {
       throw new AppError("DB_CONNECTION", 500, "DB_FAILED");
     }
 
+    throw error;
+  }
+};
+
+export const removeRoom = async (req: FastifyRequest, res: FastifyReply) => {
+  const params = req.query as { id: string; userId: string; lineId: string };
+
+  if (!params.id || !params.lineId || !params.userId) {
+    throw new ValidationError("INVALID REQUIRED ID");
+  }
+
+  try {
+    const response = await prisma.$transaction(async (tx) => {
+      const room = await tx.receivingRoom.delete({
+        where: {
+          id: params.id,
+        },
+      });
+
+      await tx.humanResourcesLogs.create({
+        data: {
+          action: "DELETE",
+          desc: `REMOVE RECEIVING ROOM: ${room.address}-${room.code}`,
+          userId: params.userId,
+          lineId: params.lineId,
+        },
+      });
+
+      return true;
+    });
+
+    if (!response) {
+      throw new ValidationError("TRANSACTION FAILED");
+    }
+
+    return res.code(200).send({ message: "Ok" });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION", 500, "DB_FAILED");
+    }
+
+    throw error;
+  }
+};
+
+export const updateRoomStatus = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as {
+    id: string;
+    lineId: string;
+    userId: string;
+    status: number;
+  };
+
+  if (!body.id || !body.lineId || !body.userId) {
+    throw new Error("INVALID REQUIRED ID");
+  }
+
+  try {
+    const response = await prisma.$transaction(async (tx) => {
+      const updatedRoom = await tx.receivingRoom.update({
+        where: {
+          id: body.id,
+        },
+        data: {
+          status: body.status,
+        },
+      });
+
+      await tx.humanResourcesLogs.create({
+        data: {
+          action: "UPDATE",
+          desc: `UPDATE RECEIVING ROOM: ${updatedRoom.address}-${updatedRoom}`,
+          userId: body.userId,
+          lineId: body.lineId,
+        },
+      });
+
+      return true;
+    });
+
+    if (!response) {
+      throw new ValidationError("TRANSACTION FAILED");
+    }
+
+    return res.code(200).send({ message: "Ok" });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION", 500, "DB_FAILED");
+    }
+
+    throw error;
+  }
+};
+
+export const archiveDetail = async (req: FastifyRequest, res: FastifyReply) => {
+  const params = req.query as { id: string };
+
+  try {
+    const response = await prisma.archiveDocument.findUnique({
+      where: {
+        id: params.id,
+      },
+      include: {
+        abstract: true,
+      },
+    });
+
+    if (!response) {
+      throw new NotFoundError("ARCHIVE NOT FOUND");
+    }
+
+    return res.code(200).send(response);
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION", 500, "DB_FAILED");
+    }
+
+    throw error;
+  }
+};
+
+export const downloadArchiveFile = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as { id: string };
+
+  if (!params.id) throw new ValidationError("INVALID REQUIRED ID");
+
+  try {
+    const response = await prisma.archiveDocument.findUnique({
+      where: {
+        id: params.id,
+      },
+      include: {
+        document: {
+          select: {
+            file: true,
+          },
+        },
+      },
+    });
+
+    if (!response) throw new NotFoundError("ARCHIVE NOT FOUND");
+
+    const buffered = response.document?.file;
+    if (!buffered) {
+      throw new ValidationError("INVALID FILE FORMAT");
+    }
+
+    if (!buffered.fileDecoded) {
+      throw new ValidationError("FILE DATA IS MISSING OR CORRUPTED");
+    }
+
+    const fileBuffer = Buffer.from(buffered.fileDecoded);
+
+    // Set headers for file download
+    const filename =
+      buffered.fileName ||
+      `document_${params.id}.${buffered.fileType?.split("/")[1] || "bin"}`;
+
+    res.header("Content-Type", buffered.fileType || "application/octet-stream");
+    res.header("Content-Disposition", `attachment; filename="${filename}"`);
+    res.header("Content-Length", fileBuffer.length.toString());
+
+    // Send the file
+    return res.code(200).send(fileBuffer);
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION", 500, "DB_FAILED");
+    }
+    throw error;
+  }
+};
+
+export const createDocumentRoute = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as {
+    roomName: string;
+    lineId: string;
+    userId: string;
+    roomId: string;
+  };
+
+  if (!body.roomName || !body.lineId || !body.userId || !body.roomId) {
+    throw new ValidationError("INVALID REQUIRED ID");
+  }
+  try {
+    const response = await prisma.$transaction(async (tx) => {
+      const room = await tx.signatureQueueRoom.create({
+        data: {
+          title: body.roomName,
+          receivingRoomId: body.roomId,
+          userId: body.userId,
+          status: 0,
+          step: 0,
+        },
+      });
+
+      await tx.documentActivityLogs.create({
+        data: {
+          userId: body.userId,
+          lineId: body.lineId,
+          title: `Created Document Room - ${body.roomName}`,
+          desc: `Document Room "${body.roomName}" was created.`,
+          action: 1,
+        },
+      });
+
+      return room.id;
+    });
+
+    if (!response) throw new ValidationError("TRANSACTION FAILED");
+    return res.code(200).send({ id: response });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION", 500, "DB_FAILED");
+    }
+    throw error;
+  }
+};
+
+export const routerInfo = async (req: FastifyRequest, res: FastifyReply) => {
+  const params = req.query as { id: string };
+  console.log("Route: ", params);
+
+  if (!params.id) {
+    throw new ValidationError("INVALID REQUIRED PARAMETERS");
+  }
+  try {
+    const response = await prisma.signatureQueueRoom.findUnique({
+      where: {
+        id: params.id,
+      },
+    });
+
+    if (!response) throw new NotFoundError("DATA NOT FOUND");
+
+    return res.code(200).send(response);
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION", 500, "DB_FAILED");
+    }
+    throw error;
+  }
+};
+
+export const generateAbstract = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  if (!req.isMultipart()) {
+    throw new ValidationError("INVALID REQUIRED FIELD");
+  }
+
+  try {
+    const parts = req.parts();
+    console.log("Gen. Abstract: ", parts);
+
+    const tmpDir = path.join(process.cwd(), "tmp_uploads");
+
+    // Ensure tmp directory exists
+    if (!fs.existsSync(tmpDir)) {
+      fs.mkdirSync(tmpDir, { recursive: true });
+    }
+
+    let fileBuffer: Buffer | null = null;
+    let filename = "";
+
+    for await (let part of parts) {
+      if (part.type === "file") {
+        fileBuffer = await part.toBuffer(); // Get the buffer from the part
+        filename = part.filename;
+        break; // Exit after getting the first file
+      }
+    }
+
+    if (!fileBuffer) {
+      throw new ValidationError("NO_FILE_UPLOADED");
+    }
+
+    const safe = filename.replace(/[^\w.-]/g, "_");
+    const tmpPath = path.join(tmpDir, safe);
+
+    // Write buffer to file
+    fs.writeFileSync(tmpPath, fileBuffer);
+
+    // Generate abstract
+    const response = await embeddingService.generateAbstractFromPDF(tmpPath);
+
+    // Clean up
+    fs.unlinkSync(tmpPath);
+    console.log({ abstract: response });
+
+    return res.code(200).send({ abstract: response });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION", 500, "DB_FAILED");
+    }
     throw error;
   }
 };

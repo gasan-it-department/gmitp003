@@ -5,6 +5,7 @@ import { authenticated, sendEmail } from "../middleware/handler";
 import {
   markAsRead,
   notifications,
+  realTimeNoif,
   viewNotifcation,
 } from "../controller/notificationController";
 interface SendNotificationBody {
@@ -76,4 +77,5 @@ export const notification = (fastify: FastifyInstance) => {
     { preHandler: authenticated },
     markAsRead,
   );
+  fastify.get("/notification/realtime", { websocket: true }, realTimeNoif);
 };

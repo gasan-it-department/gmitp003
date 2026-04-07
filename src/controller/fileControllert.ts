@@ -301,8 +301,6 @@ export const exportSupplyExcel = async (
       }),
     ]);
 
-    console.log(JSON.stringify(data, null, 2));
-
     const groupedData = data.reduce<
       Record<
         string,

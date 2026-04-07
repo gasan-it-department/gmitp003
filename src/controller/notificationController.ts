@@ -104,3 +104,14 @@ export const markAsRead = async (req: FastifyRequest, res: FastifyReply) => {
     throw error;
   }
 };
+
+export const realTimeNoif = async (req: FastifyRequest, res: FastifyReply) => {
+  const socket = req.socket;
+
+  socket.on("connect", (data: any) => {
+    console.log("Client connected: ", data.id);
+    socket.on("disconnect", (reason) => {
+      console.log("Client disconnected: ", data.id, "Reason:", reason);
+    });
+  });
+};

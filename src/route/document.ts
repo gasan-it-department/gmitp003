@@ -14,6 +14,15 @@ import {
   archiveFile,
   rooms,
   room,
+  removeRoom,
+  updateRoomStatus,
+  archiveDetail,
+  downloadArchiveFile,
+  searchArchiveDocsAI,
+  createDocumentRoute,
+  routerInfo,
+  searchArchiveDocs,
+  generateAbstract,
 } from "../controller/documentController";
 
 export const document = (fastify: FastifyInstance) => {
@@ -53,4 +62,49 @@ export const document = (fastify: FastifyInstance) => {
   fastify.post("/document/archive/file", archiveFile);
   fastify.get("/document/rooms", { preHandler: authenticated }, rooms);
   fastify.get("/document/room", { preHandler: authenticated }, room);
+  fastify.patch(
+    "/document/room/update-status",
+    { preHandler: authenticated },
+    updateRoomStatus,
+  );
+  fastify.delete(
+    "/document/room/remove",
+    { preHandler: authenticated },
+    removeRoom,
+  );
+  fastify.get(
+    "/document/archive/datail",
+    { preHandler: authenticated },
+    archiveDetail,
+  );
+  fastify.get(
+    "/document/download/file",
+    { preHandler: authenticated },
+    downloadArchiveFile,
+  );
+  fastify.get(
+    "/document/archive/search/ai",
+    { preHandler: authenticated },
+    searchArchiveDocsAI,
+  );
+  fastify.post(
+    "/document/route",
+    { preHandler: authenticated },
+    createDocumentRoute,
+  );
+  fastify.get(
+    "/document/route/info",
+    { preHandler: authenticated },
+    routerInfo,
+  );
+  fastify.get(
+    "/document/archive/search",
+    { preHandler: authenticated },
+    searchArchiveDocs,
+  );
+  fastify.post(
+    "/document/archive/generate-archive",
+    { preHandler: authenticated },
+    generateAbstract,
+  );
 };

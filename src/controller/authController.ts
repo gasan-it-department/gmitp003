@@ -99,7 +99,6 @@ export const registerController = async (
   res: FastifyReply,
 ) => {
   const data = request.body as AuthUser;
-  console.log(data);
 
   if (!data.username || !data.password)
     throw new ValidationError("BAD_REQUEST");

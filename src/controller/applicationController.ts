@@ -190,6 +190,7 @@ export const updatePostJob = async (req: FastifyRequest, res: FastifyReply) => {
   const param = req.body as PostNewJobProps;
 
   if (!param.id) throw new ValidationError("INVALID REQUIRED ID");
+
   try {
     const response = await prisma.$transaction(async (tx) => {
       const jobPost = await tx.jobPost.findUnique({
@@ -205,6 +206,7 @@ export const updatePostJob = async (req: FastifyRequest, res: FastifyReply) => {
           },
         },
       });
+
       if (!jobPost) throw new NotFoundError("JOB POST NOT FOUND");
 
       const optional: any = {};
@@ -212,9 +214,11 @@ export const updatePostJob = async (req: FastifyRequest, res: FastifyReply) => {
       if (jobPost.desc !== param.desc) {
         optional.desc = param.desc;
       }
+
       if (param.deadline) {
         optional.deadline = param.deadline;
       }
+
       await tx.jobPost.update({
         where: {
           id: jobPost.id,
@@ -240,13 +244,14 @@ export const updatePostJob = async (req: FastifyRequest, res: FastifyReply) => {
           }`,
         },
       });
+
       return "OK";
     });
+
     if (response !== "OK") throw new AppError("DB_CONNECTION", 500, "DB_ERROR");
+
     return res.code(200).send({ message: "OK" });
   } catch (error) {
-    console.log(error);
-
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DATABASE_CONNECTION_FAILED", 500, "DB_ERROR");
     }
@@ -259,7 +264,6 @@ export const createPobJobRequirements = async (
   res: FastifyReply,
 ) => {
   if (!req.isMultipart()) {
-    console.log("Not multipart");
     return res.status(400).send({ error: "Not multipart" });
   }
 
@@ -314,9 +318,9 @@ export const createPobJobRequirements = async (
               publicId: result.public_id,
             });
 
-            console.log(`Uploaded file: ${part.filename}`);
-            console.log(`Cloudinary URL: ${result.secure_url}`);
-            console.log(`Resource type: ${result.resource_type}`);
+            // console.log(`Uploaded file: ${part.filename}`);
+            // console.log(`Cloudinary URL: ${result.secure_url}`);
+            // console.log(`Resource type: ${result.resource_type}`);
           } catch (err) {
             throw new AppError(
               `Failed to upload file "${part.filename}" to Cloudinary`,
@@ -755,8 +759,6 @@ export const submitApplication = async (
     const uploaded = await Promise.all(uploads);
 
     function normalizeForm(formData: any) {
-      console.log({ formData });
-
       const parseArrayField = (fieldName: string, defaultValue: any = []) => {
         if (!formData[fieldName]) return defaultValue;
         try {
@@ -1135,7 +1137,7 @@ Dear ${formData.firstName} ${formData.lastName},
           `${municipal.name} HR Team <no-reply@${municipal.name}.gov.ph>`,
         );
 
-        console.log({ sebtEmail });
+        // console.log({ sebtEmail });
       }
 
       if (formData.mobileNo && semaphoreKey) {
@@ -1173,8 +1175,6 @@ ${municipal.name}`,
       profilePictureUploaded: !!profilePicture,
     });
   } catch (err) {
-    console.log(err);
-
     return res.status(500).send({
       success: false,
       message: "Failed to submit application",
@@ -1864,7 +1864,7 @@ export const adminApplicationSendConversation = async (
   res: FastifyReply,
 ) => {
   const body = req.body as ApplicationConversation;
-  console.log({ body });
+  // console.log({ body });
 
   if (!body.userId || !body.applicationId)
     throw new ValidationError("INVALID REQUIRED ID");
@@ -2295,10 +2295,10 @@ export const applicationRegisterUser = async (
         },
       });
 
-      console.log({ application });
-
       if (!application) throw new ValidationError("Application not found!");
+
       const hashedPassword = await argon.hash(body.password);
+
       const newAccount = await tx.account.create({
         data: {
           username: body.username,
@@ -2318,6 +2318,7 @@ export const applicationRegisterUser = async (
           },
         };
       }
+
       const user = await tx.user.create({
         data: {
           username: newAccount.username,
@@ -2331,6 +2332,7 @@ export const applicationRegisterUser = async (
           salaryGradeId: application.jobPost?.salaryGradeId as string,
         },
       });
+
       await tx.unitPosition.update({
         where: {
           id: application.jobPost?.unitPositionId as string,
@@ -2351,6 +2353,7 @@ export const applicationRegisterUser = async (
           },
         },
       });
+
       await tx.positionSlot.update({
         where: {
           userId: user.id,
@@ -2360,6 +2363,7 @@ export const applicationRegisterUser = async (
           userId: user.id,
         },
       });
+
       await tx.submittedApplication.update({
         where: {
           id: application.id,
@@ -2375,6 +2379,91 @@ export const applicationRegisterUser = async (
     if (response !== "OK") {
       throw new ValidationError("FAILED TO CREATE ACCOUNT");
     }
+    return res.code(200).send({ message: "OK" });
+  } catch (error) {
+    //console.log(error);
+
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+export const deleteApplication = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as { id: string; userId: string; lineId: string };
+  console.log(params);
+
+  if (!params.id || !params.userId || !params.lineId) {
+    throw new ValidationError("INVALID REQUIRED PARAMETERS");
+  }
+  try {
+    const response = await prisma.$transaction(async (tx) => {
+      const application = await tx.submittedApplication.delete({
+        where: {
+          id: params.id,
+        },
+      });
+
+      await tx.humanResourcesLogs.create({
+        data: {
+          userId: params.userId,
+          action: "DELETE",
+          desc: `DELETE application of ${application.lastname}, ${application.firstname}`,
+          lineId: params.lineId,
+        },
+      });
+      return "OK";
+    });
+    if (response !== "OK") {
+      throw new ValidationError("FAILED TO DELETE APPLICATION");
+    }
+    return res.code(200).send({ message: "OK" });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+export const applicationDeleteMany = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as { ids: string[]; userId: string; lineId: string };
+  console.log({ body });
+
+  if (!body.ids?.length || !body.userId || !body.lineId) {
+    throw new ValidationError("INVALID REQUIRED PARAMETERS");
+  }
+
+  try {
+    const ressponse = await prisma.$transaction(async (tx) => {
+      await tx.submittedApplication.deleteMany({
+        where: {
+          id: {
+            in: body.ids,
+          },
+        },
+      });
+
+      await tx.humanResourcesLogs.createMany({
+        data: body.ids.map((id) => ({
+          userId: body.userId,
+          action: "DELETE",
+          desc: `DELETE application with id ${id}`,
+          lineId: body.lineId,
+        })),
+      });
+      return true;
+    });
+
+    if (!ressponse) throw new ValidationError("FAILED TO DELETE APPLICATIONS");
+
     return res.code(200).send({ message: "OK" });
   } catch (error) {
     console.log(error);
