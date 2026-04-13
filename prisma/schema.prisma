@@ -106,7 +106,7 @@ model ActivityLogs {
   desc      String?
   timestamp DateTime @default(now())
   lineId    String
-  line      Line     @relation(fields: [lineId], references: [id])
+  line      Line     @relation(fields: [lineId], references: [id], onDelete: Cascade)
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
@@ -1861,7 +1861,7 @@ model MedicineStorageAccess {
 
 model MedicineLogs {
   id        String   @id @default(uuid())
-  action    Int      @default(0)
+  action    Int      @default(0) // 0 - remove, 1 - add, 2- update, 3 - dispense
   message   String
   timestamp DateTime @default(now())
   userId    String
@@ -1871,19 +1871,20 @@ model MedicineLogs {
 }
 
 model Medicine {
-  id                      String                    @id @default(uuid())
-  serialNumber            String
-  name                    String
-  desc                    String?                   @default("None")
-  phase                   Int                       @default(0)
-  timestamp               DateTime                  @default(now())
-  lineId                  String
-  line                    Line                      @relation(fields: [lineId], references: [id], onDelete: Cascade)
-  MedicineHistory         MedicineHistory[]
-  medicineReceivedRecords MedicineReceivedRecords[]
-  MedicineStock           MedicineStock[]
-  MedicineTrack           MedicineTrack[]
-  PrecribeMedicine        PrecribeMedicine[]
+  id                       String                    @id @default(uuid())
+  serialNumber             String
+  name                     String
+  desc                     String?                   @default("None")
+  phase                    Int                       @default(0)
+  timestamp                DateTime                  @default(now())
+  lineId                   String
+  line                     Line                      @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  MedicineHistory          MedicineHistory[]
+  medicineReceivedRecords  MedicineReceivedRecords[]
+  MedicineStock            MedicineStock[]
+  MedicineTrack            MedicineTrack[]
+  PrecribeMedicine         PrecribeMedicine[]
+  medicineTransactionItems MedicineTransactionItem[]
 }
 
 model MedicineTransaction {
@@ -1898,7 +1899,7 @@ model MedicineTransaction {
   lineId                  String
   action                  Int                       @default(0)
   line                    Line                      @relation(fields: [lineId], references: [id], onDelete: Cascade)
-  storage                 MedicineStorage?          @relation(fields: [medicineStorageId], references: [id])
+  storage                 MedicineStorage?          @relation(fields: [medicineStorageId], references: [id], onDelete: SetNull)
   prescription            Prescription?             @relation(fields: [prescriptionId], references: [id], onDelete: SetDefault)
   user                    User?                     @relation(fields: [userId], references: [id], onDelete: Cascade)
   MedicineTransactionItem MedicineTransactionItem[]
@@ -1911,9 +1912,11 @@ model MedicineTransactionItem {
   prescribeQuantity     Int                 @default(0)
   releasedQuantity      Int                 @default(0)
   medicineStorageId     String?
-  storage               MedicineStorage?    @relation(fields: [medicineStorageId], references: [id])
+  storage               MedicineStorage?    @relation(fields: [medicineStorageId], references: [id], onDelete: Cascade)
   presTranscription     MedicineTransaction @relation(fields: [medicineTransactionId], references: [id], onDelete: Cascade)
-  prescribeMed          PrecribeMedicine?   @relation(fields: [precribeMedicineId], references: [id])
+  prescribeMed          PrecribeMedicine?   @relation(fields: [precribeMedicineId], references: [id], onDelete: SetNull)
+  medicine              Medicine?           @relation(fields: [medicineId], references: [id])
+  medicineId            String?
 }
 
 model MedicineQuality {
@@ -1932,6 +1935,7 @@ model MedicineStock {
   quarter            Int
   timestamp          DateTime             @default(now())
   expiration         DateTime?
+  manufacturingDate  DateTime?
   medicineStorageId  String?
   lineId             String
   actualStock        Int                  @default(0)
@@ -1950,8 +1954,8 @@ model MedicineStock {
   price              MedicinePriceTrack[]
   stock              MedicineQuality?
   line               Line                 @relation(fields: [lineId], references: [id], onDelete: Cascade)
-  medicine           Medicine?            @relation(fields: [medicineId], references: [id], onDelete: Cascade)
-  MedicineStorage    MedicineStorage?     @relation(fields: [medicineStorageId], references: [id])
+  medicine           Medicine?            @relation(fields: [medicineId], references: [id], onDelete: SetNull)
+  MedicineStorage    MedicineStorage?     @relation(fields: [medicineStorageId], references: [id], onDelete: Cascade)
 }
 
 model MedicineTrack {

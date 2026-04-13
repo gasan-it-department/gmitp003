@@ -475,6 +475,7 @@ export const addStorageMedInList = async (
     price: number;
     expiration: string;
     perUnit: number;
+    manufacturingDate: string;
   };
   console.log({ body });
 
@@ -494,6 +495,7 @@ export const addStorageMedInList = async (
           medicineId: body.medicineId,
           medicineStorageId: body.storageId, // This is the key fix
           expiration: new Date(body.expiration),
+          manufacturingDate: new Date(body.manufacturingDate),
           quality: body.unitOfMeasure,
           perQuantity: body.perUnit,
         },
@@ -638,23 +640,31 @@ export const storageMedList = async (
       filter.lineId = params.lineId;
     }
 
-    const response = await prisma.medicineStock.findMany({
+    const response = await prisma.medicine.findMany({
       where: {
+        MedicineStock: {
+          some: {
+            lineId: params.lineId as string,
+          },
+        },
         ...filter,
       },
       skip: cursor ? 1 : 0,
       take: limit,
       orderBy: {
-        medicine: {
-          name: "desc",
-        },
+        name: "asc",
       },
       include: {
-        medicine: {
+        MedicineStock: {
           select: {
-            name: true,
             id: true,
-            serialNumber: true,
+            actualStock: true,
+            MedicineStorage: {
+              select: {
+                name: true,
+                id: true,
+              },
+            },
           },
         },
       },
@@ -1072,6 +1082,143 @@ export const removeMedicine = async (
       throw new ValidationError("TRANSACTION FAILED");
     }
     return res.code(200).send({ message: "OK" });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+export const medicineOverview = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as { lineId: string };
+  if (!params.lineId) {
+    throw new ValidationError("INVALID REQUIRED ID");
+  }
+  try {
+    const response = await prisma.$transaction(async (tx) => {
+      // Total medicines count
+      const medicines = await tx.medicineStock.count({
+        where: {
+          lineId: params.lineId,
+        },
+      });
+
+      // Low stock: where actualStock is less than or equal to threshold
+      const lowStock = await tx.medicineStock.count({
+        where: {
+          lineId: params.lineId,
+          actualStock: {
+            lte: tx.medicineStock.fields.threshold, // actualStock <= threshold
+          },
+        },
+      });
+
+      // Storage count
+      const storage = await tx.medicineStorage.count({
+        where: {
+          lineId: params.lineId,
+        },
+      });
+
+      // Near expiration: medicines expiring within 6 months from now
+      const sixMonthsFromNow = new Date();
+      sixMonthsFromNow.setMonth(sixMonthsFromNow.getMonth() + 6);
+
+      const nearExpiration = await tx.medicineStock.count({
+        where: {
+          lineId: params.lineId,
+          expiration: {
+            not: null,
+            lte: sixMonthsFromNow, // expiration date <= 6 months from now
+            gte: new Date(), // optional: only future expirations (not already expired)
+          },
+        },
+      });
+
+      // Optional: Get the actual near-expiration medicine details
+
+      return {
+        medicines: {
+          total: medicines,
+          lowStock,
+        },
+        storage,
+        nearExpiration,
+      };
+    });
+
+    return res.send(response);
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+export const storageData = async (req: FastifyRequest, res: FastifyReply) => {
+  const params = req.query as { id: string };
+  if (!params.id) throw new ValidationError("INVALID REQUIRED ID");
+
+  try {
+    const response = await prisma.medicineStorage.findUnique({
+      where: {
+        id: params.id,
+      },
+    });
+
+    if (!response) {
+      throw new NotFoundError("STORAGE NOT FOUND!");
+    }
+    return res.code(200).send(response);
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+export const removeStorage = async (req: FastifyRequest, res: FastifyReply) => {
+  const params = req.query as { id: string; userId: string; lineId: string };
+
+  if (!params.id) {
+    throw new ValidationError("INVALID REQUIRED ID");
+  }
+
+  try {
+    const response = await prisma.$transaction(async (tx) => {
+      const storage = await tx.medicineStorage.delete({
+        where: {
+          id: params.id,
+        },
+      });
+
+      await tx.activityLogs.create({
+        data: {
+          action: 1,
+          desc: `REMOVE MEDICINE STORAGE: ${storage.name}`,
+          userId: params.userId,
+          lineId: params.lineId,
+        },
+      });
+
+      await tx.medicineLogs.create({
+        data: {
+          action: 3,
+          lineId: params.lineId,
+          message: `STORAGE: ${storage.name}-${storage.refNumber}, has been removed`,
+          userId: params.userId,
+        },
+      });
+
+      return "OK";
+    });
+    return res.code(200).send(response);
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");

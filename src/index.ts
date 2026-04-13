@@ -87,7 +87,7 @@ app.register(cors, {
   origin: [
     "http://localhost:5173",
     "https://gasanmarinduque.xyz",
-    "https://gxcgxlpr-5173.asse.devtunnels.ms",
+    "https://ckv55gfl-5173.asse.devtunnels.ms",
     "https://lgu-portal.xyz",
   ], // Allow all origins
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH"], // Allowed HTTP methods
@@ -165,13 +165,10 @@ io.on("connection", (socket) => {
 });
 
 //middleware
-app.get("/", async (request, reply) => {
-  const docs = await prisma.document.findMany({
-    include: {
-      file: true,
-    },
-  });
-  return reply.code(200).send(docs);
+app.get("/admin-test", async (request, reply) => {
+  console.log("Admin Reached");
+
+  return reply.code(200).send({ message: "OK na" });
   // const text = "JudePogdasdasd";
   // const encrypted = {
   //   encryptedData: "05f9ee6af31971537b09794e0b35a988",
@@ -189,7 +186,7 @@ app.get("/test/ai", async (request: FastifyRequest, reply: FastifyReply) => {
   return { status: "ok" };
 });
 
-app.listen({ port: 3000 }, (err, address) => {
+app.listen({ port: 3000, host: "0.0.0.0" }, (err, address) => {
   if (err) {
     console.error(err);
     process.exit(1);

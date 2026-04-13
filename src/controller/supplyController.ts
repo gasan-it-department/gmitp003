@@ -962,7 +962,7 @@ export const supplyTimeBaseReport = async (
     console.log("Range: ", { years });
 
     const yearStart = years.length > 1 ? years[years.length - 1] : years[0];
-    const yearEnd = years.length > 1 ? years[years.length - 1] : years[0];
+    const yearEnd = years[0];
 
     // If yearStart is still NaN (unlikely with our validation), fallback to current year
     const finalYearStart = !isNaN(yearStart)
@@ -973,14 +973,14 @@ export const supplyTimeBaseReport = async (
 
     const firstHalfStart = new Date(finalYearStart, 0, 1); // January 1
     const firstHalfEnd = new Date(finalYearStart, 5, 30, 23, 59, 59, 999); // June 30
-    const secondHalfStart = new Date(finalYearStart, 6, 1); // July 1
-    const secondHalfEnd = new Date(finalYearStart, 11, 31, 23, 59, 59, 999); // December 31
+    const secondHalfStart = new Date(yearEnd, 6, 1); // July 1
+    const secondHalfEnd = new Date(yearEnd, 11, 31, 23, 59, 59, 999); // December 31
 
     console.log({
-      firstHalfEnd: firstHalfEnd.toISOString(),
-      firstHalfStart: firstHalfStart.toISOString(),
-      secondHalfEnd: secondHalfEnd.toISOString(),
-      secondHalfStart: secondHalfStart.toISOString(),
+      firstHalfEnd: firstHalfEnd,
+      firstHalfStart: firstHalfStart,
+      secondHalfEnd: secondHalfEnd,
+      secondHalfStart: secondHalfStart,
     });
 
     const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;

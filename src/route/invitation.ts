@@ -13,6 +13,6 @@ export const invitation = (fastify: FastifyInstance) => {
   fastify.delete(
     "/delete-link",
     { preHandler: authenticated },
-    deleteInvitationLink
+    deleteInvitationLink,
   );
 };

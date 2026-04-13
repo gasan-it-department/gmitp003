@@ -544,8 +544,8 @@ export const prescriptionDispense = async (
               medicineTransactionId: transaction.id,
               prescribeQuantity: toDispense.prescribeQuantity,
               releasedQuantity: toDispense.quantity,
-              precribeMedicineId: toDispense.medId,
               medicineStorageId: item.MedicineStorage?.id,
+              medicineId: toDispense.medId,
             },
           });
         } catch (innerError) {
@@ -575,6 +575,7 @@ export const prescriptionDispense = async (
           lineId: prescription.lineId,
         },
       });
+
       await tx.notification.create({
         data: {
           recipientId: prescription.userId,
@@ -592,6 +593,8 @@ export const prescriptionDispense = async (
 
     return res.code(200).send({ message: "OK" });
   } catch (error) {
+    console.log({ error });
+
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
     }

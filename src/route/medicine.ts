@@ -17,6 +17,9 @@ import {
   removeStock,
   medicineTransactions,
   removeMedicine,
+  medicineOverview,
+  storageData,
+  removeStorage,
 } from "../controller/medicineController";
 
 export const medicine = (fastify: FastifyInstance) => {
@@ -82,5 +85,16 @@ export const medicine = (fastify: FastifyInstance) => {
     "/medicine/remove",
     { preHandler: authenticated },
     removeMedicine,
+  );
+  fastify.get(
+    "/medicine/overview",
+    { preHandler: authenticated },
+    medicineOverview,
+  );
+  fastify.get("/storage/data", { preHandler: authenticated }, storageData);
+  fastify.delete(
+    "/storage/remove",
+    { preHandler: authenticated },
+    removeStorage,
   );
 };
