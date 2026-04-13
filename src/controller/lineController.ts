@@ -98,6 +98,17 @@ export const createLine = async (req: FastifyRequest, res: FastifyReply) => {
         });
       }
 
+      console.log({
+        province,
+        municipal,
+        barangay,
+        region,
+        checkBarangay,
+        checkMunicipal,
+        checkProvince,
+        checkRegion,
+      });
+
       if (!checkRegion) {
         checkRegion = await tx.region.create({
           data: {
