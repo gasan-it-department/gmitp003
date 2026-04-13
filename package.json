@@ -7,8 +7,8 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "nodemon --watch src --exec ts-node src/index.ts",
     "build": "npx prisma generate && npx tsc",
-    "postinstall": "npx prisma generate",
-    "start": "node dist/src/index.js"
+    "start": "npx prisma migrate deploy && node dist/src/index.js",
+    "postinstall": "npx prisma generate"
   },
   "keywords": [],
   "author": "",
