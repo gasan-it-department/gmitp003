@@ -1,0 +1,22 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.supply = void 0;
+const handler_1 = require("../middleware/handler");
+const request_1 = require("../models/request");
+const supplyController_1 = require("../controller/supplyController");
+const supply = (fastify) => {
+    fastify.post("/add-supply", { schema: request_1.addNewSupplySchema }, supplyController_1.addSupply);
+    fastify.delete("/delete-supply", { preHandler: handler_1.authenticated, schema: request_1.deleteSupplySchema }, supplyController_1.deleteSupply);
+    fastify.post("/update-supply", { preHandler: handler_1.authenticated }, supplyController_1.updateSupply);
+    fastify.get("/supply-list", { preHandler: handler_1.authenticated }, supplyController_1.supplyList);
+    fastify.get("/supply-time-base", { preHandler: handler_1.authenticated }, supplyController_1.timebaseSupplyReport);
+    fastify.post("/supply/dispense", { preHandler: handler_1.authenticated }, supplyController_1.dispenseSupply);
+    fastify.get("/supply/category", { preHandler: handler_1.authenticated }, supplyController_1.categories);
+    fastify.get("/supply/dispense/transactions", { preHandler: handler_1.authenticated }, supplyController_1.supplyDispenseTransaction);
+    fastify.get("/supply/timebase", { preHandler: handler_1.authenticated }, supplyController_1.supplyTimeBaseReport);
+    fastify.delete("/supply/delete-item", { preHandler: handler_1.authenticated }, supplyController_1.removeStockInList);
+    fastify.get("/supply/dispense/transaction/info", { preHandler: handler_1.authenticated }, supplyController_1.supplyTransactionInfo);
+    fastify.get("/supply/user/dispense/record", { preHandler: handler_1.authenticated }, supplyController_1.userSupplyDispenseRecords);
+    fastify.get("/supply/unit/dispense/record", { preHandler: handler_1.authenticated }, supplyController_1.unitSupplyDispenseRecords);
+};
+exports.supply = supply;

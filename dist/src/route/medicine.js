@@ -1,0 +1,26 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.medicine = void 0;
+const handler_1 = require("../middleware/handler");
+const medicineController_1 = require("../controller/medicineController");
+const medicine = (fastify) => {
+    fastify.get("/medicine/storage", { preHandler: handler_1.authenticated }, medicineController_1.medicineStorage);
+    fastify.get("/medicine/logs", { preHandler: handler_1.authenticated }, medicineController_1.medicineLogList);
+    fastify.post("/medicine/storage/add-storage-location", { preHandler: handler_1.authenticated }, medicineController_1.addMedicineStorage);
+    fastify.get("/medicine/storage-list", { preHandler: handler_1.authenticated }, medicineController_1.medicineList);
+    fastify.get("/medicine/items", { preHandler: handler_1.authenticated }, medicineController_1.storageMeds);
+    fastify.get("/medicine/storage-item", medicineController_1.storageMedList);
+    fastify.post("/add-medicine", { preHandler: handler_1.authenticated }, medicineController_1.addStorageMed);
+    fastify.post("/storage/add-medicine", { preHandler: handler_1.authenticated }, medicineController_1.addStorageMedInList);
+    fastify.get("/medicine/new/notif", { preHandler: handler_1.authenticated }, medicineController_1.newPrescriptionCount);
+    fastify.get("/medicine/notifications", { preHandler: handler_1.authenticated }, medicineController_1.medicineNotification);
+    fastify.patch("/medicine/notification/view", { preHandler: handler_1.authenticated }, medicineController_1.viewNotification);
+    fastify.patch("/medicine/transfer", { preHandler: handler_1.authenticated }, medicineController_1.transferMedicine);
+    fastify.delete("/storage/medicine/remove", { preHandler: handler_1.authenticated }, medicineController_1.removeStock);
+    fastify.get("/medicine/transactions", { preHandler: handler_1.authenticated }, medicineController_1.medicineTransactions);
+    fastify.delete("/medicine/remove", { preHandler: handler_1.authenticated }, medicineController_1.removeMedicine);
+    fastify.get("/medicine/overview", { preHandler: handler_1.authenticated }, medicineController_1.medicineOverview);
+    fastify.get("/storage/data", { preHandler: handler_1.authenticated }, medicineController_1.storageData);
+    fastify.delete("/storage/remove", { preHandler: handler_1.authenticated }, medicineController_1.removeStorage);
+};
+exports.medicine = medicine;
