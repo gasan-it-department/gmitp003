@@ -214,30 +214,30 @@ export const createLine = async (req: FastifyRequest, res: FastifyReply) => {
       throw new ValidationError("TRANSACTION FAILED");
     }
 
-    const emailContent = `New Line Registration
+    //     const emailContent = `New Line Registration
 
-Hello,
+    // Hello,
 
-Your new line "${body.name}" has been successfully registered in our system.
+    // Your new line "${body.name}" has been successfully registered in our system.
 
-Line Details:
-- Line Name: ${body.name}
-- Location: ${barangay.name}, ${municipal.name}, ${province.name}
+    // Line Details:
+    // - Line Name: ${body.name}
+    // - Location: ${barangay.name}, ${municipal.name}, ${province.name}
 
-Next Steps to Manage Your Line:
-1. Click the link below to complete your account registration:
-${fronURL}/line/register/user/${response.newLine.id}/${response.invitationId}/${response.unitPosId}/${response.sgId}
+    // Next Steps to Manage Your Line:
+    // 1. Click the link below to complete your account registration:
+    // ${fronURL}/line/register/user/${response.newLine.id}/${response.invitationId}/${response.unitPosId}/${response.sgId}
 
-2. Once registered, you can:
-   - Manage line operations
-   - View reports and analytics
-   - Access on Module: Human resources
+    // 2. Once registered, you can:
+    //    - Manage line operations
+    //    - View reports and analytics
+    //    - Access on Module: Human resources
 
-If you have any questions, contact our support team.
+    // If you have any questions, contact our support team.
 
-Best regards,
-Your Organization Team`;
-    await sendEmail("New Line Registration", body.email, emailContent, "");
+    // Best regards,
+    // Your Organization Team`;
+    //     await sendEmail("New Line Registration", body.email, emailContent, "");
     return res.code(200).send({
       message: "Line created successfully",
       error: 0,
