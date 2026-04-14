@@ -118,7 +118,7 @@ export const createLine = async (req: FastifyRequest, res: FastifyReply) => {
         });
       }
 
-      const newLine = await prisma.line.create({
+      const newLine = await tx.line.create({
         data: {
           name: body.name,
           barangayId: checkBarangay.id,
@@ -226,7 +226,7 @@ Line Details:
 
 Next Steps to Manage Your Line:
 1. Click the link below to complete your account registration:
-   ${fronURL}line/register/user/${response.newLine.id}/${response.invitationId}/${response.unitPosId}/${response.sgId}
+${fronURL}/line/register/user/${response.newLine.id}/${response.invitationId}/${response.unitPosId}/${response.sgId}
 
 2. Once registered, you can:
    - Manage line operations
@@ -241,6 +241,7 @@ Your Organization Team`;
     return res.code(200).send({
       message: "Line created successfully",
       error: 0,
+      link: `${fronURL}line/register/user/${response.newLine.id}/${response.invitationId}/${response.unitPosId}/${response.sgId}`,
     });
   } catch (error) {
     console.log(error);
@@ -296,7 +297,6 @@ export const getAllLine = async (req: FastifyRequest, res: FastifyReply) => {
         },
       },
     });
-    console.log(response);
 
     const newLastCursor =
       response.length > 0 ? response[response.length - 1].id : null;
@@ -1169,7 +1169,7 @@ export const userDataRegister = async (
       return application.id;
     });
 
-    return res.send({
+    return res.code(200).send({
       success: true,
       applicationId: result,
       filesUploaded: uploaded.length,

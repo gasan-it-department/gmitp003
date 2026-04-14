@@ -57,7 +57,11 @@ export const adminAuthenticated = async (
     if (!token) {
       throw new Error("No token provided");
     }
+    console.log({ token });
+
     const decoded = await request.jwtVerify<{ id: string }>();
+    console.log({ decoded });
+
     const user = await prisma.admin.findUnique({
       where: {
         id: decoded.id,

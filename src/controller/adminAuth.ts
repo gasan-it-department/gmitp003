@@ -24,6 +24,8 @@ export const adminAuth = async (req: FastifyRequest, res: FastifyReply) => {
     if (!verified) {
       return res.code(200).send({ error: 2, message: "Incorrect Password!" });
     }
+    console.log({ admin });
+
     const token = await res.jwtSign({ id: admin.id, username: admin.username });
 
     return res

@@ -16,7 +16,7 @@ import {
 export const lineRoutes = async (fastify: FastifyInstance) => {
   fastify.post("/create-line", { preHandler: adminAuthenticated }, createLine);
   fastify.get("/lines", getLines);
-  fastify.get("/line/list", { preHandler: adminAuthenticated }, getAllLine);
+  fastify.get("/line/list", getAllLine);
   fastify.patch(
     "/line/update/status",
     { preHandler: adminAuthenticated },
