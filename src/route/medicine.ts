@@ -20,6 +20,7 @@ import {
   medicineOverview,
   storageData,
   removeStorage,
+  exportMedicineReport,
 } from "../controller/medicineController";
 
 export const medicine = (fastify: FastifyInstance) => {
@@ -97,4 +98,5 @@ export const medicine = (fastify: FastifyInstance) => {
     { preHandler: authenticated },
     removeStorage,
   );
+  fastify.get("/medicine/export/report", exportMedicineReport);
 };

@@ -121,6 +121,7 @@ export const invitationAuth = async (
             municipal: {
               select: {
                 name: true,
+                id: true,
               },
             },
             province: {
@@ -296,18 +297,18 @@ export const submitToInvitationLink = async (
       }
     }
 
-    const jobPost = await prisma.jobPost.findUnique({
-      where: {
-        id: formData.jobPostId,
-      },
-      select: {
-        id: true,
-        unitPositionId: true,
-      },
+    const invitationLink = await prisma.$transaction(async (tx) => {
+      const invitationLink = await tx.invitationLink.findUnique({
+        where: {
+          id: formData.invitationId,
+        },
+      });
+
+      return invitationLink;
     });
 
-    if (!jobPost) {
-      throw new NotFoundError("JOB POST NOT FOUND");
+    if (!invitationLink) {
+      throw new NotFoundError("INVITATION NOT FOUND");
     }
 
     const tmpDir = path.join(process.cwd(), "tmp_uploads");
@@ -555,12 +556,7 @@ export const submitToInvitationLink = async (
         where: { id: formData.municipalId },
       });
 
-      const position = await tx.position.findUnique({
-        where: { id: formData.positionId },
-        include: { line: true },
-      });
-
-      if (!municipal || !position) {
+      if (!municipal) {
         throw new ValidationError("INVALID REQUIRED DATA");
       }
 
@@ -670,11 +666,10 @@ export const submitToInvitationLink = async (
         agencyNoIv: encrypted.agencyNo?.iv || null,
 
         // job linking
-        lineId: position.line?.id as string,
-        positionId: formData.positionId,
-        unitPositionId: jobPost.unitPositionId,
+        lineId: formData.lineId,
         // REQUIRED Date
         batch: new Date(),
+        status: 0,
       };
 
       console.log("Application Data: ", { applicationData });
@@ -719,18 +714,18 @@ export const submitToInvitationLink = async (
           "Application Received",
           formData.email,
           `
-Dear ${formData.firstName} ${formData.lastName},
-          
-          This is to confirm that we have successfully received your application for the position of ${position.name} at ${municipal.name}.
-          
-          We will inform you of any further instructions regarding the next steps in the hiring process once your application has been reviewed.
-          
-          You can check the status of your application by clicking this link: ${officialUrl}public/application/${application.id}
-          
-          Sincerely,
-          The HR Team
-          ${municipal.name}
-          `,
+    Dear ${formData.firstName} ${formData.lastName},
+
+              This is to confirm that we have successfully received your application at ${municipal.name}.
+
+              We will inform you of any further instructions regarding the next steps in the hiring process once your application has been reviewed.
+
+              You can check the status of your application by clicking this link: ${officialUrl}/public/application/${application.id}
+
+              Sincerely,
+              The HR Team
+              ${municipal.name}
+              `,
           `${municipal.name} HR Team <no-reply@${municipal.name}.gov.ph>`,
         );
 
@@ -745,13 +740,13 @@ Dear ${formData.firstName} ${formData.lastName},
             number: contact,
             message: `Dear ${formData.firstName} ${formData.lastName},
 
-This is to confirm that we have successfully received your application for the position of ${position.name} at ${municipal.name}.
+    This is to confirm that we have successfully received your application at ${municipal.name}.
 
-We will inform you of any further instructions regarding the next steps in the hiring process once your application has been reviewed.
+    We will inform you of any further instructions regarding the next steps in the hiring process once your application has been reviewed.
 
-Sincerely,
-The HR Team
-${municipal.name}`,
+    Sincerely,
+    The HR Team
+    ${municipal.name}`,
             apikey: semaphoreKey,
           },
           {
@@ -772,6 +767,8 @@ ${municipal.name}`,
       profilePictureUploaded: !!profilePicture,
     });
   } catch (err) {
+    console.log("Submitted Application: ", { err });
+
     return res.status(500).send({
       success: false,
       message: "Failed to submit application",

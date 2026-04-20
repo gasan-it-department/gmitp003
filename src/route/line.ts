@@ -12,6 +12,7 @@ import {
   registerLine,
   checkLineInvitation,
   userDataRegister,
+  lineData,
 } from "../controller/lineController";
 export const lineRoutes = async (fastify: FastifyInstance) => {
   fastify.post("/create-line", { preHandler: adminAuthenticated }, createLine);
@@ -35,4 +36,5 @@ export const lineRoutes = async (fastify: FastifyInstance) => {
   );
   fastify.get("/line/invitation", checkLineInvitation);
   fastify.post("/line/user/register", userDataRegister);
+  fastify.get("/line/data", { preHandler: authenticated }, lineData);
 };

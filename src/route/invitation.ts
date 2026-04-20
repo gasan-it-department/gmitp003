@@ -4,6 +4,7 @@ import {
   createInvitationLink,
   invitations,
   deleteInvitationLink,
+  submitToInvitationLink,
 } from "../controller/invitationController.";
 import { authenticated } from "../middleware/handler";
 export const invitation = (fastify: FastifyInstance) => {
@@ -15,4 +16,5 @@ export const invitation = (fastify: FastifyInstance) => {
     { preHandler: authenticated },
     deleteInvitationLink,
   );
+  fastify.post("/invitation/line/submition", submitToInvitationLink);
 };

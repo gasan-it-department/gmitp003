@@ -2241,6 +2241,7 @@ export const applicationRegisterUser = async (
     lineId: string;
     applicationId: string;
   };
+  console.log("res", { body });
 
   if (!body.applicationId || !body.username || !body.password || !body.lineId) {
     throw new ValidationError("INVALID REQUIRED FIELD");
@@ -2257,7 +2258,9 @@ export const applicationRegisterUser = async (
         },
       });
 
-      if (check) throw new ValidationError("Username alrady exiist");
+      if (check) {
+        return res.code(200).send({ message: "USER NOT FOUND", error: 1 });
+      }
       const application = await tx.submittedApplication.findUnique({
         where: {
           id: body.applicationId,
@@ -2295,7 +2298,11 @@ export const applicationRegisterUser = async (
         },
       });
 
-      if (!application) throw new ValidationError("Application not found!");
+      if (!application) {
+        return res
+          .code(200)
+          .send({ message: "APPLICATION NOT FOUND", error: 2 });
+      }
 
       const hashedPassword = await argon.hash(body.password);
 
@@ -2381,7 +2388,7 @@ export const applicationRegisterUser = async (
     }
     return res.code(200).send({ message: "OK" });
   } catch (error) {
-    //console.log(error);
+    console.log(error);
 
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");

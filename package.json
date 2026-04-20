@@ -33,6 +33,7 @@
     "dotenv": "^17.2.3",
     "exceljs": "^1.6.3",
     "fastify": "^5.4.0",
+    "mailgun.js": "^12.7.1",
     "mammoth": "^1.11.0",
     "nodemailer": "^7.0.10",
     "openai": "^6.33.0",

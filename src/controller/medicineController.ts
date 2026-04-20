@@ -1226,3 +1226,125 @@ export const removeStorage = async (req: FastifyRequest, res: FastifyReply) => {
     throw error;
   }
 };
+
+export const exportMedicineReport = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as { storgeId: string };
+
+  if (!params.storgeId) {
+    throw new ValidationError("INVALID REQUIRED ID");
+  }
+
+  try {
+    let limit = 20;
+
+    const result = await prisma.$transaction(async (tx) => {
+      let allMedicines: any[] = [];
+      let currentPage = 0;
+      let hasMoreData = true;
+
+      // Get storage info
+      const storage = await tx.medicineStorage.findUnique({
+        where: {
+          id: params.storgeId,
+        },
+      });
+
+      if (!storage) {
+        throw new NotFoundError("STORAGE NOT FOUND");
+      }
+
+      // Fetch all medicines with pagination
+      while (hasMoreData) {
+        const skipping = currentPage * limit;
+        const medicines = await tx.medicineStock.findMany({
+          where: {
+            medicineStorageId: params.storgeId,
+          },
+          take: limit,
+          skip: skipping,
+          include: {
+            medicine: {
+              select: {
+                name: true,
+              },
+            },
+          },
+        });
+
+        if (medicines.length === 0) {
+          hasMoreData = false;
+        } else {
+          allMedicines.push(...medicines);
+          currentPage++;
+
+          if (medicines.length < limit) {
+            hasMoreData = false;
+          }
+        }
+      }
+
+      return { medicines: allMedicines, storage };
+    });
+
+    // Load and process template
+    const medicineReportTemplateLink =
+      "https://res.cloudinary.com/drhkb0ubf/raw/upload/v1776245651/Medicine_Report_Template_ewezx3.xlsx";
+    const response = await fetch(medicineReportTemplateLink);
+    const arrayBuffer = await response.arrayBuffer();
+
+    const buffer = Buffer.from(arrayBuffer);
+
+    const { Readable } = require("stream");
+    const stream = Readable.from(buffer);
+
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.read(stream);
+
+    const worksheet = workbook.worksheets[0];
+
+    if (!worksheet) {
+      throw new Error("Worksheet not found in template");
+    }
+
+    let initRow = 4;
+    let rowIndex = 0;
+
+    result.medicines.forEach((item, i) => {
+      initRow++;
+      rowIndex++;
+      let row = worksheet.getRow(initRow);
+      row.getCell("A").value = rowIndex;
+      row.getCell("B").value = item.medicine?.name || "N/A";
+      row.getCell("F").value = item.manufacturingDate || "N/A";
+      row.getCell("G").value = item.expiration || "N/A";
+      row.getCell("H").value = item.actualStock;
+      row.getCell("I").value =
+        item.perQuantity > 1
+          ? `${item.perQuantity}/${item.quality}`
+          : item.quality;
+    });
+
+    const excelBuffer = await workbook.xlsx.writeBuffer();
+
+    res.header(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+    res.header(
+      "Content-Disposition",
+      `attachment; filename="MedicineReport_${result.storage.name || "export"}.xlsx"`,
+    );
+
+    return res.send(excelBuffer);
+  } catch (error) {
+    console.log({ error });
+
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};

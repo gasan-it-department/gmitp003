@@ -1140,8 +1140,6 @@ export const userDataRegister = async (
         },
       });
 
-      console.log("Submitted Application: ", { application });
-
       // Create skill tags if they exist
       if (clean.tags && clean.tags.length > 0) {
         await tx.applicationSkillTags.createMany({
@@ -1176,12 +1174,63 @@ export const userDataRegister = async (
       profilePictureUploaded: !!profilePicture,
     });
   } catch (err) {
-    console.log(err);
-
     return res.status(500).send({
       success: false,
       message: "Failed to submit application",
       error: err instanceof Error ? err.message : "Unknown error",
     });
+  }
+};
+
+export const lineData = async (req: FastifyRequest, res: FastifyReply) => {
+  const params = req.query as { id: string };
+  console.log("das", params.id);
+
+  if (!params.id) {
+    throw new ValidationError("INVALID REQUIRED ID");
+  }
+  try {
+    const response = await prisma.line.findUnique({
+      where: {
+        id: params.id,
+      },
+      include: {
+        municipal: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+        province: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+        barangay: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+        region: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+      },
+    });
+
+    if (!response) {
+      throw new NotFoundError("LINE NOT FOUND");
+    }
+
+    return res.code(200).send(response);
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
   }
 };

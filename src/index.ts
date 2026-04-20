@@ -7,6 +7,7 @@ import { createServer } from "node:http";
 import { Server } from "socket.io";
 import { NotificationSocket } from "./class/NotificationSocket";
 import fastifyWebsocket from "@fastify/websocket";
+import { mailGun } from "./utils/email";
 //routes
 import { auth } from "./route/auth";
 import { employee } from "./route/employee";
@@ -181,9 +182,17 @@ app.get("/admin-test", async (request, reply) => {
   // );
   // return { encrypt, decrypt };
 });
-app.get("/test/ai", async (request: FastifyRequest, reply: FastifyReply) => {
-  await testGemini();
-  return { status: "ok" };
+app.get("/test/email", async (request: FastifyRequest, reply: FastifyReply) => {
+  const response = await mailGun(
+    "officeofthemayor.gasan@gmail.com",
+    "juderibleza36@gmail.com",
+    "Email Test",
+    "Test content",
+  );
+  if (!response) {
+    return { message: "Error" };
+  }
+  return { message: "Email sent" };
 });
 
 app.listen({ port: 3000, host: "0.0.0.0" }, (err, address) => {
