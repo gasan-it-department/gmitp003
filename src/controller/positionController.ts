@@ -1,5 +1,6 @@
 import { FastifyRequest, FastifyReply } from "../barrel/fastify";
 import { Prisma, prisma } from "../barrel/prisma";
+import { getCurrentUrl } from "../utils/env";
 import {
   PagingProps,
   AddPositionProps,
@@ -16,6 +17,7 @@ import fs from "fs";
 import path from "path";
 
 const frontEnd = process.env.VITE_LOCAL_FRONTEND_URL;
+
 export const positionList = async (req: FastifyRequest, res: FastifyReply) => {
   const params = req.query as PagingProps;
 
@@ -633,6 +635,7 @@ export const fillPositionInvite = async (
     throw new ValidationError("INVALID REQUIRED FIELDS");
   }
   try {
+    const official = await getCurrentUrl();
     const response = await prisma.$transaction(async (tx) => {
       const line = await tx.line.findUnique({
         where: {
@@ -695,7 +698,7 @@ export const fillPositionInvite = async (
   You are invited to register and create an account on the Gasan Portal.
 
   Please click the link below to proceed with your registration:
-  ${frontEnd}position/register/${link.id}
+  ${official}/position/register/${link.id}
 
   Best regards,
   Human Resource Management Office (HRMO)
@@ -711,6 +714,8 @@ export const fillPositionInvite = async (
     }
     return res.code(200).send({ message: "OK" });
   } catch (error) {
+    console.log("Fill Post: ", error);
+
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
     }
@@ -814,12 +819,27 @@ export const positionRegister = async (
           userId: true,
         },
       });
+      console.log({ slot });
 
       const application = await tx.submittedApplication.findUnique({
         where: {
           id: body.applicationId,
         },
+        include: {
+          unitPos: {
+            select: {
+              positionId: true,
+              position: {
+                select: {
+                  id: true,
+                  name: true,
+                },
+              },
+            },
+          },
+        },
       });
+      console.log({ application });
 
       if (!slot) {
         throw new ValidationError("SLOT NOT FOUND");
@@ -866,7 +886,7 @@ export const positionRegister = async (
         },
       });
 
-      await tx.positionSlot.update({
+      const updateSlotPos = await tx.positionSlot.update({
         where: {
           id: slot.id,
         },
@@ -874,8 +894,11 @@ export const positionRegister = async (
           userId: user.id,
           salaryGradeId: body.sgId,
           occupied: true,
+          positionId: application.unitPos?.positionId,
         },
       });
+      console.log({ user, updateSlotPos });
+
       await tx.notification.create({
         data: {
           recipientId: user.id,
@@ -893,7 +916,7 @@ export const positionRegister = async (
 
     return res.code(200).send({ message: "OK" });
   } catch (error) {
-    console.log(error);
+    // console.log(error);
 
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
@@ -1630,4 +1653,27 @@ export const vacantPosition = async (
   res: FastifyReply,
 ) => {
   const body = req.body as { userId: string; id: string; lineId: string };
+
+  if (!body.id || !body.lineId || !body.userId) {
+    throw new ValidationError("INVALID REQUIRED FIELD");
+  }
+
+  try {
+    const response = await prisma.$transaction(async (tx) => {
+      // const
+      // const slot = await tx.positionSlot.update({
+      //   where:{
+      //     positionId: body.id
+      //   },
+      //   data:{
+      //     userId: undefined
+      //   }
+      // })
+    });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("Database operation failed", 500, "DB_ERROR");
+    }
+    throw error;
+  }
 };

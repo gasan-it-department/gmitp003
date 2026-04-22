@@ -4,6 +4,7 @@ import {
   Prisma,
   SubmittedApplication as SubmittedApplicationProps,
 } from "../barrel/prisma";
+import { getCurrentUrl } from "../utils/env";
 import fs from "fs";
 import path from "path";
 import cloudinary from "../class/Cloundinary";
@@ -21,7 +22,7 @@ import { phNumberFormat, sendEmail } from "../middleware/handler";
 import { semaphoreService } from "../class/Semaphore";
 import axios from "axios";
 
-const officialUrl = process.env.VITE_LOCAL_FRONTEND_URL;
+const officialUrl = getCurrentUrl();
 
 export const applications = async (req: FastifyRequest, res: FastifyReply) => {
   const params = req.query as PagingProps;
@@ -900,7 +901,7 @@ export const submitApplication = async (
     }
 
     const clean = normalizeForm(formData);
-    console.log("Normalized form data:", JSON.stringify(clean, null, 2));
+    // console.log("Normalized form data:", JSON.stringify(clean, null, 2));
 
     // -----------------------------------------
     // 3. Encrypt EVERYTHING BEFORE TX
@@ -1118,21 +1119,21 @@ export const submitApplication = async (
       }
 
       if (formData.email) {
-        const sebtEmail = await sendEmail(
+        await sendEmail(
           "Application Received",
           formData.email,
           `
 Dear ${formData.firstName} ${formData.lastName},
           
-          This is to confirm that we have successfully received your application for the position of ${position.name} at ${municipal.name}.
+This is to confirm that we have successfully received your application for the position of ${position.name} at ${municipal.name}.
           
-          We will inform you of any further instructions regarding the next steps in the hiring process once your application has been reviewed.
+We will inform you of any further instructions regarding the next steps in the hiring process once your application has been reviewed.
           
-          You can check the status of your application by clicking this link: ${officialUrl}public/application/${application.id}
+You can check the status of your application by clicking this link: ${officialUrl}/public/application/${application.id}
           
-          Sincerely,
-          The HR Team
-          ${municipal.name}
+Sincerely,
+The HR Team
+${municipal.name}
           `,
           `${municipal.name} HR Team <no-reply@${municipal.name}.gov.ph>`,
         );
@@ -1146,7 +1147,8 @@ Dear ${formData.firstName} ${formData.lastName},
           `https://api.semaphore.co/api/v4/messages`,
           {
             number: contact,
-            message: `Dear ${formData.firstName} ${formData.lastName},
+            message: `
+Dear ${formData.firstName} ${formData.lastName},
 
 This is to confirm that we have successfully received your application for the position of ${position.name} at ${municipal.name}.
 
@@ -1251,7 +1253,6 @@ export const applicationList = async (
         };
       }
     }
-    console.log({ whereClause });
 
     const response = await prisma.submittedApplication.findMany({
       where: whereClause,
@@ -2241,7 +2242,6 @@ export const applicationRegisterUser = async (
     lineId: string;
     applicationId: string;
   };
-  console.log("res", { body });
 
   if (!body.applicationId || !body.username || !body.password || !body.lineId) {
     throw new ValidationError("INVALID REQUIRED FIELD");

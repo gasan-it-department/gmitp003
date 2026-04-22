@@ -4,10 +4,10 @@ import { jwt } from "./barrel/fastify";
 import { prisma } from "./barrel/prisma";
 import cors from "@fastify/cors";
 import { createServer } from "node:http";
-import { Server } from "socket.io";
 import { NotificationSocket } from "./class/NotificationSocket";
 import fastifyWebsocket from "@fastify/websocket";
 import { mailGun } from "./utils/email";
+import { getEnv, getCurrentUrl } from "./utils/env";
 //routes
 import { auth } from "./route/auth";
 import { employee } from "./route/employee";
@@ -51,20 +51,7 @@ import errorHandlerPlugin from "./plugin/errorHandlers";
 import { EncryptionService } from "./service/encryption";
 import { testGemini } from "./utils/gemini";
 const app = fastify();
-const server = createServer(app.server);
-const io = new Server(server, {
-  cors: {
-    origin: [
-      "http://localhost:5173",
-      "https://gasanmarinduque.xyz",
-      "https://g671jwjj-5173.asse.devtunnels.ms",
-      "https://lgu-portal.xyz",
-    ],
-    methods: ["GET", "POST"],
-    credentials: true,
-  },
-});
-export const notificationSocket = new NotificationSocket(io);
+
 //plugin
 app.register(fastifyWebsocket);
 app.register(errorHandlerPlugin);
@@ -99,12 +86,18 @@ app.register(cors, {
     "Accept",
     "Authorization",
     "Cache-Control",
+    "Upgrade",
+    "Connection",
+    "Sec-WebSocket-Key",
+    "Sec-WebSocket-Version",
+    "Sec-WebSocket-Protocol",
+    "Sec-WebSocket-Extensions",
   ],
   credentials: true,
   preflightContinue: false,
   exposedHeaders: ["Authorization"],
 });
-app.decorate("io", io);
+
 app.register(auth);
 app.register(test);
 app.register(employee);
@@ -136,34 +129,6 @@ app.register(application);
 app.register(otp);
 app.register(modules);
 app.register(document);
-io.on("connection", (socket) => {
-  console.log("User connected: ", socket.id);
-
-  socket.on("send_message", (data) => {
-    console.log("Received message:", data);
-
-    socket.emit("message_received", {
-      status: "success",
-      message: "Message received by server",
-      originalData: data,
-    });
-  });
-
-  // New area handler
-  socket.on("new_area", (areaData) => {
-    console.log("New area created:", areaData);
-
-    // Broadcast to all other clients except sender
-    socket.broadcast.emit("new_area_broadcast", areaData);
-
-    // Or broadcast to everyone including sender
-    // io.emit("new_area_broadcast", areaData);
-  });
-
-  socket.on("disconnect", (reason) => {
-    console.log("User disconnected: ", socket.id, "Reason:", reason);
-  });
-});
 
 //middleware
 app.get("/admin-test", async (request, reply) => {
@@ -183,18 +148,54 @@ app.get("/admin-test", async (request, reply) => {
   // return { encrypt, decrypt };
 });
 app.get("/test/email", async (request: FastifyRequest, reply: FastifyReply) => {
-  const response = await mailGun(
-    "officeofthemayor.gasan@gmail.com",
-    "juderibleza36@gmail.com",
-    "Email Test",
-    "Test content",
-  );
-  if (!response) {
-    return { message: "Error" };
-  }
-  return { message: "Email sent" };
+  const response = await getCurrentUrl();
+  return reply.code(200).send({ env: response });
+  // const response = await mailGun(
+  //   "officeofthemayor.gasan@gmail.com",
+  //   "juderibleza36@gmail.com",
+  //   "Email Test",
+  //   "Test content",
+  // );
+  // if (!response) {
+  //   return { message: "Error" };
+  // }
+  // return { message: "Email sent" };
 });
 
+app.get("/socket/test", { websocket: true }, (connection, req) => {
+  console.log("Client connected to /socket/test");
+
+  // Send welcome message
+  connection.socket.send(
+    JSON.stringify({
+      type: "connected",
+      message: "Welcome to Fastify WebSocket!",
+    }),
+  );
+
+  // Handle incoming messages
+  connection.socket.on("message", (message: any) => {
+    console.log("Received:", message.toString());
+
+    // Echo back
+    connection.socket.send(
+      JSON.stringify({
+        type: "echo",
+        data: message.toString(),
+      }),
+    );
+  });
+
+  // Handle disconnection
+  connection.socket.on("close", () => {
+    console.log("Client disconnected from /socket/test");
+  });
+
+  // Handle errors
+  connection.socket.on("error", (error: any) => {
+    console.error("WebSocket error:", error);
+  });
+});
 app.listen({ port: 3000, host: "0.0.0.0" }, (err, address) => {
   if (err) {
     console.error(err);
@@ -202,4 +203,3 @@ app.listen({ port: 3000, host: "0.0.0.0" }, (err, address) => {
   }
   console.log(`Server is running at ${address}`);
 });
-export { io };

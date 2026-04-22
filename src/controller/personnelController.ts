@@ -26,9 +26,13 @@ export const personnelList = async (req: FastifyRequest, res: FastifyReply) => {
         firstName: true,
         lastName: true,
         middleName: true,
-        Position: {
+        PositionSlot: {
           select: {
-            name: true,
+            pos: {
+              select: {
+                name: true,
+              },
+            },
           },
         },
       },

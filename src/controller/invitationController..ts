@@ -1,6 +1,7 @@
 import path from "path";
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
 import { prisma, InvitationLink, Prisma } from "../barrel/prisma";
+import { getCurrentUrl } from "../utils/env";
 import { AppError, NotFoundError, ValidationError } from "../errors/errors";
 import {
   generatedInvitationCode,
@@ -14,7 +15,7 @@ import cloudinary from "../class/Cloundinary";
 import { axios } from "../db/axios";
 import { semaphoreKey } from "../class/Semaphore";
 
-const officialUrl = process.env.VITE_LOCAL_FRONTEND_URL;
+const officialUrl = getCurrentUrl();
 
 export const createInvitationLink = async (
   req: FastifyRequest,
@@ -683,7 +684,14 @@ export const submitToInvitationLink = async (
         data: applicationData,
       });
 
-      console.log("Submitted Application: ", { application });
+      await tx.invitationLink.update({
+        where: {
+          id: invitationLink.id,
+        },
+        data: {
+          status: 1,
+        },
+      });
 
       // Create skill tags if they exist
       if (clean.tags && clean.tags.length > 0) {
@@ -710,7 +718,7 @@ export const submitToInvitationLink = async (
       }
 
       if (formData.email) {
-        const sebtEmail = await sendEmail(
+        await sendEmail(
           "Application Received",
           formData.email,
           `
@@ -738,15 +746,16 @@ export const submitToInvitationLink = async (
           `https://api.semaphore.co/api/v4/messages`,
           {
             number: contact,
-            message: `Dear ${formData.firstName} ${formData.lastName},
+            message: `
+  Dear ${formData.firstName} ${formData.lastName},
 
-    This is to confirm that we have successfully received your application at ${municipal.name}.
+  This is to confirm that we have successfully received your application at ${municipal.name}.
 
-    We will inform you of any further instructions regarding the next steps in the hiring process once your application has been reviewed.
+  We will inform you of any further instructions regarding the next steps in the hiring process once your application has been reviewed.
 
-    Sincerely,
-    The HR Team
-    ${municipal.name}`,
+  Sincerely,
+  The HR Team
+  ${municipal.name}`,
             apikey: semaphoreKey,
           },
           {

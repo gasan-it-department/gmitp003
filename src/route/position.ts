@@ -16,6 +16,7 @@ import {
   positionApplications,
   unitPositionRecord,
   removeUnitPosition,
+  vacantPosition,
 } from "../controller/positionController";
 import { positionListSchema, addPostionSchema } from "../models/request";
 export const position = (fastify: FastifyInstance) => {
@@ -65,5 +66,10 @@ export const position = (fastify: FastifyInstance) => {
     "/position/remove",
     { preHandler: authenticated },
     removeUnitPosition,
+  );
+  fastify.patch(
+    "/position/vacant",
+    { preHandler: authenticated },
+    vacantPosition,
   );
 };

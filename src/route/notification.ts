@@ -1,6 +1,6 @@
 // route/notification.ts
 import { FastifyInstance } from "../barrel/fastify";
-import { notificationSocket } from "..";
+// import { notificationSocket } from "..";
 import { authenticated, sendEmail } from "../middleware/handler";
 import {
   markAsRead,
@@ -20,12 +20,12 @@ export const notification = (fastify: FastifyInstance) => {
     const params = req.body as { userId: string; title: string };
     try {
       console.log("✅ /notification/send route HIT");
-      notificationSocket.sendToUser(params.userId, {
-        title: params.title,
-        message: "",
-        type: "",
-        userId: params.userId,
-      });
+      // notificationSocket.sendToUser(params.userId, {
+      //   title: params.title,
+      //   message: "",
+      //   type: "",
+      //   userId: params.userId,
+      // });
       // await sendEmail(
       //   "Test Sub",
       //   "juderibleza36@gmail.com",
