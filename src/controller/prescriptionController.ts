@@ -368,7 +368,6 @@ export const prescriptionDispense = async (
   if (!body.id) throw new ValidationError("BAD_REQUEST");
 
   try {
-    console.log("Log 1 - Starting transaction");
     const stocks = new Map();
     for (let i = 0; i < body.prescribeMed.length; i++) {
       const item = body.prescribeMed[i];
@@ -555,6 +554,7 @@ export const prescriptionDispense = async (
 
       await tx.prescription.update({
         data: {
+          dateConcluded: new Date().toISOString(),
           status: 2,
           progress: {
             create: {
@@ -570,7 +570,7 @@ export const prescriptionDispense = async (
       await tx.medicineLogs.create({
         data: {
           userId: body.userId,
-          action: 4,
+          action: 0,
           message: `Dispensed Medicine: Ref. #: ${prescription.refNumber}`,
           lineId: prescription.lineId,
         },

@@ -481,3 +481,16 @@ export interface DocumentRoomApplicationProps {
   userId: string;
   lineId: string;
 }
+
+export interface NewPatientProps {
+  lastname: string;
+  firstname: string;
+  email?: string;
+  phoneNumber: string;
+  barangayId: string;
+  municipalId: string;
+  provinceId: string;
+  regionId: string;
+  lineId: string;
+  illi: boolean;
+}

@@ -21,6 +21,8 @@ import {
   storageData,
   removeStorage,
   exportMedicineReport,
+  medicineBulkUpload,
+  resetMedicineRecord,
 } from "../controller/medicineController";
 
 export const medicine = (fastify: FastifyInstance) => {
@@ -99,4 +101,14 @@ export const medicine = (fastify: FastifyInstance) => {
     removeStorage,
   );
   fastify.get("/medicine/export/report", exportMedicineReport);
+  fastify.post(
+    "/medicine/bulk-upload",
+    { preHandler: authenticated },
+    medicineBulkUpload,
+  );
+  fastify.patch(
+    "/medicine/reset/record",
+    { preHandler: authenticated },
+    resetMedicineRecord,
+  );
 };

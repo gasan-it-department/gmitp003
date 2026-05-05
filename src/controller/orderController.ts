@@ -349,7 +349,6 @@ export const saveOrder = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const fullFillOrder = async (req: FastifyRequest, res: FastifyReply) => {
   const body = req.body as FullFillOrderProps;
-  console.log(body);
 
   if (!body.orderId || !body.userId || !body.inventoryBoxId) {
     throw new ValidationError("BAD REQUEST!");
@@ -459,6 +458,7 @@ export const fullFillOrder = async (req: FastifyRequest, res: FastifyReply) => {
           },
           data: {
             status: 2,
+            approvedAt: new Date().toISOString(),
           },
         }),
         prisma.supplieRecieveHistory.create({

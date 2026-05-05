@@ -1,5 +1,7 @@
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
 import { Prisma, prisma } from "../barrel/prisma";
+import { Readable } from "stream";
+import ExcelJs from "exceljs";
 //
 import {
   AddNewSupplyProps,
@@ -8,9 +10,13 @@ import {
   TimebaseGroupPrice,
   UpdateSupplyProps,
 } from "../models/route";
-import { generatedItemCode, generateOrderRef } from "../middleware/handler";
+import {
+  generatedItemCode,
+  generateOrderRef,
+  generateSupplyTransactionRef,
+} from "../middleware/handler";
 import { AppError, NotFoundError, ValidationError } from "../errors/errors";
-import { getPriceTotal } from "../utils/date";
+import { getPriceTotal, getQuarter } from "../utils/date";
 export const addSupply = async (req: FastifyRequest, res: FastifyReply) => {
   try {
     const body = req.body as AddNewSupplyProps;
@@ -246,6 +252,7 @@ export const dispenseSupply = async (
     };
 
     console.log("Update data:", updateData);
+    const transactionRef = await generateSupplyTransactionRef();
 
     // Prepare data for dispense record - Using ALL fields from your schema
     const dispenseRecordData: any = {
@@ -256,6 +263,7 @@ export const dispenseSupply = async (
       inventoryBoxId: body.inventoryBoxId,
       supplyBatchId: body.listId,
       desc: stock.desc,
+      refCode: transactionRef,
     };
 
     // Add optional fields based on request body
@@ -547,6 +555,7 @@ export const supplyList = async (req: FastifyRequest, res: FastifyReply) => {
 
   try {
     const filter: any = {};
+    const limit = params.limit ? parseInt(params.limit, 10) : 0;
     const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
     if (params.query) {
       const searchTerms = params.query.trim().split(/\s+/); // Split on any whitespace
@@ -574,53 +583,53 @@ export const supplyList = async (req: FastifyRequest, res: FastifyReply) => {
     const trend: any = {};
     if (params.trend === "Quarterly") {
     }
-
-    const response = await prisma.supplyStockTrack.findMany({
+    const supplies = await prisma.supplies.findMany({
       where: {
-        supplyBatchId: params.id,
-        supply: filter,
+        SupplyStockTrack: {
+          some: {
+            supplyBatchId: params.id,
+          },
+        },
+        ...filter,
       },
-      skip: cursor ? 1 : 0,
-      take: parseInt(params.limit, 10),
-      cursor,
-      include: {
-        supply: {
+      select: {
+        id: true,
+        item: true,
+        refNumber: true,
+        SupplyStockTrack: {
           select: {
+            stock: true,
+            perQuantity: true,
+            quantity: true,
+            quality: true,
             id: true,
-            refNumber: true,
-            item: true,
           },
-        },
-        brand: {
-          select: {
-            brand: true,
-          },
-          orderBy: {
-            timestamp: "desc",
-          },
-          take: 2,
-        },
-        price: {
-          select: {
-            value: true,
-            timestamp: true,
-          },
-          orderBy: {
-            timestamp: "desc",
-          },
-          take: 2,
         },
       },
+      take: limit,
+      skip: cursor ? 1 : 0,
+      cursor,
+    });
+
+    const processed = supplies.map((supply) => {
+      const total = supply.SupplyStockTrack
+        ? supply.SupplyStockTrack.reduce((acc, base) => {
+            if (!base.stock) return acc;
+
+            return (acc += base.stock);
+          }, 0)
+        : 0;
+      return { totalStock: total, ...supply };
     });
 
     const newLastCursorId =
-      response.length > 0 ? response[response.length - 1].id : null;
+      processed.length > 0 ? processed[processed.length - 1].id : null;
 
-    const hasMore = response.length === parseInt(params.limit, 10);
+    const hasMore = processed.length === parseInt(params.limit, 10);
 
     return res
       .code(200)
-      .send({ list: response, lastCursor: newLastCursorId, hasMore });
+      .send({ list: processed, lastCursor: newLastCursorId, hasMore });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_FAILED", 500, "BD_ERROR");
@@ -1178,7 +1187,6 @@ export const removeStockInList = async (
     inventoryId: string;
     lineId: string;
   };
-
   console.log({ body });
 
   if (
@@ -1480,6 +1488,9 @@ export const userSupplyDispenseRecords = async (
       },
       skip: cursor ? 1 : 0,
       take: limit,
+      orderBy: {
+        timestamp: "desc",
+      },
       cursor,
     });
     console.log({ records });
@@ -1555,6 +1566,9 @@ export const unitSupplyDispenseRecords = async (
       },
       skip: cursor ? 1 : 0,
       take: limit,
+      orderBy: {
+        timestamp: "desc",
+      },
       cursor,
     });
     const newLastCursorId =
@@ -1566,6 +1580,339 @@ export const unitSupplyDispenseRecords = async (
   } catch (error) {
     console.error("Error in unitSupplyDispenseRecords:", error);
 
+    if (error instanceof ValidationError) {
+      throw error;
+    }
+
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      console.error("Prisma error code:", error.code);
+      throw new AppError("DB_CONNECTION_ERROR", 500, "Database error occurred");
+    }
+
+    if (error instanceof Error) {
+      console.error("Error stack:", error.stack);
+    }
+
+    throw new AppError("INTERNAL_ERROR", 500, "An unexpected error occurred");
+  }
+};
+
+export const uploadBulkExcel = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const isMultipart = req.isMultipart();
+
+  if (!isMultipart) {
+    throw new ValidationError("INVALID MULTI-PART");
+  }
+
+  try {
+    const parts = req.parts();
+    let fileBuffer: Buffer | null = null;
+    let filename = "";
+    let formData: any = {};
+
+    for await (let part of parts) {
+      if (part.type === "file") {
+        const buffers = [];
+        for await (const chunk of part.file) buffers.push(chunk);
+        fileBuffer = Buffer.concat(buffers);
+        filename = part.filename;
+      } else {
+        formData[part.fieldname] = part.value;
+      }
+    }
+
+    if (!formData.lineId) {
+      throw new ValidationError("INVALID REQUIRED FIELD: lineId");
+    }
+
+    if (!formData.dataSetId) {
+      throw new ValidationError("INVALID REQUIRED FIELD: dataSetId");
+    }
+
+    if (!fileBuffer) {
+      throw new ValidationError("INVALID FILE");
+    }
+
+    const workbook = new ExcelJs.Workbook();
+    const stream = Readable.from(fileBuffer);
+    await workbook.xlsx.read(stream);
+
+    // First, collect all items from Excel
+    const itemsToInsert: string[] = [];
+
+    workbook.eachSheet((sheet) => {
+      sheet.eachRow((row) => {
+        const value = row.getCell(1).value;
+        if (value && value.toString().trim()) {
+          // Skip empty rows
+          itemsToInsert.push(value.toString());
+        }
+      });
+    });
+
+    if (itemsToInsert.length === 0) {
+      throw new ValidationError("No valid data found in Excel file");
+    }
+
+    // Process in batches for checking and insertion
+    const BATCH_SIZE = 50;
+    const existingItems = new Set<string>();
+
+    // FIRST: Check for existing items across all batches
+    for (let i = 0; i < itemsToInsert.length; i += BATCH_SIZE) {
+      const batch = itemsToInsert.slice(i, i + BATCH_SIZE);
+
+      const existingBatch = await prisma.supplies.findMany({
+        where: {
+          item: {
+            in: batch,
+          },
+          suppliesDataSetId: formData.dataSetId, // Add this to scope by dataset
+          lineId: formData.lineId, // Add this to scope by line
+        },
+        select: {
+          item: true,
+        },
+      });
+
+      existingBatch.forEach((item) => {
+        existingItems.add(item.item);
+      });
+    }
+
+    // Filter out items that already exist
+    const newItems = itemsToInsert.filter((item) => !existingItems.has(item));
+
+    if (newItems.length === 0) {
+      return res.status(200).send({
+        message: "All items already exist. No new items to insert.",
+        totalChecked: itemsToInsert.length,
+        existingCount: existingItems.size,
+        insertedCount: 0,
+      });
+    }
+
+    // SECOND: Prepare data for insertion with generated codes
+    const suppliesData = [];
+    for (const item of newItems) {
+      const code = await generatedItemCode();
+      suppliesData.push({
+        item: item,
+        code: code,
+        suppliesDataSetId: formData.dataSetId,
+        lineId: formData.lineId,
+        consumable: false,
+        description: "",
+      });
+    }
+
+    // THIRD: Insert in batches
+    let insertedCount = 0;
+    for (let i = 0; i < suppliesData.length; i += BATCH_SIZE) {
+      const batch = suppliesData.slice(i, i + BATCH_SIZE);
+
+      try {
+        const result = await prisma.supplies.createMany({
+          data: batch,
+          skipDuplicates: true, // Skip any duplicates that might have been created between check and insert
+        });
+        insertedCount += result.count;
+      } catch (error) {
+        console.error(`Error inserting batch ${i / BATCH_SIZE + 1}:`, error);
+        throw new AppError(
+          "BATCH_INSERT_ERROR",
+          500,
+          `Failed to insert batch ${i / BATCH_SIZE + 1}`,
+        );
+      }
+    }
+
+    // Return summary
+    return res.status(200).send({
+      message: "Bulk upload completed",
+      totalChecked: itemsToInsert.length,
+      existingCount: existingItems.size,
+      insertedCount: insertedCount,
+      skippedCount: itemsToInsert.length - insertedCount,
+    });
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      throw error;
+    }
+
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      console.error("Prisma error code:", error.code);
+      throw new AppError("DB_CONNECTION_ERROR", 500, "Database error occurred");
+    }
+
+    if (error instanceof Error) {
+      console.error("Error stack:", error.stack);
+    }
+
+    throw new AppError("INTERNAL_ERROR", 500, "An unexpected error occurred");
+  }
+};
+
+export const inventoryReport = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as PagingProps;
+  if (!params.id) {
+    throw new ValidationError("INVALID REQUIRED FIELD");
+  }
+
+  try {
+    const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
+    const limit = params.limit ? parseInt(params.limit, 10) : 20;
+    const currentQuarter = getQuarter();
+
+    const quarter = params.quarter
+      ? parseInt(params.quarter as string, 10)
+      : currentQuarter;
+
+    const response = await prisma.supplies.findMany({
+      where: {
+        SupplyStockTrack: {
+          some: {
+            supplyBatchId: params.id,
+          },
+        },
+      },
+      include: {
+        supplyDispenseRecords: {
+          where: {
+            supplyBatchId: params.id,
+          },
+        },
+        SupplyOrder: {
+          where: {},
+        },
+        SupplyStockTrack: {
+          select: {
+            price: {
+              take: 1,
+              orderBy: {
+                timestamp: "desc",
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const proceseed = response.map((item) => {});
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      throw error;
+    }
+
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      console.error("Prisma error code:", error.code);
+      throw new AppError("DB_CONNECTION_ERROR", 500, "Database error occurred");
+    }
+
+    if (error instanceof Error) {
+      console.error("Error stack:", error.stack);
+    }
+
+    throw new AppError("INTERNAL_ERROR", 500, "An unexpected error occurred");
+  }
+};
+
+export const updateTransaction = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as {
+    id: string;
+    userId: string;
+    value: string;
+    lineId: string;
+    field: string;
+    quantity: number;
+  };
+
+  if (!body.id || !body.lineId || !body.userId || !body.value) {
+    throw new ValidationError("INVALID REQUIRED ID");
+  }
+
+  try {
+    let toUpdate: any = {};
+    if (body.field === "unitId") {
+      toUpdate.unitId = body.value;
+    }
+    if (body.field === "userId") {
+      toUpdate.userId = body.value;
+    }
+
+    const response = await prisma.$transaction(async (tx) => {
+      const transaction = await tx.supplyDispenseRecord.findUnique({
+        where: {
+          id: body.id,
+        },
+        include: {
+          supply: {
+            select: {
+              quantity: true,
+              perQuantity: true,
+              stock: true,
+            },
+          },
+        },
+      });
+
+      if (!transaction) {
+        throw new NotFoundError("TRANSACTION NOT FOUND");
+      }
+      if (body.field === "quantity") {
+        const transactionQuantity = parseInt(transaction.quantity);
+        const isLessThan = body.quantity < transactionQuantity;
+        const value = isLessThan
+          ? transactionQuantity - body.quantity
+          : body.quantity - transactionQuantity;
+
+        const currentBoxes = transaction.supply?.quantity || 0;
+        const perBox = transaction.supply?.perQuantity || 0;
+        const currentStock = transaction.supply?.stock || 0;
+        const fullBoxesToGive = Math.floor(value / perBox);
+        const loosePieces = value % perBox;
+
+        let remainingFullBoxes = currentBoxes - fullBoxesToGive;
+        let openedBoxRemainingPieces = 0;
+
+        if (loosePieces > 0) {
+          // We need to open a box for loose pieces
+          remainingFullBoxes -= 1; // Remove the box we're opening
+          openedBoxRemainingPieces = perBox - loosePieces; // What's left in that opened box
+        }
+
+        const remainingPieces =
+          remainingFullBoxes * perBox + openedBoxRemainingPieces;
+        const totalBoxesAfter =
+          remainingFullBoxes + (openedBoxRemainingPieces > 0 ? 1 : 0);
+
+        toUpdate.quantity = body.value;
+      }
+      const transactionRef = await generateSupplyTransactionRef();
+
+      await tx.supplyDispenseRecord.create({
+        data: {
+          refCode: transactionRef,
+        },
+      });
+
+      return true;
+    });
+
+    if (!response) {
+      throw new ValidationError("TRANSACTION FAILED");
+    }
+    return res.code(200).send({ message: "OK" });
+  } catch (error) {
     if (error instanceof ValidationError) {
       throw error;
     }

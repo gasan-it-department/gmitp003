@@ -23,6 +23,8 @@ import {
   routerInfo,
   searchArchiveDocs,
   generateAbstract,
+  removeArchiveFile,
+  userSignatures,
 } from "../controller/documentController";
 
 export const document = (fastify: FastifyInstance) => {
@@ -106,5 +108,15 @@ export const document = (fastify: FastifyInstance) => {
     "/document/archive/generate-archive",
     { preHandler: authenticated },
     generateAbstract,
+  );
+  fastify.delete(
+    "/document/archive/remove",
+    { preHandler: authenticated },
+    removeArchiveFile,
+  );
+  fastify.get(
+    "/document/user/signatures",
+    { preHandler: authenticated },
+    userSignatures,
   );
 };

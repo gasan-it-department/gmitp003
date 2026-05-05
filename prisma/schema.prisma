@@ -73,6 +73,7 @@ model Line {
   supplytExcelExports     SupplytExcelExport[]
   unitPositions           UnitPosition[]
   User                    User[]
+  patients                Patient[]
 }
 
 model LineInvitation {
@@ -353,7 +354,7 @@ model SupplyBatchOrder {
   title                String?                  @default("N/A")
   refNumber            String                   @unique
   supplyBatchId        String?
-  approvedAt           DateTime?
+  approvedAt           DateTime? // Date Completed
   supplyInchargeId     String?
   comments             String                   @default("N/A")
   remark               Int                      @default(0)
@@ -524,6 +525,7 @@ model SupplyCategory {
 
 model SupplyDispenseRecord {
   id                 String            @id @default(uuid())
+  refCode            String?           @unique
   userId             String?
   departmentId       String?
   quantity           String            @default("0")
@@ -534,6 +536,7 @@ model SupplyDispenseRecord {
   dispensaryId       String?
   inventoryBoxId     String?
   supplyBatchId      String?
+  updatedAt          DateTime?
   desc               String?           @default("N/A")
   unit               Department?       @relation(fields: [departmentId], references: [id])
   dispensary         User?             @relation("dispensary", fields: [dispensaryId], references: [id])
@@ -1355,6 +1358,7 @@ model Region {
   Line     Line[]
   provices Province[]
   User     User[]
+  patience Patient[]
 }
 
 model Province {
@@ -1366,6 +1370,7 @@ model Province {
   Prescription Prescription[]
   Region       Region?        @relation(fields: [regionId], references: [id])
   User         User[]
+  patience     Patient[]
 }
 
 model Municipal {
@@ -1377,6 +1382,7 @@ model Municipal {
   Province     Province?      @relation(fields: [provinceId], references: [id])
   Prescription Prescription[]
   User         User[]
+  patience     Patient[]
 }
 
 model Barangay {
@@ -1387,6 +1393,7 @@ model Barangay {
   Line         Line[]
   Prescription Prescription[]
   User         User[]
+  patience     Patient[]
 }
 
 model Accomplishment {
@@ -1771,7 +1778,7 @@ model DocumentActivityLogs {
   title      String
   desc       String
   path       String?
-  action     Int       @default(0)
+  action     Int       @default(0) // 0- remove, 1 - add, 2 - update, acthive - 3, 4 - requested, 5 - approved, 6 - rejected, 
   timestamp  DateTime  @default(now())
   lineId     String?
   doc        Document? @relation(fields: [documentId], references: [id])
@@ -1903,6 +1910,7 @@ model MedicineTransaction {
   prescription            Prescription?             @relation(fields: [prescriptionId], references: [id], onDelete: SetDefault)
   user                    User?                     @relation(fields: [userId], references: [id], onDelete: Cascade)
   MedicineTransactionItem MedicineTransactionItem[]
+  patientRecords          PatientRecord?
 }
 
 model MedicineTransactionItem {
@@ -2010,6 +2018,7 @@ model Prescription {
   status              Int                    @default(0)
   remark              Int                    @default(0)
   timestamp           DateTime               @default(now())
+  dateConcluded       DateTime?
   lineId              String
   age                 String                 @default("N/A")
   MedicineTransaction MedicineTransaction[]
@@ -2184,4 +2193,37 @@ model ProfileView {
   timestamp    DateTime @default(now())
   targetUser   User?    @relation("targetUser", fields: [targetUserId], references: [id])
   viewingBy    User     @relation("viewingBy", fields: [userId], references: [id])
+}
+
+model Patient {
+  id          String          @id @default(uuid())
+  line        Line            @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  lastname    String
+  firstname   String
+  middlename  String?         @default("N/A")
+  email       String?
+  phoneNumber String?
+  barangay    Barangay?       @relation(fields: [barangayId], references: [id], onDelete: SetNull)
+  barangayId  String?
+  municipal   Municipal?      @relation(fields: [municipalId], references: [id], onDelete: SetNull)
+  municipalId String?
+  province    Province?       @relation(fields: [provinceId], references: [id], onDelete: SetNull)
+  provinceId  String?
+  region      Region?         @relation(fields: [regionId], references: [id], onDelete: SetNull)
+  regionId    String?
+  birthday    DateTime?
+  illi        Boolean         @default(false)
+  record      PatientRecord[]
+  timestamp   DateTime        @default(now())
+  lineId      String
+}
+
+model PatientRecord {
+  id                    String               @id @default(uuid())
+  patient               Patient?             @relation(fields: [patientId], references: [id], onDelete: SetNull)
+  patientId             String?
+  diagnose              String?
+  medicineTransaction   MedicineTransaction? @relation(fields: [medicineTransactionId], references: [id], onDelete: SetNull)
+  timestamp             DateTime             @default(now())
+  medicineTransactionId String?              @unique
 }

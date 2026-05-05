@@ -56,11 +56,15 @@ const app = fastify();
 app.register(fastifyWebsocket);
 app.register(errorHandlerPlugin);
 app.register(multipart, {
-  attachFieldsToBody: false,
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB
-    files: 10,
+    fileSize: 1024 * 1024 * 1024, // 1 GB (adjust as needed)
+    files: 10, // Max number of files
+    fieldSize: 1024 * 1024 * 100, // 100 MB for fields
+    headerPairs: 2000,
+    parts: 1000,
   },
+  attachFieldsToBody: false, // Useful for parsing fields
+  throwFileSizeLimit: true,
 });
 app.register(jwt, {
   secret: process.env.JWT_SECRET!,

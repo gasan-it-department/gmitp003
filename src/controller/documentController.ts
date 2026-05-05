@@ -634,6 +634,12 @@ export const archives = async (req: FastifyRequest, res: FastifyReply) => {
         abstract: true,
         timestamp: true,
         docType: true,
+        document: {
+          select: {
+            id: true,
+            title: true,
+          },
+        },
       },
     });
 
@@ -1349,6 +1355,103 @@ export const generateAbstract = async (
     console.log({ abstract: response });
 
     return res.code(200).send({ abstract: response });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION", 500, "DB_FAILED");
+    }
+    throw error;
+  }
+};
+
+export const removeArchiveFile = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as { id: string; userId: string; lineId: string };
+
+  if (!params.id || !params.lineId || !params.userId) {
+    throw new ValidationError("INVALID REQUIRED FIELD");
+  }
+
+  try {
+    const response = await prisma.$transaction(async (tx) => {
+      const archiveDocs = await tx.archiveDocument.delete({
+        where: {
+          id: params.id,
+        },
+        select: {
+          id: true,
+          document: {
+            select: {
+              title: true,
+            },
+          },
+          documentId: true,
+        },
+      });
+
+      await tx.documentActivityLogs.create({
+        data: {
+          action: 0,
+          desc: `Removed ${archiveDocs.document?.title || "Document not found"} from archives`,
+          title: "REMOVE FROM ARCHIVE",
+          userId: params.userId,
+          lineId: params.lineId,
+          documentId: archiveDocs.documentId,
+        },
+      });
+
+      return true;
+    });
+
+    if (!response) {
+      throw new ValidationError("TRACTION FAILED");
+    }
+
+    return res.code(200).send({ message: "OK" });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION", 500, "DB_FAILED");
+    }
+    throw error;
+  }
+};
+
+export const userSignatures = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as PagingProps;
+
+  if (!params.id) {
+    throw new ValidationError("INVALID REQUIRED ID");
+  }
+
+  try {
+    const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
+    const limit = params.limit ? parseInt(params.limit, 10) : 20;
+
+    const response = await prisma.signature.findMany({
+      where: {
+        userId: params.id,
+      },
+      take: limit,
+      skip: cursor ? 1 : 0,
+      cursor,
+    });
+
+    const processed = response.forEach((sign) => {
+      const buffered = sign.signature;
+      if (!buffered) {
+        throw new ValidationError("INVALID FILE FORMAT");
+      }
+
+      if (!buffered) {
+        throw new ValidationError("FILE DATA IS MISSING OR CORRUPTED");
+      }
+
+      const fileBuffer = Buffer.from(buffered);
+    });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION", 500, "DB_FAILED");

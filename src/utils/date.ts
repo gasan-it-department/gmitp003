@@ -25,7 +25,7 @@ export const formatDate = (isoDateString: string): string => {
 export const getPriceTotal = (
   price: { value: number; timestamp: Date }[],
   period: number,
-  target: number
+  target: number,
 ) => {
   const filtered = price.map((item) => {
     const month = new Date(item.timestamp).getMonth();
@@ -50,4 +50,9 @@ export const getQuarter = (date = new Date()) => {
 
   // Quarters: Q1 (0-2), Q2 (3-5), Q3 (6-8), Q4 (9-11)
   return Math.floor(month / 3) + 1;
+};
+
+export const giveQuater = (quarter: number) => {
+  const months = 12;
+  const quarters = 4;
 };

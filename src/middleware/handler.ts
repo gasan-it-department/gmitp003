@@ -446,3 +446,17 @@ export const phNumberFormat = (number: string): string => {
 };
 
 export const lineStatus = ["Suspended", "Active", "Maintainance"];
+
+export const generateSupplyTransactionRef = async () => {
+  let isUnique = false;
+  const generated = generateSecureRef(12);
+  while (!isUnique) {
+    const check = await prisma.supplyDispenseRecord.findUnique({
+      where: {
+        refCode: generated,
+      },
+    });
+    if (!check) isUnique = true;
+  }
+  return generated;
+};

@@ -5,7 +5,7 @@ import { PagingProps, SupplyListOverviewProps } from "../models/route";
 
 export const supplyOverview = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.query as PagingProps;
 
@@ -41,51 +41,52 @@ export const supplyOverview = async (
       }
     }
     const cursor = lastCursor ? { id: lastCursor } : undefined;
-    const items = await prisma.supplyStockTrack.findMany({
+    const take = limit ? parseInt(limit, 10) : 20;
+    const supplies = await prisma.supplies.findMany({
       where: {
-        supply: filter,
-        supplyBatchId: id,
-      },
-      take: parseInt(limit),
-      skip: cursor ? 1 : 0,
-      cursor: cursor,
-      orderBy: {
-        timestamp: "desc",
-      },
-      include: {
-        brand: {
-          select: {
-            brand: true,
+        SupplyStockTrack: {
+          some: {
+            supplyBatchId: params.id,
           },
-          orderBy: {
-            timestamp: "desc",
-          },
-          take: 1,
         },
-        price: {
+        ...filter,
+      },
+      select: {
+        id: true,
+        item: true,
+        refNumber: true,
+        SupplyStockTrack: {
           select: {
-            value: true,
-          },
-          orderBy: {
-            timestamp: "desc",
-          },
-          take: 1,
-        },
-        supply: {
-          select: {
-            item: true,
+            stock: true,
+            perQuantity: true,
+            quantity: true,
+            quality: true,
             id: true,
-            refNumber: true,
           },
         },
       },
+      skip: cursor ? 1 : 0,
+      cursor,
+      take,
     });
+
+    const processed = supplies.map((supply) => {
+      const total = supply.SupplyStockTrack
+        ? supply.SupplyStockTrack.reduce((acc, base) => {
+            if (!base.stock) return acc;
+
+            return (acc += base.stock);
+          }, 0)
+        : 0;
+      return { totalStock: total, ...supply };
+    });
+
     const newLastCursorId =
-      items.length > 0 ? items[items.length - 1].id : null;
-    const hasMore = items.length === parseInt(limit);
+      processed.length > 0 ? processed[processed.length - 1].id : null;
+    const hasMore = processed.length === parseInt(limit);
 
     return res.code(200).send({
-      list: items,
+      list: processed,
       lastCursor: newLastCursorId,
       hasMore,
     });
@@ -99,7 +100,7 @@ export const supplyOverview = async (
 
 export const supplyOverviewStatus = async (
   req: FastifyRequest,
-  res: FastifyReply
+  res: FastifyReply,
 ) => {
   const params = req.query as { listId: string };
   if (!params) throw new ValidationError("INVALID REQUIRED ID");
@@ -110,11 +111,15 @@ export const supplyOverviewStatus = async (
           supplyBatchId: params.listId,
         },
       });
-      const lowStock = await tx.supplyStockTrack.count({
+      const lowStock = await tx.supplies.count({
         where: {
-          supplyBatchId: params.listId,
-          stock: {
-            lt: 10,
+          SupplyStockTrack: {
+            some: {
+              supplyBatchId: params.listId,
+              stock: {
+                lte: 10,
+              },
+            },
           },
         },
       });
@@ -127,6 +132,7 @@ export const supplyOverviewStatus = async (
 
       return { total, lowStock, order };
     });
+    console.log({ response });
 
     if (!response) throw new ValidationError("DATA FAILED TO PARSED");
 

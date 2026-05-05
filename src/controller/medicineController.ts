@@ -1,7 +1,7 @@
 import { FastifyRequest, FastifyReply } from "../barrel/fastify";
 import { prisma, Prisma } from "../barrel/prisma";
 import { AppError, NotFoundError, ValidationError } from "../errors/errors";
-
+import { Readable } from "stream";
 //
 
 import path from "path";
@@ -370,14 +370,14 @@ export const medicineLogList = async (
 
 export const storageMeds = async (req: FastifyRequest, res: FastifyReply) => {
   const params = req.query as PagingProps;
-  console.log(params);
 
   if (!params.id) throw new ValidationError("BAD_REQUEST");
 
   try {
+    const currDate = new Date().toISOString();
     const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
     const limit = params.limit ? parseInt(params.limit, 10) : 10;
-    const filter: any = { medicineStorageId: params.id };
+    const filter: any = {};
 
     if (params.query) {
       const searchTerms = params.query.trim().split(/\s+/);
@@ -417,41 +417,66 @@ export const storageMeds = async (req: FastifyRequest, res: FastifyReply) => {
       }
     }
 
-    const response = await prisma.medicineStock.findMany({
-      where: filter,
+    const response = await prisma.medicine.findMany({
+      where: {
+        MedicineStock: {
+          some: {
+            medicineStorageId: params.id,
+          },
+        },
+        ...filter,
+      },
       take: limit,
       skip: cursor ? 1 : 0,
       cursor,
       include: {
-        stock: {
-          select: {
-            unit: true,
-            quantity: true,
-            perUnit: true,
-          },
-        },
-        price: {
-          select: {
-            value: true,
-          },
-        },
-        medicine: {
-          select: {
-            name: true,
-            serialNumber: true,
-            id: true,
+        MedicineStock: {
+          include: {
+            stock: {
+              select: {
+                unit: true,
+                quantity: true,
+                perUnit: true,
+              },
+            },
+            price: {
+              select: {
+                value: true,
+              },
+            },
           },
         },
       },
     });
 
+    const processed = response.map((item) => {
+      const totalStock = item.MedicineStock.reduce((base, acc) => {
+        if (!acc.actualStock) {
+          return 0;
+        }
+        return (base += acc.actualStock);
+      }, 0);
+
+      const stockToExpire = item.MedicineStock.reduce((base, acc) => {
+        const expDate = acc.expiration
+          ? new Date(acc.expiration).toISOString()
+          : undefined;
+        if (expDate && expDate >= currDate) {
+          return (base += 1);
+        }
+        return 0;
+      }, 0);
+
+      return { totalStock, stockToExpire, ...item };
+    });
+
     const newLastCursorId =
-      response.length > 0 ? response[response.length - 1].id : null;
-    const hasMore = limit === response.length;
+      processed.length > 0 ? processed[processed.length - 1].id : null;
+    const hasMore = limit === processed.length;
 
     return res
       .code(200)
-      .send({ list: response, lastCursor: newLastCursorId, hasMore });
+      .send({ list: processed, lastCursor: newLastCursorId, hasMore });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_EROR", 500, "DB_FAILED");
@@ -622,6 +647,7 @@ export const storageMedList = async (
   res: FastifyReply,
 ) => {
   const params = req.query as PagingProps;
+  console.log("Search med: ", params);
 
   try {
     const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
@@ -892,6 +918,7 @@ export const updateStock = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const removeStock = async (req: FastifyRequest, res: FastifyReply) => {
   const body = req.query as { id: string; userId: string };
+
   if (!body.id || !body.userId) {
     throw new ValidationError("INVALID REQUIRED ID");
   }
@@ -931,6 +958,8 @@ export const removeStock = async (req: FastifyRequest, res: FastifyReply) => {
     if (!response) throw new ValidationError("TRANSACTION FAILED");
     return res.code(200).send({ message: "OK" });
   } catch (error) {
+    console.log(error);
+
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
     }
@@ -1126,6 +1155,7 @@ export const medicineOverview = async (
 
       // Near expiration: medicines expiring within 6 months from now
       const sixMonthsFromNow = new Date();
+      const currentDate = new Date().toISOString();
       sixMonthsFromNow.setMonth(sixMonthsFromNow.getMonth() + 6);
 
       const nearExpiration = await tx.medicineStock.count({
@@ -1139,6 +1169,19 @@ export const medicineOverview = async (
         },
       });
 
+      const expired = await tx.medicine.count({
+        where: {
+          MedicineStock: {
+            some: {
+              expiration: {
+                lt: currentDate,
+              },
+              lineId: params.lineId,
+            },
+          },
+        },
+      });
+
       // Optional: Get the actual near-expiration medicine details
 
       return {
@@ -1148,6 +1191,7 @@ export const medicineOverview = async (
         },
         storage,
         nearExpiration,
+        expired,
       };
     });
 
@@ -1340,8 +1384,264 @@ export const exportMedicineReport = async (
 
     return res.send(excelBuffer);
   } catch (error) {
-    console.log({ error });
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
 
+export const medicineBulkUpload = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const isMultipart = req.isMultipart();
+  if (!isMultipart) {
+    throw new ValidationError("INVALID MULTI-PART");
+  }
+
+  try {
+    const parts = req.parts();
+    let formData: any = {};
+    let fileBuffer: Buffer | null = null;
+    let filename = "";
+
+    for await (let part of parts) {
+      if (part.type === "file") {
+        const buffers = [];
+        for await (const chunk of part.file) buffers.push(chunk);
+        fileBuffer = Buffer.concat(buffers);
+        filename = part.filename;
+      } else {
+        formData[part.fieldname] = part.value;
+      }
+    }
+
+    if (!fileBuffer) {
+      throw new ValidationError("INVALID FILE");
+    }
+
+    if (!formData.lineId) {
+      throw new ValidationError(`"INVALID REQUIRED ID" - Line`);
+    }
+
+    if (!formData.userId) {
+      throw new ValidationError(`"INVALID REQUIRED ID" - User`);
+    }
+
+    // FIX: Convert buffer to stream
+    const workbook = new ExcelJS.Workbook();
+    const stream = Readable.from(fileBuffer);
+    await workbook.xlsx.read(stream);
+
+    const allData: any[] = [];
+
+    workbook.eachSheet((sheet) => {
+      const sheetName = sheet.name;
+      console.log(`Processing sheet: ${sheetName}`);
+
+      const headers: string[] = [];
+      const firstRow = sheet.getRow(1);
+      firstRow.eachCell((cell: any, colNumber: number) => {
+        const headerValue = cell.value ? cell.value.toString().trim() : "";
+        headers[colNumber] = headerValue;
+      });
+
+      let noColIndex = -1;
+      let itemColIndex = -1;
+      let unitColIndex = -1;
+      let quantityColIndex = -1;
+
+      headers.forEach((header, index) => {
+        const headerLower = header.toLowerCase();
+        if (
+          headerLower === "no" ||
+          headerLower === "#" ||
+          headerLower === "s/no" ||
+          headerLower === "No."
+        ) {
+          noColIndex = index;
+        } else if (
+          headerLower === "item" ||
+          headerLower === "item name" ||
+          headerLower === "product"
+        ) {
+          itemColIndex = index;
+        } else if (
+          headerLower === "unit" ||
+          headerLower === "uom" ||
+          headerLower === "unit of measure"
+        ) {
+          unitColIndex = index;
+        } else if (
+          headerLower === "quantity" ||
+          headerLower === "qty" ||
+          headerLower === "qty."
+        ) {
+          quantityColIndex = index;
+        }
+      });
+
+      if (itemColIndex === -1 || quantityColIndex === -1) {
+        console.warn(
+          `Sheet "${sheetName}" missing required columns. Skipping...`,
+        );
+        return;
+      }
+
+      sheet.eachRow(async (row: any, rowNumber: number) => {
+        if (rowNumber === 1) return;
+
+        let itemValue: any = null;
+        let unitValue: any = null;
+        let quantityValue: any = null;
+        let noValue: any = null;
+
+        row.eachCell((cell: any, colNumber: number) => {
+          if (colNumber === noColIndex) {
+            noValue = cell.value;
+          } else if (colNumber === itemColIndex) {
+            itemValue = cell.value;
+          } else if (colNumber === unitColIndex) {
+            unitValue = cell.value;
+          } else if (colNumber === quantityColIndex) {
+            quantityValue = cell.value;
+          }
+        });
+
+        if (itemValue && itemValue.toString().trim() !== "") {
+          const serialNumber = await generateMedRef();
+          allData.push({
+            rowNumber: rowNumber,
+            no: noValue,
+            item: itemValue.toString().trim(),
+            unit: unitValue ? unitValue.toString().trim() : null,
+            quantity: quantityValue ? parseFloat(quantityValue.toString()) : 0,
+            serialNumber,
+          });
+        }
+      });
+    });
+
+    const checked = await prisma.medicine.findMany({
+      where: {
+        name: {
+          in: allData.map((item) => item.item),
+        },
+      },
+    });
+
+    const mappedData = new Map();
+    checked.forEach((med) => {
+      mappedData.set(med.name, med.name);
+    });
+    const filteredData = allData.map((med) => {
+      if (mappedData.has(med.item)) return;
+      return { item: med.item, serialNumber: med.serialNumber };
+    });
+
+    const response = await prisma.$transaction(async (tx) => {
+      const insertMeds = await tx.medicine.createMany({
+        data: filteredData.map((item) => {
+          return {
+            name: item?.item,
+            serialNumber: item?.serialNumber,
+            lineId: formData.lineId,
+          };
+        }),
+        skipDuplicates: true,
+      });
+
+      await tx.medicineLogs.create({
+        data: {
+          lineId: formData.lineId,
+          userId: formData.userId,
+          message: `ADDED ITEM: ${insertMeds} medicine/s`,
+          action: 1,
+        },
+      });
+
+      return {
+        insertMeds,
+      };
+    });
+
+    return res.status(200).send({
+      success: response.insertMeds,
+      error: 0,
+    });
+  } catch (error) {
+    console.error("Bulk upload error:", error);
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+export const resetMedicineRecord = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as { lineId: string; id: string; userId: string };
+
+  if (!params.id || !params.lineId || !params.userId) {
+    throw new ValidationError("INVALIDA REQUIRED FIELD");
+  }
+  try {
+    const response = await prisma.$transaction(async (tx) => {
+      const medicine = await tx.medicine.findUnique({
+        where: {
+          id: params.id,
+        },
+      });
+
+      if (!medicine) throw new NotFoundError("MEDICINE NOT FOUND");
+      await tx.medicineStock.deleteMany({
+        where: {
+          medicineId: params.id,
+        },
+      });
+
+      await tx.medicineQuality.deleteMany({
+        where: {
+          stock: {
+            medicineId: params.id,
+          },
+        },
+      });
+
+      await tx.medicineTrack.deleteMany({
+        where: {
+          medicineId: params.id,
+        },
+      });
+
+      await tx.medicinePriceTrack.deleteMany({
+        where: {
+          MedicineStock: {
+            medicineId: params.id,
+          },
+        },
+      });
+
+      await tx.medicineLogs.create({
+        data: {
+          lineId: params.lineId,
+          userId: params.userId,
+          message: `REMOVE ITEM: ${medicine.name}`,
+          action: 0,
+        },
+      });
+      return true;
+    });
+
+    if (!response) {
+      throw new ValidationError("INVALID TRANSACTION");
+    }
+
+    return res.code(200).send({ message: "OK" });
+  } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
     }
