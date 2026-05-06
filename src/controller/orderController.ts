@@ -112,7 +112,7 @@ export const addSupplyItem = async (req: FastifyRequest, res: FastifyReply) => {
       orderId: string;
       supplyId: string;
     };
-    // console.log("Params new ORder: ", params);
+    console.log("Params new ORder: ", params);
 
     if (!params.quanlity || !params.orderId || !params.supplyId) {
       return res.code(400).send({ message: "BAD REQUEST!" });
@@ -349,6 +349,7 @@ export const saveOrder = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const fullFillOrder = async (req: FastifyRequest, res: FastifyReply) => {
   const body = req.body as FullFillOrderProps;
+  console.log("Full-fill order", { body });
 
   if (!body.orderId || !body.userId || !body.inventoryBoxId) {
     throw new ValidationError("BAD REQUEST!");
@@ -371,6 +372,8 @@ export const fullFillOrder = async (req: FastifyRequest, res: FastifyReply) => {
           quality: true,
           desc: true,
           condition: true,
+          expiration: true,
+          supplierId: true,
         },
       }),
       prisma.supplyBatchOrder.findUnique({
@@ -384,23 +387,40 @@ export const fullFillOrder = async (req: FastifyRequest, res: FastifyReply) => {
     if (items.length === 0) throw new NotFoundError("No items found!");
     const stocks = await prisma.supplyStockTrack.findMany({
       where: {
-        suppliesId: { in: items.map((i) => i.id) },
-        inventoryBoxId: body.inventoryBoxId,
+        suppliesId: { in: items.map((i) => i.suppliesId) },
+        inventoryBoxId: order.inventoryBoxId,
       },
     });
+    console.log({ stocks, items });
 
     const operations: Prisma.PrismaPromise<any>[] = [];
 
     items.forEach((item) => {
       const status = item.status !== "OK" ? item.status : "OK";
-      const existed = stocks.find((i) => i.suppliesId === item.suppliesId);
+      const existed = stocks.find(
+        (i) =>
+          i.suppliesId === item.suppliesId &&
+          i.perQuantity === item.perQuantity &&
+          i.quality === item.quality,
+      );
       const actualStock = item.perQuantity * item.receivedQuantity;
+      console.log({
+        exist: existed?.suppliesId === item.suppliesId,
+        existed,
+        item,
+      });
+
       if (existed) {
+        console.log("Save with existed");
+        const existingQuantity = existed.quantity;
+        const existingPerQuantity = existed.perQuantity;
+        const existingActualStock = existingPerQuantity * existingQuantity;
+
         operations.push(
           prisma.supplyStockTrack.update({
             where: { id: existed.id },
             data: {
-              stock: existed.stock + actualStock,
+              stock: existingActualStock + actualStock,
               inventoryBoxId: order.inventoryBoxId,
               price: {
                 create: {
@@ -408,13 +428,17 @@ export const fullFillOrder = async (req: FastifyRequest, res: FastifyReply) => {
                   suppliesId: item.suppliesId,
                 },
               },
-              perQuantity: item.perQuantity,
-              quantity: item.quantity,
-              quality: item.quality,
+              perQuantity: existed.perQuantity,
+              quantity: existingQuantity + item.quantity,
+              quality: existed.quality,
+              expiration: item.expiration,
+              supplierId: item.supplierId,
             },
           }),
         );
       } else {
+        console.log("Saved with new");
+
         operations.push(
           prisma.supplyStockTrack.create({
             data: {
@@ -491,6 +515,7 @@ export const fullFillOrder = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const saveItemOrder = async (req: FastifyRequest, res: FastifyReply) => {
   const body = req.body as FullfilledItemOrderProps;
+  console.log("Saved Item ORder: ", body);
 
   if (
     !body.id ||
@@ -530,7 +555,7 @@ export const saveItemOrder = async (req: FastifyRequest, res: FastifyReply) => {
         where: { id: body.orderItemId },
       });
 
-      if (!item) throw new NotFoundError("Item not found!");
+      if (!item) throw new NotFoundError("SUPPLY NOT FOUND!");
 
       let supplier;
       if (body.supplier) {
@@ -583,9 +608,11 @@ export const saveItemOrder = async (req: FastifyRequest, res: FastifyReply) => {
           receivedQuantity: quantity,
           perQuantity: body.perQuantity,
           quality: body.quality,
+          ...optional,
           ...orderOptionalData,
         },
       });
+      console.log({ updatedOrder });
 
       // if (stock) {
       //   await tx.supplyStockTrack.update({

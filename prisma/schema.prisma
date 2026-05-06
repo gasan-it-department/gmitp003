@@ -407,9 +407,10 @@ model SupplyOrder {
   perQuantity             Int                    @default(1)
   quality                 String?
   receivedQuantity        Int                    @default(1)
+  expiration              DateTime?
   supplieRecieveHistories SupplieRecieveHistory?
   brand                   SupplyBrand[]
-  supplier                Supplier?              @relation(fields: [supplierId], references: [id])
+  supplier                Supplier?              @relation(fields: [supplierId], references: [id], onDelete: SetNull)
   supply                  Supplies               @relation(fields: [suppliesId], references: [id], onDelete: Cascade)
   SupplyBatchOrder        SupplyBatchOrder?      @relation(fields: [supplyBatchOrderId], references: [id])
   SupplyOrderItemReturn   SupplyOrderItemReturn?
