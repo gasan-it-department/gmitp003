@@ -73,6 +73,7 @@ model Line {
   supplytExcelExports     SupplytExcelExport[]
   unitPositions           UnitPosition[]
   User                    User[]
+  Patient                 Patient[]
 }
 
 model LineInvitation {
@@ -1363,6 +1364,7 @@ model Province {
   regionId     String?
   Line         Line[]
   municipals   Municipal[]
+  Patient      Patient[]
   Prescription Prescription[]
   Region       Region?        @relation(fields: [regionId], references: [id])
   User         User[]
@@ -1374,6 +1376,7 @@ model Municipal {
   provinceId   String?
   barangays    Barangay[]
   Line         Line[]
+  Patient      Patient[]
   Province     Province?      @relation(fields: [provinceId], references: [id])
   Prescription Prescription[]
   User         User[]
@@ -1385,6 +1388,7 @@ model Barangay {
   municipalId  String?
   Municipal    Municipal?     @relation(fields: [municipalId], references: [id])
   Line         Line[]
+  Patient      Patient[]
   Prescription Prescription[]
   User         User[]
 }
@@ -2184,4 +2188,25 @@ model ProfileView {
   timestamp    DateTime @default(now())
   targetUser   User?    @relation("targetUser", fields: [targetUserId], references: [id])
   viewingBy    User     @relation("viewingBy", fields: [userId], references: [id])
+}
+
+model Patient {
+  id          String     @id @default(uuid())
+  firstName   String
+  lastName    String
+  middleName  String?    @default("N/A")
+  age         String     @default("N/A")
+  gender      String?    @default("--/--")
+  street      String?
+  barangayId  String?
+  municipalId String?
+  provinceId  String?
+  contact     String?
+  status      Int        @default(1)
+  lineId      String
+  timestamp   DateTime   @default(now())
+  line        Line       @relation(fields: [lineId], references: [id])
+  barangay    Barangay?  @relation(fields: [barangayId], references: [id])
+  municipal   Municipal? @relation(fields: [municipalId], references: [id])
+  province    Province?  @relation(fields: [provinceId], references: [id])
 }

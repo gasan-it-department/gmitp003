@@ -472,6 +472,34 @@ export interface FileConvertToBufferProps {
   fields: any;
 }
 
+export type PatientProps = {
+  firstName: string;
+  lastName: string;
+  middleName?: string;
+  age: string;
+  gender?: string;
+  street?: string;
+  barangayId?: string;
+  municipalId?: string;
+  provinceId?: string;
+  contact?: string;
+  lineId: string;
+};
+
+export type UpdatePatientProps = {
+  id: string;
+  firstName?: string;
+  lastName?: string;
+  middleName?: string;
+  age?: string;
+  gender?: string;
+  street?: string;
+  barangayId?: string;
+  municipalId?: string;
+  provinceId?: string;
+  contact?: string;
+};
+
 export interface DocumentRoomApplicationProps {
   address: string;
   authorizedUser: {

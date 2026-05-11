@@ -42,6 +42,7 @@ import { supply } from "./route/supply";
 
 //
 import { user } from "./route/user";
+import { patient } from "./route/patient";
 
 import errorHandlerPlugin from "./plugin/errorHandlers";
 //
@@ -135,6 +136,7 @@ app.register(application);
 app.register(otp);
 app.register(modules);
 app.register(document);
+app.register(patient);
 io.on("connection", (socket) => {
   console.log("User connected: ", socket.id);
 
