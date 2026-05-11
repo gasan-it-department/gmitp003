@@ -473,31 +473,33 @@ export interface FileConvertToBufferProps {
 }
 
 export type PatientProps = {
-  firstName: string;
-  lastName: string;
-  middleName?: string;
-  age: string;
-  gender?: string;
-  street?: string;
+  firstname: string;
+  lastname: string;
+  middlename?: string;
+  email?: string;
+  phoneNumber?: string;
   barangayId?: string;
   municipalId?: string;
   provinceId?: string;
-  contact?: string;
+  regionId?: string;
+  birthday?: string;
+  illi?: boolean;
   lineId: string;
 };
 
 export type UpdatePatientProps = {
   id: string;
-  firstName?: string;
-  lastName?: string;
-  middleName?: string;
-  age?: string;
-  gender?: string;
-  street?: string;
+  firstname?: string;
+  lastname?: string;
+  middlename?: string;
+  email?: string;
+  phoneNumber?: string;
   barangayId?: string;
   municipalId?: string;
   provinceId?: string;
-  contact?: string;
+  regionId?: string;
+  birthday?: string;
+  illi?: boolean;
 };
 
 export interface DocumentRoomApplicationProps {

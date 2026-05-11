@@ -12,23 +12,23 @@ export const patientList = async (req: FastifyRequest, res: FastifyReply) => {
     const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
     const limit = params.limit ? parseInt(params.limit, 10) : 20;
 
-    const filter: any = { lineId: params.id, status: 1 };
+    const filter: any = { lineId: params.id };
 
     if (params.query) {
       const searchTerms = params.query.trim().split(/\s+/);
 
       if (searchTerms.length === 1) {
         filter.OR = [
-          { lastName: { contains: searchTerms[0], mode: "insensitive" } },
-          { firstName: { contains: searchTerms[0], mode: "insensitive" } },
+          { lastname: { contains: searchTerms[0], mode: "insensitive" } },
+          { firstname: { contains: searchTerms[0], mode: "insensitive" } },
         ];
       } else {
         filter.OR = [
           {
             AND: searchTerms.map((term) => ({
               OR: [
-                { firstName: { contains: term, mode: "insensitive" } },
-                { lastName: { contains: term, mode: "insensitive" } },
+                { firstname: { contains: term, mode: "insensitive" } },
+                { lastname: { contains: term, mode: "insensitive" } },
               ],
             })),
           },
@@ -52,6 +52,9 @@ export const patientList = async (req: FastifyRequest, res: FastifyReply) => {
           select: { name: true },
         },
         province: {
+          select: { name: true },
+        },
+        region: {
           select: { name: true },
         },
       },
@@ -90,6 +93,23 @@ export const patientData = async (req: FastifyRequest, res: FastifyReply) => {
         province: {
           select: { name: true },
         },
+        region: {
+          select: { name: true },
+        },
+        record: {
+          orderBy: { timestamp: "desc" },
+          include: {
+            medicineTransaction: {
+              select: {
+                id: true,
+                quantity: true,
+                unit: true,
+                timestamp: true,
+                remark: true,
+              },
+            },
+          },
+        },
       },
     });
 
@@ -108,23 +128,24 @@ export const addPatient = async (req: FastifyRequest, res: FastifyReply) => {
   const body = req.body as PatientProps;
   console.log(body);
 
-  if (!body.firstName || !body.lastName || !body.lineId) {
+  if (!body.firstname || !body.lastname || !body.lineId) {
     throw new ValidationError("BAD_REQUEST");
   }
 
   try {
     const response = await prisma.patient.create({
       data: {
-        firstName: body.firstName,
-        lastName: body.lastName,
-        middleName: body.middleName,
-        age: body.age,
-        gender: body.gender,
-        street: body.street,
+        firstname: body.firstname,
+        lastname: body.lastname,
+        middlename: body.middlename,
+        email: body.email,
+        phoneNumber: body.phoneNumber,
         barangayId: body.barangayId,
         municipalId: body.municipalId,
         provinceId: body.provinceId,
-        contact: body.contact,
+        regionId: body.regionId,
+        birthday: body.birthday ? new Date(body.birthday) : undefined,
+        illi: body.illi ?? false,
         lineId: body.lineId,
       },
     });
@@ -156,16 +177,17 @@ export const updatePatient = async (req: FastifyRequest, res: FastifyReply) => {
     const response = await prisma.patient.update({
       where: { id: body.id },
       data: {
-        firstName: body.firstName,
-        lastName: body.lastName,
-        middleName: body.middleName,
-        age: body.age,
-        gender: body.gender,
-        street: body.street,
+        firstname: body.firstname,
+        lastname: body.lastname,
+        middlename: body.middlename,
+        email: body.email,
+        phoneNumber: body.phoneNumber,
         barangayId: body.barangayId,
         municipalId: body.municipalId,
         provinceId: body.provinceId,
-        contact: body.contact,
+        regionId: body.regionId,
+        birthday: body.birthday ? new Date(body.birthday) : undefined,
+        illi: body.illi,
       },
     });
 
@@ -192,9 +214,8 @@ export const deletePatient = async (req: FastifyRequest, res: FastifyReply) => {
 
     if (!patient) throw new NotFoundError("PATIENT_NOT_FOUND");
 
-    await prisma.patient.update({
+    await prisma.patient.delete({
       where: { id: params.id },
-      data: { status: 0 },
     });
 
     return res.code(200).send({ message: "OK" });
