@@ -73,7 +73,7 @@ model Line {
   supplytExcelExports     SupplytExcelExport[]
   unitPositions           UnitPosition[]
   User                    User[]
-  Patient                 Patient[]
+  patients                Patient[]
 }
 
 model LineInvitation {
@@ -354,7 +354,7 @@ model SupplyBatchOrder {
   title                String?                  @default("N/A")
   refNumber            String                   @unique
   supplyBatchId        String?
-  approvedAt           DateTime?
+  approvedAt           DateTime? // Date Completed
   supplyInchargeId     String?
   comments             String                   @default("N/A")
   remark               Int                      @default(0)
@@ -407,9 +407,10 @@ model SupplyOrder {
   perQuantity             Int                    @default(1)
   quality                 String?
   receivedQuantity        Int                    @default(1)
+  expiration              DateTime?
   supplieRecieveHistories SupplieRecieveHistory?
   brand                   SupplyBrand[]
-  supplier                Supplier?              @relation(fields: [supplierId], references: [id])
+  supplier                Supplier?              @relation(fields: [supplierId], references: [id], onDelete: SetNull)
   supply                  Supplies               @relation(fields: [suppliesId], references: [id], onDelete: Cascade)
   SupplyBatchOrder        SupplyBatchOrder?      @relation(fields: [supplyBatchOrderId], references: [id])
   SupplyOrderItemReturn   SupplyOrderItemReturn?
@@ -525,6 +526,7 @@ model SupplyCategory {
 
 model SupplyDispenseRecord {
   id                 String            @id @default(uuid())
+  refCode            String?           @unique
   userId             String?
   departmentId       String?
   quantity           String            @default("0")
@@ -535,6 +537,7 @@ model SupplyDispenseRecord {
   dispensaryId       String?
   inventoryBoxId     String?
   supplyBatchId      String?
+  updatedAt          DateTime?
   desc               String?           @default("N/A")
   unit               Department?       @relation(fields: [departmentId], references: [id])
   dispensary         User?             @relation("dispensary", fields: [dispensaryId], references: [id])
@@ -1356,6 +1359,7 @@ model Region {
   Line     Line[]
   provices Province[]
   User     User[]
+  patience Patient[]
 }
 
 model Province {
@@ -1364,10 +1368,10 @@ model Province {
   regionId     String?
   Line         Line[]
   municipals   Municipal[]
-  Patient      Patient[]
   Prescription Prescription[]
   Region       Region?        @relation(fields: [regionId], references: [id])
   User         User[]
+  patience     Patient[]
 }
 
 model Municipal {
@@ -1376,10 +1380,10 @@ model Municipal {
   provinceId   String?
   barangays    Barangay[]
   Line         Line[]
-  Patient      Patient[]
   Province     Province?      @relation(fields: [provinceId], references: [id])
   Prescription Prescription[]
   User         User[]
+  patience     Patient[]
 }
 
 model Barangay {
@@ -1388,9 +1392,9 @@ model Barangay {
   municipalId  String?
   Municipal    Municipal?     @relation(fields: [municipalId], references: [id])
   Line         Line[]
-  Patient      Patient[]
   Prescription Prescription[]
   User         User[]
+  patience     Patient[]
 }
 
 model Accomplishment {
@@ -1775,7 +1779,7 @@ model DocumentActivityLogs {
   title      String
   desc       String
   path       String?
-  action     Int       @default(0)
+  action     Int       @default(0) // 0- remove, 1 - add, 2 - update, acthive - 3, 4 - requested, 5 - approved, 6 - rejected, 
   timestamp  DateTime  @default(now())
   lineId     String?
   doc        Document? @relation(fields: [documentId], references: [id])
@@ -1907,6 +1911,7 @@ model MedicineTransaction {
   prescription            Prescription?             @relation(fields: [prescriptionId], references: [id], onDelete: SetDefault)
   user                    User?                     @relation(fields: [userId], references: [id], onDelete: Cascade)
   MedicineTransactionItem MedicineTransactionItem[]
+  patientRecords          PatientRecord?
 }
 
 model MedicineTransactionItem {
@@ -2014,14 +2019,18 @@ model Prescription {
   status              Int                    @default(0)
   remark              Int                    @default(0)
   timestamp           DateTime               @default(now())
+  dateConcluded       DateTime?
   lineId              String
   age                 String                 @default("N/A")
+  patientId           String?
   MedicineTransaction MedicineTransaction[]
+  patientRecords      PatientRecord[]
   presMed             PrecribeMedicine[]
   barangay            Barangay?              @relation(fields: [barangayId], references: [id])
   line                Line                   @relation(fields: [lineId], references: [id])
   municipal           Municipal?             @relation(fields: [municipalId], references: [id])
   province            Province?              @relation(fields: [provinceId], references: [id])
+  patient             Patient?               @relation(fields: [patientId], references: [id], onDelete: SetNull)
   respondedBy         User?                  @relation("respondedBy", fields: [respondedByUserId], references: [id], onDelete: Cascade)
   processBy           User                   @relation("processBy", fields: [userId], references: [id])
   assets              PrescriptionAsset[]
@@ -2191,22 +2200,39 @@ model ProfileView {
 }
 
 model Patient {
-  id          String     @id @default(uuid())
-  firstName   String
-  lastName    String
-  middleName  String?    @default("N/A")
-  age         String     @default("N/A")
-  gender      String?    @default("--/--")
-  street      String?
-  barangayId  String?
-  municipalId String?
-  provinceId  String?
-  contact     String?
-  status      Int        @default(1)
-  lineId      String
-  timestamp   DateTime   @default(now())
-  line        Line       @relation(fields: [lineId], references: [id])
-  barangay    Barangay?  @relation(fields: [barangayId], references: [id])
-  municipal   Municipal? @relation(fields: [municipalId], references: [id])
-  province    Province?  @relation(fields: [provinceId], references: [id])
+  id            String          @id @default(uuid())
+  line          Line            @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  lastname      String
+  firstname     String
+  middlename    String?         @default("N/A")
+  email         String?
+  phoneNumber   String?
+  barangay      Barangay?       @relation(fields: [barangayId], references: [id], onDelete: SetNull)
+  barangayId    String?
+  municipal     Municipal?      @relation(fields: [municipalId], references: [id], onDelete: SetNull)
+  municipalId   String?
+  province      Province?       @relation(fields: [provinceId], references: [id], onDelete: SetNull)
+  provinceId    String?
+  region        Region?         @relation(fields: [regionId], references: [id], onDelete: SetNull)
+  regionId      String?
+  birthday      DateTime?
+  illi          Boolean         @default(false)
+  record        PatientRecord[]
+  prescriptions Prescription[]
+  timestamp     DateTime        @default(now())
+  lineId        String
+}
+
+model PatientRecord {
+  id                    String               @id @default(uuid())
+  patient               Patient?             @relation(fields: [patientId], references: [id], onDelete: SetNull)
+  patientId             String?
+  diagnose              String?
+  /// 0 = Diagnose  |  1 = Prescribed  |  2 = Medicine Dispensed
+  type                  Int                  @default(0)
+  prescription          Prescription?        @relation(fields: [prescriptionId], references: [id], onDelete: SetNull)
+  prescriptionId        String?
+  medicineTransaction   MedicineTransaction? @relation(fields: [medicineTransactionId], references: [id], onDelete: SetNull)
+  timestamp             DateTime             @default(now())
+  medicineTransactionId String?              @unique
 }

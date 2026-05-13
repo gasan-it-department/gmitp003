@@ -15,6 +15,9 @@ import {
   supplyTransactionInfo,
   userSupplyDispenseRecords,
   unitSupplyDispenseRecords,
+  updateSupplyDispense,
+  timebaseReport,
+  timebaseReportExport,
 } from "../controller/supplyController";
 
 export const supply = (fastify: FastifyInstance) => {
@@ -22,49 +25,64 @@ export const supply = (fastify: FastifyInstance) => {
   fastify.delete(
     "/delete-supply",
     { preHandler: authenticated, schema: deleteSupplySchema },
-    deleteSupply
+    deleteSupply,
   );
   fastify.post("/update-supply", { preHandler: authenticated }, updateSupply);
   fastify.get("/supply-list", { preHandler: authenticated }, supplyList);
   fastify.get(
     "/supply-time-base",
     { preHandler: authenticated },
-    timebaseSupplyReport
+    timebaseSupplyReport,
   );
   fastify.post(
     "/supply/dispense",
     { preHandler: authenticated },
-    dispenseSupply
+    dispenseSupply,
   );
   fastify.get("/supply/category", { preHandler: authenticated }, categories);
   fastify.get(
     "/supply/dispense/transactions",
     { preHandler: authenticated },
-    supplyDispenseTransaction
+    supplyDispenseTransaction,
   );
   fastify.get(
     "/supply/timebase",
     { preHandler: authenticated },
-    supplyTimeBaseReport
+    supplyTimeBaseReport,
   );
   fastify.delete(
     "/supply/delete-item",
     { preHandler: authenticated },
-    removeStockInList
+    removeStockInList,
   );
   fastify.get(
     "/supply/dispense/transaction/info",
     { preHandler: authenticated },
-    supplyTransactionInfo
+    supplyTransactionInfo,
   );
   fastify.get(
     "/supply/user/dispense/record",
     { preHandler: authenticated },
-    userSupplyDispenseRecords
+    userSupplyDispenseRecords,
   );
   fastify.get(
     "/supply/unit/dispense/record",
     { preHandler: authenticated },
-    unitSupplyDispenseRecords
+    unitSupplyDispenseRecords,
+  );
+  fastify.patch(
+    "/supply/transaction/update",
+    { preHandler: authenticated },
+    updateSupplyDispense,
+  );
+  fastify.get(
+    "/supply/inventory/timebase/report",
+    { preHandler: authenticated },
+    timebaseReport,
+  );
+  fastify.get(
+    "/supply/inventory/timebase/report/export",
+    { preHandler: authenticated },
+    timebaseReportExport,
   );
 };

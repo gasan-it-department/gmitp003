@@ -998,10 +998,18 @@ export const medicineTransactions = async (
     const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
     const limit = params.limit ? parseInt(params.limit, 10) : 20;
 
+    const filter: any = { lineId: params.id };
+    if (params.query) {
+      const term = params.query.trim();
+      filter.OR = [
+        { prescription: { refNumber: { contains: term, mode: "insensitive" } } },
+        { prescription: { firstname: { contains: term, mode: "insensitive" } } },
+        { prescription: { lastname: { contains: term, mode: "insensitive" } } },
+      ];
+    }
+
     const response = await prisma.medicineTransaction.findMany({
-      where: {
-        lineId: params.id,
-      },
+      where: filter,
       include: {
         user: {
           select: {
@@ -1015,6 +1023,14 @@ export const medicineTransactions = async (
           select: {
             name: true,
             id: true,
+          },
+        },
+        prescription: {
+          select: {
+            id: true,
+            refNumber: true,
+            firstname: true,
+            lastname: true,
           },
         },
       },
@@ -1209,7 +1225,7 @@ export const removeStorage = async (req: FastifyRequest, res: FastifyReply) => {
 
       await tx.medicineLogs.create({
         data: {
-          action: 3,
+          action: 0,
           lineId: params.lineId,
           message: `STORAGE: ${storage.name}-${storage.refNumber}, has been removed`,
           userId: params.userId,

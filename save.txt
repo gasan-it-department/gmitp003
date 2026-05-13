@@ -1535,3 +1535,4 @@ model LineGeneralAssets {
     timestamp DateTime @default(now())
     lineId    String
 }
+

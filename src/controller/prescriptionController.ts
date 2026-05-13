@@ -20,6 +20,15 @@ export const prescriptions = async (req: FastifyRequest, res: FastifyReply) => {
   }
 };
 
+const computeAgeFromBirthday = (birthday: string): string => {
+  const birth = new Date(birthday);
+  const today = new Date();
+  let age = today.getFullYear() - birth.getFullYear();
+  const m = today.getMonth() - birth.getMonth();
+  if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) age--;
+  return String(age);
+};
+
 export const createPrescriptions = async (
   req: FastifyRequest,
   res: FastifyReply,
@@ -29,44 +38,76 @@ export const createPrescriptions = async (
 
   try {
     const refNumber = await generatePrescriptionRef();
+    const age = body.birthday
+      ? computeAgeFromBirthday(body.birthday)
+      : body.age ?? "N/A";
+
     const response = await prisma.$transaction(async (tx) => {
       const user = await tx.user.findUnique({
-        where: {
-          id: body.userId,
-        },
+        where: { id: body.userId },
       });
 
       if (!user) throw new NotFoundError("User not found!");
 
+      // ── Resolve patient ──────────────────────────────────────────────────
+      // Search mode: patientId supplied → use existing patient
+      // Manual mode: no patientId → auto-create a new Patient record
+      let resolvedPatientId: string = body.patientId ?? "";
+
+      if (!resolvedPatientId) {
+        const newPatient = await tx.patient.create({
+          data: {
+            firstname: body.firstname ?? "",
+            lastname: body.lastname ?? "",
+            birthday: body.birthday ? new Date(body.birthday) : undefined,
+            phoneNumber: body.phoneNumber || undefined,
+            email: body.email || undefined,
+            barangayId: body.barangayId || undefined,
+            municipalId: body.municipalId || undefined,
+            provinceId: body.provinceId || undefined,
+            lineId: body.lineId,
+          },
+        });
+        resolvedPatientId = newPatient.id;
+      }
+
+      // ── Create prescription ──────────────────────────────────────────────
       const prescription = await tx.prescription.create({
         data: {
           lineId: body.lineId,
           refNumber: refNumber,
           firstname: body.firstname,
           lastname: body.lastname,
-          age: body.age,
-          barangayId: body.barangayId,
-          municipalId: body.municipalId,
-          provinceId: body.provinceId,
+          age,
+          barangayId: body.barangayId || undefined,
+          municipalId: body.municipalId || undefined,
+          provinceId: body.provinceId || undefined,
           userId: user.id,
           street: body.street,
           condtion: body.desc,
+          patientId: resolvedPatientId,
           progress: {
-            create: {
-              step: 0,
-            },
+            create: { step: 0 },
           },
           presMed: {
             createMany: {
-              data: body.prescribeMed.map((item) => {
-                return {
-                  medicineId: item.medId,
-                  quantity: parseInt(item.quantity, 10),
-                  desc: item.quantity,
-                };
-              }),
+              data: body.prescribeMed.map((item) => ({
+                medicineId: item.medId,
+                quantity: parseInt(item.quantity, 10),
+                desc: item.comment || "",
+              })),
             },
           },
+        },
+      });
+
+      // ── Record prescription as a patient visit ───────────────────────────
+      await tx.patientRecord.create({
+        data: {
+          patientId: resolvedPatientId,
+          diagnose: body.desc || undefined,
+          type: 1, // Prescribed
+          prescriptionId: prescription.id,
         },
       });
 
@@ -77,6 +118,7 @@ export const createPrescriptions = async (
           userId: body.userId,
         },
       });
+
       const notRequired: any = {};
       if (body.unitId) {
         notRequired.departmentId = body.unitId;
@@ -86,18 +128,19 @@ export const createPrescriptions = async (
           userId: body.userId,
           view: 0,
           path: `prescription/${prescription.id}`,
-          message: `${user.lastName}, ${user.firstName} - submitted prescripton for ${body.lastname}, ${body.firstname} `,
+          message: `${user.lastName}, ${user.firstName} - submitted prescription for ${body.lastname}, ${body.firstname}`,
           title: "New Prescription",
           lineId: body.lineId,
           ...notRequired,
         },
       });
+
       return prescription;
     });
+
     return res.code(200).send({ message: "OK", refNumber, response });
   } catch (error) {
     console.log(error);
-
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
     }
@@ -413,6 +456,13 @@ export const prescriptionDispense = async (
       if (!prescription) throw new NotFoundError("Prescription not found!");
       if (prescription.status === 2)
         throw new ValidationError("Prescripton already processed");
+      // Safety: refuse to dispense if the patient record has been deleted.
+      // patientId is required on every newly-created prescription, so a null
+      // value here means the linked Patient was deleted (SetNull cascade).
+      if (!prescription.patientId)
+        throw new ValidationError(
+          "Cannot dispense: patient record no longer exists.",
+        );
       // Update each prescribeMedicine with its specific quantity
       console.log("Log 3.5 - Updating prescribeMedicine records");
       const totalStocks = Array.from(stocks.values()).reduce(
@@ -567,6 +617,21 @@ export const prescriptionDispense = async (
         },
       });
 
+      // ── Record dispensing in patient's history ───────────────────────────
+      // patientId is set on the prescription (either from search or auto-created
+      // when the prescription was originally submitted)
+      if (prescription.patientId) {
+        await tx.patientRecord.create({
+          data: {
+            patientId: prescription.patientId,
+            diagnose: prescription.condtion || undefined,
+            medicineTransactionId: transaction.id,
+            prescriptionId: prescription.id,
+            type: 2, // Medicine Dispensed
+          },
+        });
+      }
+
       await tx.medicineLogs.create({
         data: {
           userId: body.userId,
@@ -585,10 +650,6 @@ export const prescriptionDispense = async (
           senderId: body.userId,
         },
       });
-
-      // if (body.userId !== prescription.userId) {
-
-      // }
     });
 
     return res.code(200).send({ message: "OK" });
@@ -718,6 +779,20 @@ export const prescribeTransaction = async (
         timestamp: "desc",
       },
       cursor,
+      include: {
+        patient: {
+          select: {
+            id: true,
+            firstname: true,
+            lastname: true,
+            birthday: true,
+            phoneNumber: true,
+          },
+        },
+        barangay: { select: { name: true } },
+        municipal: { select: { name: true } },
+        _count: { select: { presMed: true } },
+      },
     });
 
     const newLastCursorId =

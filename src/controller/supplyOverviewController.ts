@@ -14,78 +14,76 @@ export const supplyOverview = async (
   }
   try {
     const { lastCursor, limit, query, id } = params;
+    const take = limit ? parseInt(limit, 10) : 20;
+    const cursor = lastCursor ? { id: lastCursor } : undefined;
 
-    const filter: any = {};
-
+    // Build search filter on Supplies (item name / refNumber)
+    const searchFilter: any = {};
     if (query) {
-      const searchTerms = query.trim().split(/\s+/); // Split on any whitespace
-
-      if (searchTerms.length === 1) {
-        filter.OR = [
-          { item: { contains: searchTerms[0], mode: "insensitive" } },
-          { refNumber: { contains: searchTerms[0], mode: "insensitive" } },
+      const terms = query.trim().split(/\s+/);
+      if (terms.length === 1) {
+        searchFilter.OR = [
+          { item: { contains: terms[0], mode: "insensitive" } },
+          { refNumber: { contains: terms[0], mode: "insensitive" } },
         ];
       } else {
-        filter.AND = searchTerms.map((term) => ({
+        searchFilter.AND = terms.map((term) => ({
           OR: [
             { item: { contains: term, mode: "insensitive" } },
             { refNumber: { contains: term, mode: "insensitive" } },
           ],
         }));
-
-        filter.OR = [
-          { item: filter.AND },
-          { refNumber: { contains: query.trim(), mode: "insensitive" } },
-        ];
-        delete filter.AND; // Remove the AND since we've incorporated it into OR
       }
     }
-    const cursor = lastCursor ? { id: lastCursor } : undefined;
-    const items = await prisma.supplyStockTrack.findMany({
+
+    // Pull Supplies that have any SupplyStockTrack in this batch/list,
+    // including just those stock-track rows + their latest brand & price.
+    const supplies = await prisma.supplies.findMany({
       where: {
-        supply: filter,
-        supplyBatchId: id,
+        ...searchFilter,
+        SupplyStockTrack: {
+          some: { supplyBatchId: id },
+        },
       },
-      take: parseInt(limit),
+      take,
       skip: cursor ? 1 : 0,
-      cursor: cursor,
-      orderBy: {
-        timestamp: "desc",
-      },
+      cursor,
+      orderBy: { item: "asc" },
       include: {
-        brand: {
-          select: {
-            brand: true,
+        SupplyStockTrack: {
+          where: { supplyBatchId: id },
+          orderBy: { timestamp: "desc" },
+          include: {
+            brand: {
+              select: { brand: true, model: true },
+              orderBy: { timestamp: "desc" },
+              take: 1,
+            },
           },
-          orderBy: {
-            timestamp: "desc",
-          },
-          take: 1,
         },
-        price: {
-          select: {
-            value: true,
-          },
-          orderBy: {
-            timestamp: "desc",
-          },
+        SupplyPriceTrack: {
+          select: { value: true, timestamp: true },
+          orderBy: { timestamp: "desc" },
           take: 1,
-        },
-        supply: {
-          select: {
-            item: true,
-            id: true,
-            refNumber: true,
-          },
         },
       },
     });
-    const newLastCursorId =
-      items.length > 0 ? items[items.length - 1].id : null;
-    const hasMore = items.length === parseInt(limit);
+
+    // Attach a computed `totalStock` per supply
+    const list = supplies.map((s) => {
+      const tracks = s.SupplyStockTrack ?? [];
+      const totalStock = tracks.reduce(
+        (sum, t) => sum + (t.quantity ?? 0) * (t.perQuantity || 1),
+        0,
+      );
+      return { ...s, totalStock };
+    });
+
+    const newLastCursorId = list.length > 0 ? list[list.length - 1].id : null;
+    const hasMore = list.length === take;
 
     return res.code(200).send({
-      list: items,
+      list,
       lastCursor: newLastCursorId,
       hasMore,
     });

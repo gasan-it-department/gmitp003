@@ -1,5 +1,6 @@
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
 import { Prisma, prisma } from "../barrel/prisma";
+import ExcelJS from "exceljs";
 //
 import {
   AddNewSupplyProps,
@@ -8,7 +9,11 @@ import {
   TimebaseGroupPrice,
   UpdateSupplyProps,
 } from "../models/route";
-import { generatedItemCode, generateOrderRef } from "../middleware/handler";
+import {
+  generatedItemCode,
+  generateOrderRef,
+  generateDispenseRef,
+} from "../middleware/handler";
 import { AppError, NotFoundError, ValidationError } from "../errors/errors";
 import { getPriceTotal } from "../utils/date";
 export const addSupply = async (req: FastifyRequest, res: FastifyReply) => {
@@ -249,6 +254,7 @@ export const dispenseSupply = async (
 
     // Prepare data for dispense record - Using ALL fields from your schema
     const dispenseRecordData: any = {
+      refCode: await generateDispenseRef(),
       quantity: toDispense.toString(),
       suppliesId: stock.suppliesId,
       supplyStockTrackId: stock.id,
@@ -364,6 +370,187 @@ export const dispenseSupply = async (
   }
 };
 
+/**
+ * "Update" a dispense transaction by creating a compensating audit record.
+ * The original record is left untouched (sacred history). A new
+ * SupplyDispenseRecord is created that captures the delta:
+ *   - quantity is signed (e.g. "-20" = return to stock, "+15" = extra deduct)
+ *   - recipient = new recipient (or same as original if unchanged)
+ *   - desc links back to the original via "ADJ:<originalId>"
+ *   - stock is adjusted by the delta (return increases stock, extra decreases)
+ */
+export const updateSupplyDispense = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as {
+    id: string;
+    quantity?: string;
+    userId?: string | null;
+    unitId?: string | null;
+    remarks?: string;
+    currUserId?: string;
+  };
+
+  if (!body.id) throw new ValidationError("Transaction ID is required");
+
+  try {
+    const refCode = await generateDispenseRef();
+
+    const result = await prisma.$transaction(async (tx) => {
+      const original = await tx.supplyDispenseRecord.findUnique({
+        where: { id: body.id },
+        include: {
+          supply: {
+            select: {
+              id: true,
+              stock: true,
+              quantity: true,
+              perQuantity: true,
+            },
+          },
+        },
+      });
+
+      if (!original) throw new NotFoundError("Dispense record not found");
+      if (!original.supply || !original.supplyStockTrackId)
+        throw new ValidationError(
+          "Dispense record has no linked stock — cannot adjust quantity.",
+        );
+      // Adjustment records carry a "ADJ:<parentId>" marker in their desc.
+      // They are themselves audit entries and must not be edited further.
+      if (original.desc && original.desc.startsWith("ADJ:"))
+        throw new ValidationError(
+          "This is an adjustment record and cannot be edited.",
+        );
+
+      const stock = original.supply;
+      const perQ = stock.perQuantity || 1;
+      const currentStockPieces = stock.stock;
+      const oldQty = parseInt(original.quantity, 10) || 0;
+
+      // ── Compute the quantity delta (if quantity was sent) ───────────────
+      let delta = 0;
+      let quantityChanged = false;
+
+      if (body.quantity !== undefined && body.quantity !== null) {
+        const newQty = parseInt(body.quantity, 10);
+        if (isNaN(newQty) || newQty < 0)
+          throw new ValidationError("Quantity must be a non-negative number");
+        delta = newQty - oldQty;
+        if (delta !== 0) quantityChanged = true;
+      }
+
+      // ── Resolve the new recipient (or keep original) ────────────────────
+      let recipientChanged = false;
+      let newUserId: string | null = original.userId ?? null;
+      let newDepartmentId: string | null = original.departmentId ?? null;
+
+      if (body.userId !== undefined) {
+        const v = body.userId || null;
+        if (v !== original.userId) {
+          newUserId = v;
+          newDepartmentId = v ? null : newDepartmentId; // mutually exclusive
+          recipientChanged = true;
+        }
+      }
+      if (body.unitId !== undefined) {
+        const v = body.unitId || null;
+        if (v !== original.departmentId) {
+          newDepartmentId = v;
+          newUserId = v ? null : newUserId; // mutually exclusive
+          recipientChanged = true;
+        }
+      }
+
+      if (!quantityChanged && !recipientChanged)
+        throw new ValidationError("Nothing to update.");
+
+      // ── Apply stock delta (only if quantity changed) ────────────────────
+      if (quantityChanged) {
+        // delta > 0 → need more pieces from stock
+        // delta < 0 → return abs(delta) pieces back to stock
+        const newStockPieces = currentStockPieces - delta;
+
+        if (newStockPieces < 0) {
+          throw new ValidationError(
+            `Insufficient stock to increase dispense. Available: ${currentStockPieces}, additional needed: ${delta}`,
+          );
+        }
+
+        const newBoxes =
+          newStockPieces === 0 ? 0 : Math.ceil(newStockPieces / perQ);
+
+        await tx.supplyStockTrack.update({
+          where: { id: stock.id },
+          data: { stock: newStockPieces, quantity: newBoxes },
+        });
+      }
+
+      // ── Build remarks describing what changed ────────────────────────────
+      const parts: string[] = [];
+      if (quantityChanged) {
+        const sign = delta > 0 ? "+" : "";
+        const verb = delta > 0 ? "additional dispense" : "return to stock";
+        parts.push(`Qty ${verb}: ${sign}${delta} (was ${oldQty})`);
+      }
+      if (recipientChanged) {
+        const beforeRecipient = original.departmentId
+          ? `dept:${original.departmentId}`
+          : original.userId
+            ? `user:${original.userId}`
+            : "none";
+        const afterRecipient = newDepartmentId
+          ? `dept:${newDepartmentId}`
+          : newUserId
+            ? `user:${newUserId}`
+            : "none";
+        parts.push(`Recipient: ${beforeRecipient} → ${afterRecipient}`);
+      }
+      const autoRemarks = `Adjustment of ${original.refCode ?? original.id.slice(0, 8)}: ${parts.join("; ")}`;
+      const finalRemarks = body.remarks
+        ? `${autoRemarks} | ${body.remarks}`
+        : autoRemarks;
+
+      // ── Create the compensating audit record ────────────────────────────
+      // quantity is signed: "+N" or "-N" so the sign is preserved historically.
+      const signedQty = quantityChanged
+        ? delta > 0
+          ? `+${delta}`
+          : `${delta}`
+        : "0";
+
+      const adjustment = await tx.supplyDispenseRecord.create({
+        data: {
+          refCode,
+          quantity: signedQty,
+          suppliesId: original.suppliesId,
+          supplyStockTrackId: original.supplyStockTrackId,
+          inventoryBoxId: original.inventoryBoxId,
+          supplyBatchId: original.supplyBatchId,
+          userId: newUserId,
+          departmentId: newDepartmentId,
+          dispensaryId: body.currUserId || original.dispensaryId,
+          desc: `ADJ:${original.id}`,
+          remarks: finalRemarks,
+        },
+      });
+
+      return { adjustment, original };
+    });
+
+    return res.code(200).send({ message: "OK", data: result.adjustment });
+  } catch (error) {
+    console.error("Error in updateSupplyDispense:", error);
+    if (error instanceof ValidationError) throw error;
+    if (error instanceof NotFoundError) throw error;
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
 export const dispenseItem = async (req: FastifyRequest, res: FastifyReply) => {
   const body = req.body as DispenseItemProps;
   console.log("Request body:", body);
@@ -461,6 +648,7 @@ export const dispenseItem = async (req: FastifyRequest, res: FastifyReply) => {
       console.log("Log 7 - Creating dispense record");
       await tx.supplyDispenseRecord.create({
         data: {
+          refCode: await generateDispenseRef(),
           supplyStockTrackId: body.id,
           quantity: toDispense.toString(),
           remarks: body.desc || "",
@@ -546,81 +734,74 @@ export const supplyList = async (req: FastifyRequest, res: FastifyReply) => {
   if (!params.id) throw new ValidationError("BAD_REQUEST");
 
   try {
-    const filter: any = {};
+    const take = params.limit ? parseInt(params.limit, 10) : 20;
     const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
-    if (params.query) {
-      const searchTerms = params.query.trim().split(/\s+/); // Split on any whitespace
 
-      if (searchTerms.length === 1) {
-        filter.OR = [
-          { item: { contains: searchTerms[0], mode: "insensitive" } },
-          { refNumber: { contains: searchTerms[0], mode: "insensitive" } },
+    // Build search filter on Supplies (item name / refNumber)
+    const searchFilter: any = {};
+    if (params.query) {
+      const terms = params.query.trim().split(/\s+/);
+      if (terms.length === 1) {
+        searchFilter.OR = [
+          { item: { contains: terms[0], mode: "insensitive" } },
+          { refNumber: { contains: terms[0], mode: "insensitive" } },
         ];
       } else {
-        filter.AND = searchTerms.map((term) => ({
+        searchFilter.AND = terms.map((term) => ({
           OR: [
             { item: { contains: term, mode: "insensitive" } },
             { refNumber: { contains: term, mode: "insensitive" } },
           ],
         }));
-
-        filter.OR = [
-          { item: filter.AND },
-          { refNumber: { contains: params.query.trim(), mode: "insensitive" } },
-        ];
-        delete filter.AND; // Remove the AND since we've incorporated it into OR
       }
     }
-    const trend: any = {};
-    if (params.trend === "Quarterly") {
-    }
 
-    const response = await prisma.supplyStockTrack.findMany({
+    // Return Supplies rows joined to the list via their stock-tracks.
+    const supplies = await prisma.supplies.findMany({
       where: {
-        supplyBatchId: params.id,
-        supply: filter,
+        ...searchFilter,
+        SupplyStockTrack: {
+          some: { supplyBatchId: params.id },
+        },
       },
       skip: cursor ? 1 : 0,
-      take: parseInt(params.limit, 10),
+      take,
       cursor,
+      orderBy: { item: "asc" },
       include: {
-        supply: {
-          select: {
-            id: true,
-            refNumber: true,
-            item: true,
+        SupplyStockTrack: {
+          where: { supplyBatchId: params.id },
+          orderBy: { timestamp: "desc" },
+          include: {
+            brand: {
+              select: { brand: true, model: true },
+              orderBy: { timestamp: "desc" },
+              take: 1,
+            },
           },
         },
-        brand: {
-          select: {
-            brand: true,
-          },
-          orderBy: {
-            timestamp: "desc",
-          },
-          take: 2,
-        },
-        price: {
-          select: {
-            value: true,
-            timestamp: true,
-          },
-          orderBy: {
-            timestamp: "desc",
-          },
-          take: 2,
+        SupplyPriceTrack: {
+          select: { value: true, timestamp: true },
+          orderBy: { timestamp: "desc" },
+          take: 1,
         },
       },
     });
 
-    const newLastCursorId =
-      response.length > 0 ? response[response.length - 1].id : null;
+    // Attach computed `totalStock` per supply (sum of quantity * perQuantity)
+    const list = supplies.map((s) => {
+      const tracks = s.SupplyStockTrack ?? [];
+      const totalStock = tracks.reduce(
+        (sum, t) => sum + (t.quantity ?? 0) * (t.perQuantity || 1),
+        0,
+      );
+      return { ...s, totalStock };
+    });
 
-    const hasMore = response.length === parseInt(params.limit, 10);
+    const newLastCursorId = list.length > 0 ? list[list.length - 1].id : null;
+    const hasMore = list.length === take;
 
-    return res
-      .code(200)
-      .send({ list: response, lastCursor: newLastCursorId, hasMore });
+    return res.code(200).send({ list, lastCursor: newLastCursorId, hasMore });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_FAILED", 500, "BD_ERROR");
@@ -757,7 +938,10 @@ export const supplyDispenseTransaction = async (
   req: FastifyRequest,
   res: FastifyReply,
 ) => {
-  const params = req.query as PagingProps;
+  const params = req.query as PagingProps & {
+    dateFrom?: string;
+    dateTo?: string;
+  };
   if (!params.id) throw new ValidationError("INVALID REQUIRED ID");
   try {
     const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
@@ -766,6 +950,22 @@ export const supplyDispenseTransaction = async (
     const filter: any = {
       supplyBatchId: params.id,
     };
+
+    // Date range filter on timestamp.
+    // dateFrom = inclusive start of day, dateTo = inclusive end of day.
+    if (params.dateFrom || params.dateTo) {
+      filter.timestamp = {};
+      if (params.dateFrom) {
+        const start = new Date(params.dateFrom);
+        start.setHours(0, 0, 0, 0);
+        filter.timestamp.gte = start;
+      }
+      if (params.dateTo) {
+        const end = new Date(params.dateTo);
+        end.setHours(23, 59, 59, 999);
+        filter.timestamp.lte = end;
+      }
+    }
 
     if (params.query) {
       const searchTerms = params.query.trim().split(/\s+/);
@@ -1579,6 +1779,602 @@ export const unitSupplyDispenseRecords = async (
       console.error("Error stack:", error.stack);
     }
 
+    throw new AppError("INTERNAL_ERROR", 500, "An unexpected error occurred");
+  }
+};
+
+/**
+ * Quarterly stock + dispense report.
+ *
+ * Behaviour:
+ * - When `quarter` is a valid number (1-4): each item is returned as a
+ *   per-quarter object whose populated field is the requested quarter only;
+ *   dispense records are filtered to that quarter's date range.
+ * - Otherwise: returns every item with all four quarters (q1..q4) computed,
+ *   plus a full list of the dispense records for the year.
+ */
+/**
+ * Inventory issuance report.
+ *
+ * Returns each stock-track row with up to the first 5 issuance (dispense)
+ * records of the chosen year (optionally narrowed to a single quarter) laid
+ * out as `first`, `second`, `third`, `fourth`, `fifth`. Records beyond the
+ * 5th are still counted into `totalDispensed` so the balance math stays
+ * correct.
+ *
+ * Query params:
+ *   - id      (required) supplyBatchId
+ *   - year    (optional, defaults to current year) — 4-digit issuance year
+ *   - quarter (optional, 1..4) — narrows the issuance pool to that quarter
+ *   - lastCursor / limit — standard cursor paging
+ */
+export const timebaseReport = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as PagingProps & {
+    year?: string | number;
+    quarter?: string | number;
+  };
+
+  if (!params.id) {
+    throw new ValidationError("INVALID REQUIRED FIELD");
+  }
+
+  try {
+    const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
+    const limit = params.limit ? parseInt(params.limit, 10) : 20;
+
+    // ── Year (defaults to current) ─────────────────────────────────────────
+    const yearNum =
+      typeof params.year === "number"
+        ? params.year
+        : typeof params.year === "string" && /^\d{4}$/.test(params.year.trim())
+          ? parseInt(params.year.trim(), 10)
+          : new Date().getFullYear();
+
+    // ── Quarter (optional, 1..4) ───────────────────────────────────────────
+    const quarterRaw =
+      typeof params.quarter === "number"
+        ? params.quarter
+        : typeof params.quarter === "string" && params.quarter.trim() !== ""
+          ? parseInt(params.quarter, 10)
+          : NaN;
+    const quarter =
+      Number.isFinite(quarterRaw) && quarterRaw >= 1 && quarterRaw <= 4
+        ? (quarterRaw as 1 | 2 | 3 | 4)
+        : null;
+
+    // ── Date range — full year, or just the requested quarter ─────────────
+    const quarterRanges: Record<1 | 2 | 3 | 4, { start: Date; end: Date }> = {
+      1: {
+        start: new Date(yearNum, 0, 1),
+        end: new Date(yearNum, 2, 31, 23, 59, 59, 999),
+      },
+      2: {
+        start: new Date(yearNum, 3, 1),
+        end: new Date(yearNum, 5, 30, 23, 59, 59, 999),
+      },
+      3: {
+        start: new Date(yearNum, 6, 1),
+        end: new Date(yearNum, 8, 30, 23, 59, 59, 999),
+      },
+      4: {
+        start: new Date(yearNum, 9, 1),
+        end: new Date(yearNum, 11, 31, 23, 59, 59, 999),
+      },
+    };
+    const rangeStart = quarter
+      ? quarterRanges[quarter].start
+      : new Date(yearNum, 0, 1);
+    const rangeEnd = quarter
+      ? quarterRanges[quarter].end
+      : new Date(yearNum, 11, 31, 23, 59, 59, 999);
+
+    const response = await prisma.supplyStockTrack.findMany({
+      where: { supplyBatchId: params.id },
+      skip: cursor ? 1 : 0,
+      take: limit,
+      cursor,
+      orderBy: { timestamp: "desc" },
+      select: {
+        SupplyDispenseRecord: {
+          where: { timestamp: { gte: rangeStart, lte: rangeEnd } },
+          select: { quantity: true, timestamp: true },
+          orderBy: { timestamp: "asc" }, // chronological → first = earliest
+        },
+        supply: {
+          select: {
+            item: true,
+            SupplieRecieveHistory: {
+              // Initial QTY scoped to THIS list + the selected year/quarter
+              where: {
+                supplyBatchId: params.id,
+                timestamp: { gte: rangeStart, lte: rangeEnd },
+              },
+              select: {
+                quality: true,
+                perQuantity: true,
+                pricePerItem: true,
+                quantity: true,
+                timestamp: true,
+              },
+              orderBy: { timestamp: "desc" },
+            },
+          },
+        },
+        price: {
+          // Price fallback also scoped to the selected year/quarter
+          where: { timestamp: { gte: rangeStart, lte: rangeEnd } },
+          select: { value: true, timestamp: true },
+          orderBy: { timestamp: "desc" },
+          take: 1,
+        },
+        stock: true,
+        perQuantity: true,
+        quantity: true,
+        quality: true,
+        id: true,
+      },
+    });
+
+    const parseQty = (q: string | null | undefined) =>
+      q ? parseInt(q, 10) || 0 : 0;
+    const slot = (records: { quantity: string }[], index: number) =>
+      records[index]?.quantity ? parseQty(records[index].quantity) : null;
+
+    const processedData = response.map((item) => {
+      const records = item.SupplyDispenseRecord;
+      const receiveHistory = item.supply?.SupplieRecieveHistory ?? [];
+
+      // ── Initial QTY = Σ (receive.quantity × receive.perQuantity) ─────────
+      const totalStock = receiveHistory.reduce(
+        (sum, r) => sum + (r.quantity ?? 0) * (r.perQuantity || 1),
+        0,
+      );
+
+      // Unit cost: latest pricePerItem from receive history, falling back to
+      // SupplyPriceTrack, then 0.
+      const latestPrice =
+        receiveHistory[0]?.pricePerItem ?? item.price?.[0]?.value ?? 0;
+
+      const totalDispensed = records.reduce(
+        (sum, r) => sum + parseQty(r.quantity),
+        0,
+      );
+      const remaining = totalStock - totalDispensed;
+
+      return {
+        id: item.id,
+        desc: item.supply?.item ?? "N/A",
+        unit: receiveHistory[0]?.quality ?? item.quality ?? "N/A",
+        first: slot(records, 0),
+        second: slot(records, 1),
+        third: slot(records, 2),
+        fourth: slot(records, 3),
+        fifth: slot(records, 4),
+        recordedIssuances: records.length,
+        totalDispensed,
+        qty: totalStock,                       // initial QTY
+        unitCost: latestPrice,                 // per-unit price
+        totalCost: totalStock * latestPrice,   // qty × unit cost
+        balStock: remaining,                   // remaining stock on hand
+        balAmount: remaining * latestPrice,    // balance × unit cost
+        // legacy aliases (kept so any older consumer doesn't break)
+        totalStock,
+        price: latestPrice,
+      };
+    });
+
+    const newLastCursorId =
+      processedData.length > 0
+        ? processedData[processedData.length - 1].id
+        : null;
+    const hasMore = processedData.length === limit;
+
+    return res.code(200).send({
+      list: processedData,
+      lastCursor: newLastCursorId,
+      hasMore,
+      meta: { year: yearNum, quarter: quarter ?? null },
+    });
+  } catch (error) {
+    console.error("Error in timebaseReport:", error);
+
+    if (error instanceof ValidationError) throw error;
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      console.error("Prisma error code:", error.code);
+      throw new AppError("DB_CONNECTION_ERROR", 500, "Database error occurred");
+    }
+    if (error instanceof Error) {
+      console.error("Error stack:", error.stack);
+    }
+
+    throw new AppError("INTERNAL_ERROR", 500, "An unexpected error occurred");
+  }
+};
+
+/**
+ * Excel export of the inventory issuance report.
+ * Renders the SUPPLIES YYYY workbook layout: letterhead → "As of …" →
+ * merged "ISSUANCE YYYY" header spanning 1ST..5TH → data rows → TOTAL →
+ * Certified Correct block.
+ */
+export const timebaseReportExport = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as {
+    id?: string;
+    year?: string | number;
+    quarter?: string | number;
+    listTitle?: string;
+    certifiedBy?: string;
+    certifiedTitle?: string;
+  };
+
+  if (!params.id) throw new ValidationError("INVALID REQUIRED FIELD");
+
+  try {
+    const yearNum =
+      typeof params.year === "number"
+        ? params.year
+        : typeof params.year === "string" && /^\d{4}$/.test(params.year.trim())
+          ? parseInt(params.year.trim(), 10)
+          : new Date().getFullYear();
+
+    const quarterRaw =
+      typeof params.quarter === "number"
+        ? params.quarter
+        : typeof params.quarter === "string" && params.quarter.trim() !== ""
+          ? parseInt(params.quarter, 10)
+          : NaN;
+    const quarter =
+      Number.isFinite(quarterRaw) && quarterRaw >= 1 && quarterRaw <= 4
+        ? (quarterRaw as 1 | 2 | 3 | 4)
+        : null;
+
+    const quarterRanges: Record<1 | 2 | 3 | 4, { start: Date; end: Date }> = {
+      1: {
+        start: new Date(yearNum, 0, 1),
+        end: new Date(yearNum, 2, 31, 23, 59, 59, 999),
+      },
+      2: {
+        start: new Date(yearNum, 3, 1),
+        end: new Date(yearNum, 5, 30, 23, 59, 59, 999),
+      },
+      3: {
+        start: new Date(yearNum, 6, 1),
+        end: new Date(yearNum, 8, 30, 23, 59, 59, 999),
+      },
+      4: {
+        start: new Date(yearNum, 9, 1),
+        end: new Date(yearNum, 11, 31, 23, 59, 59, 999),
+      },
+    };
+    const rangeStart = quarter
+      ? quarterRanges[quarter].start
+      : new Date(yearNum, 0, 1);
+    const rangeEnd = quarter
+      ? quarterRanges[quarter].end
+      : new Date(yearNum, 11, 31, 23, 59, 59, 999);
+
+    const rows = await prisma.supplyStockTrack.findMany({
+      where: { supplyBatchId: params.id },
+      orderBy: { timestamp: "desc" },
+      select: {
+        SupplyDispenseRecord: {
+          where: { timestamp: { gte: rangeStart, lte: rangeEnd } },
+          select: { quantity: true, timestamp: true },
+          orderBy: { timestamp: "asc" },
+        },
+        supply: {
+          select: {
+            item: true,
+            SupplieRecieveHistory: {
+              // Scoped to THIS list + the selected year/quarter range
+              where: {
+                supplyBatchId: params.id,
+                timestamp: { gte: rangeStart, lte: rangeEnd },
+              },
+              select: {
+                quantity: true,
+                perQuantity: true,
+                pricePerItem: true,
+                quality: true,
+                timestamp: true,
+              },
+              orderBy: { timestamp: "desc" },
+            },
+          },
+        },
+        price: {
+          // Price fallback also scoped to the selected year/quarter
+          where: { timestamp: { gte: rangeStart, lte: rangeEnd } },
+          select: { value: true, timestamp: true },
+          orderBy: { timestamp: "desc" },
+          take: 1,
+        },
+        stock: true,
+        perQuantity: true,
+        quantity: true,
+        quality: true,
+        id: true,
+      },
+    });
+
+    const parseQty = (q: string | null | undefined) =>
+      q ? parseInt(q, 10) || 0 : 0;
+
+    const items = rows.map((item) => {
+      const records = item.SupplyDispenseRecord;
+      const receiveHistory = item.supply?.SupplieRecieveHistory ?? [];
+
+      // Initial QTY = Σ (receive.quantity × receive.perQuantity)
+      const totalStock = receiveHistory.reduce(
+        (sum, r) => sum + (r.quantity ?? 0) * (r.perQuantity || 1),
+        0,
+      );
+      // Unit cost: latest pricePerItem from receive history → fallback to
+      // SupplyPriceTrack → 0.
+      const unitCost =
+        receiveHistory[0]?.pricePerItem ?? item.price?.[0]?.value ?? 0;
+
+      const totalDispensed = records.reduce(
+        (s, r) => s + parseQty(r.quantity),
+        0,
+      );
+      const balStock = totalStock - totalDispensed;
+      return {
+        desc: item.supply?.item ?? "N/A",
+        unit: receiveHistory[0]?.quality ?? item.quality ?? "",
+        first: records[0]?.quantity ? parseQty(records[0].quantity) : null,
+        second: records[1]?.quantity ? parseQty(records[1].quantity) : null,
+        third: records[2]?.quantity ? parseQty(records[2].quantity) : null,
+        fourth: records[3]?.quantity ? parseQty(records[3].quantity) : null,
+        fifth: records[4]?.quantity ? parseQty(records[4].quantity) : null,
+        qty: totalStock,
+        unitCost,
+        totalCost: totalStock * unitCost,
+        balStock,
+        balAmount: balStock * unitCost,
+      };
+    });
+
+    // Workbook layout matches the supplied SUPPLIES YYYY template exactly:
+    //   Columns A..M: Item No. | DESCRIPTION | UNIT | QTY | UNIT COST |
+    //   TOTAL COST | 1ST | 2ND | 3RD | 4TH | 5TH | Balance On Stock | Total Amount
+    //   Header group "ISSUANCE {YEAR}" spans D9:M9.
+    const wb = new ExcelJS.Workbook();
+    wb.creator = "GMITP";
+    wb.created = new Date();
+    const ws = wb.addWorksheet(`Supplies ${yearNum}`, {
+      views: [{ state: "frozen", ySplit: 10 }],
+    });
+
+    ws.columns = [
+      { width: 7 },    // A Item No.
+      { width: 41.8 }, // B DESCRIPTION
+      { width: 10.5 }, // C UNIT
+      { width: 12 },   // D QTY
+      { width: 12 },   // E UNIT COST
+      { width: 12 },   // F TOTAL COST
+      { width: 10 },   // G 1ST
+      { width: 10 },   // H 2ND
+      { width: 10 },   // I 3RD
+      { width: 10 },   // J 4TH
+      { width: 10 },   // K 5TH
+      { width: 14 },   // L Balance On Stock
+      { width: 14 },   // M Total Amount
+    ];
+
+    // ── Letterhead (rows 1, 2, 3, blank 4, title 5, blank 6, "As of" 7) ──
+    const letterhead: { row: number; text: string; bold: boolean; size: number }[] = [
+      { row: 1, text: "Republic of the Philippines",    bold: false, size: 11 },
+      { row: 2, text: "Province of Marinduque",         bold: false, size: 11 },
+      { row: 3, text: "MUNICIPALITY OF GASAN",          bold: true,  size: 11 },
+      { row: 5, text: "SUPPLIES & EQUIPMENT INVENTORY", bold: true,  size: 14 },
+    ];
+    letterhead.forEach(({ row, text, bold, size }) => {
+      const r = ws.getRow(row);
+      r.getCell(1).value = text;
+      ws.mergeCells(row, 1, row, 13);
+      r.alignment = { horizontal: "center", vertical: "middle" };
+      r.font = { name: "Arial", bold, size };
+    });
+
+    const monthName = new Date(yearNum, new Date().getMonth(), 1)
+      .toLocaleString("en-US", { month: "long" })
+      .toUpperCase();
+    const asOf = quarter
+      ? `As of Q${quarter} ${yearNum}`
+      : `As of ${monthName} ${yearNum}`;
+    ws.getRow(7).getCell(1).value = asOf;
+    ws.mergeCells(7, 1, 7, 13);
+    ws.getRow(7).alignment = { horizontal: "center" };
+    ws.getRow(7).font = { name: "Arial", italic: true, size: 11 };
+
+    // ── Table headers in rows 9-10 ───────────────────────────────────────
+    const headerTopRow = 9;
+    const headerSubRow = 10;
+
+    // Row 9 top headers (parent labels)
+    ws.getRow(headerTopRow).values = [
+      "Item No.",          // A
+      "DESCRIPTION",       // B
+      "UNIT",              // C
+      `ISSUANCE ${yearNum}`, // D — merged across D9:M9
+      null, null, null, null, null, null, null, null, null,
+    ];
+    // Row 10 sub-headers
+    ws.getRow(headerSubRow).values = [
+      null, null, null,
+      "QTY",         // D
+      "UNIT COST",   // E
+      "TOTAL COST",  // F
+      "1ST",         // G
+      "2ND",         // H
+      "3RD",         // I
+      "4TH",         // J
+      "5TH",         // K
+      "Balance On Stock", // L
+      "Total Amount",     // M
+    ];
+
+    // Merges
+    ws.mergeCells(headerTopRow, 1, headerSubRow, 1);  // A9:A10 Item No.
+    ws.mergeCells(headerTopRow, 2, headerSubRow, 2);  // B9:B10 DESCRIPTION
+    ws.mergeCells(headerTopRow, 3, headerSubRow, 3);  // C9:C10 UNIT
+    ws.mergeCells(headerTopRow, 4, headerTopRow, 13); // D9:M9  ISSUANCE YYYY
+
+    const styleHeader = (rowIdx: number) => {
+      const row = ws.getRow(rowIdx);
+      row.font = { bold: true, size: 10 };
+      row.alignment = {
+        horizontal: "center",
+        vertical: "middle",
+        wrapText: true,
+      };
+      row.height = 22;
+      row.eachCell({ includeEmpty: true }, (cell) => {
+        cell.border = {
+          top: { style: "thin" },
+          left: { style: "thin" },
+          right: { style: "thin" },
+          bottom: { style: "thin" },
+        };
+        cell.fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: "FFF2F2F2" },
+        };
+      });
+    };
+    styleHeader(headerTopRow);
+    styleHeader(headerSubRow);
+
+    // ── Data rows starting at row 11, columns matching template A..M ─────
+    const dataStartRow = headerSubRow + 1;
+    items.forEach((it, i) => {
+      const rowIdx = dataStartRow + i;
+      const r = ws.getRow(rowIdx);
+      r.values = [
+        i + 1,        // A Item No.
+        it.desc,      // B DESCRIPTION
+        it.unit,      // C UNIT
+        it.qty,       // D QTY
+        it.unitCost,  // E UNIT COST
+        // F TOTAL COST as a live D*E formula (matches the original template)
+        { formula: `D${rowIdx}*E${rowIdx}`, result: it.totalCost },
+        it.first  ?? "", // G 1ST
+        it.second ?? "", // H 2ND
+        it.third  ?? "", // I 3RD
+        it.fourth ?? "", // J 4TH
+        it.fifth  ?? "", // K 5TH
+        it.balStock,     // L Balance On Stock
+        it.balAmount,    // M Total Amount
+      ];
+      r.font = { name: "Arial", size: 10 };
+      r.alignment = { vertical: "middle" };
+      r.getCell(1).alignment = { horizontal: "center", vertical: "middle" };
+      r.getCell(2).alignment = { horizontal: "left",   vertical: "middle", wrapText: true };
+      r.getCell(3).alignment = { horizontal: "center", vertical: "middle" };
+      r.getCell(4).alignment = { horizontal: "center", vertical: "middle" }; // QTY
+      // Currency cells: E UNIT COST, F TOTAL COST, M Total Amount
+      [5, 6, 13].forEach((c) => {
+        r.getCell(c).numFmt = '"₱"#,##0.00';
+        r.getCell(c).alignment = { horizontal: "right", vertical: "middle" };
+      });
+      // Issuance slots G..K — centered
+      for (let c = 7; c <= 11; c++) {
+        r.getCell(c).alignment = { horizontal: "center", vertical: "middle" };
+      }
+      r.getCell(12).alignment = { horizontal: "center", vertical: "middle" };
+      r.eachCell({ includeEmpty: true }, (cell) => {
+        cell.border = {
+          top: { style: "thin" },
+          left: { style: "thin" },
+          right: { style: "thin" },
+          bottom: { style: "thin" },
+        };
+      });
+    });
+
+    // ── TOTAL row ────────────────────────────────────────────────────────
+    const totalRowIdx = dataStartRow + items.length;
+    const totalRow = ws.getRow(totalRowIdx);
+    const totalQty    = items.reduce((s, x) => s + x.qty, 0);
+    const totalCost   = items.reduce((s, x) => s + x.totalCost, 0);
+    const totalAmount = items.reduce((s, x) => s + x.balAmount, 0);
+    totalRow.values = [
+      null,        // A
+      "TOTAL",     // B (merged label across A:C)
+      null,        // C
+      totalQty,    // D
+      null,        // E
+      totalCost,   // F
+      null, null, null, null, null, // G..K issuance slots
+      null,        // L Balance On Stock (blank — sum doesn't make sense across mixed units)
+      totalAmount, // M Total Amount
+    ];
+    ws.mergeCells(totalRowIdx, 1, totalRowIdx, 3); // "TOTAL" label spans A:C
+
+    totalRow.font = { name: "Arial", bold: true, size: 10 };
+    totalRow.getCell(2).alignment = { horizontal: "right",  vertical: "middle" };
+    totalRow.getCell(4).alignment = { horizontal: "center", vertical: "middle" };
+    [5, 6, 13].forEach((c) => {
+      totalRow.getCell(c).numFmt = '"₱"#,##0.00';
+      totalRow.getCell(c).alignment = { horizontal: "right", vertical: "middle" };
+    });
+    totalRow.eachCell({ includeEmpty: true }, (cell) => {
+      cell.border = {
+        top:    { style: "double" }, left:   { style: "thin" },
+        right:  { style: "thin"   }, bottom: { style: "double" },
+      };
+      cell.fill = {
+        type: "pattern", pattern: "solid",
+        fgColor: { argb: "FFFAFAFA" },
+      };
+    });
+
+    const certByRow = totalRowIdx + 3;
+    ws.getRow(certByRow).getCell(2).value = "Certified Correct:";
+    ws.getRow(certByRow).getCell(2).font = { italic: true, size: 10 };
+
+    const signerRow = certByRow + 3;
+    ws.getRow(signerRow).getCell(2).value =
+      params.certifiedBy ?? "MICHELLE CHRISTINE Z. ILAO";
+    ws.getRow(signerRow).getCell(2).font = { bold: true, size: 10 };
+
+    const titleRow = signerRow + 1;
+    ws.getRow(titleRow).getCell(2).value =
+      params.certifiedTitle ?? "Administrative Officer I (SO I)";
+    ws.getRow(titleRow).getCell(2).font = { italic: true, size: 9 };
+
+    const buffer = (await wb.xlsx.writeBuffer()) as ArrayBuffer;
+    const nodeBuffer = Buffer.from(new Uint8Array(buffer));
+
+    const filenameSafe = (
+      params.listTitle ?? `SUPPLIES_${yearNum}${quarter ? `_Q${quarter}` : ""}`
+    ).replace(/[^a-z0-9_\-]+/gi, "_");
+
+    return res
+      .code(200)
+      .header(
+        "Content-Type",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      )
+      .header(
+        "Content-Disposition",
+        `attachment; filename="${filenameSafe}.xlsx"`,
+      )
+      .send(nodeBuffer);
+  } catch (error) {
+    console.error("Error in timebaseReportExport:", error);
+    if (error instanceof ValidationError) throw error;
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_ERROR", 500, "Database error occurred");
+    }
     throw new AppError("INTERNAL_ERROR", 500, "An unexpected error occurred");
   }
 };

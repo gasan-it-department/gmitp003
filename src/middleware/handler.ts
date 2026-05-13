@@ -328,6 +328,16 @@ export const generatePrescriptionRef = async () => {
   return generated;
 };
 
+export const generateDispenseRef = async () => {
+  while (true) {
+    const generated = `DSP-${generateSecureRef(8)}`;
+    const check = await prisma.supplyDispenseRecord.findFirst({
+      where: { refCode: generated },
+    });
+    if (!check) return generated;
+  }
+};
+
 export const sendEmail = async (
   sub: string,
   to: string,
