@@ -20,6 +20,15 @@ import {
   medicineOverview,
   storageData,
   removeStorage,
+  scanLowStock,
+  expirationList,
+  exportExpirationList,
+  updateMedicineEntry,
+  recordMedicineScan,
+  medicineSync,
+  bulkAddMedicineStock,
+  exportMedicineReport,
+  medicineBulkUpload,
 } from "../controller/medicineController";
 
 export const medicine = (fastify: FastifyInstance) => {
@@ -86,6 +95,11 @@ export const medicine = (fastify: FastifyInstance) => {
     { preHandler: authenticated },
     removeMedicine,
   );
+  fastify.patch(
+    "/medicine/update",
+    { preHandler: authenticated },
+    updateMedicineEntry,
+  );
   fastify.get(
     "/medicine/overview",
     { preHandler: authenticated },
@@ -96,5 +110,56 @@ export const medicine = (fastify: FastifyInstance) => {
     "/storage/remove",
     { preHandler: authenticated },
     removeStorage,
+  );
+  fastify.post(
+    "/medicine/scan-low-stock",
+    { preHandler: authenticated },
+    scanLowStock,
+  );
+  // Mobile offline-scan upload. Mobile sends barcode + name (+ optional
+  // notes/lineId/scannedAt) and we upsert a Medicine row keyed on
+  // (serialNumber, lineId), returning its id for client-side dedupe.
+  fastify.post(
+    "/medicine/scan-log",
+    { preHandler: authenticated },
+    recordMedicineScan,
+  );
+  // Mobile bulk-pull. Returns every Medicine + its MedicineStock rows in
+  // the line, optionally only those newer than ?since=<unix-ms>. Mobile
+  // mirrors this into local SQLite for the offline scanner / detail.
+  fastify.get(
+    "/medicine/sync",
+    { preHandler: authenticated },
+    medicineSync,
+  );
+  // Mobile bulk upload of queued Add Stock ops. Body: { ops: [...] } where
+  // each op carries a clientOpId for idempotency. Response includes a
+  // per-op outcome so the mobile can mark only successes as synced.
+  fastify.post(
+    "/medicine/add-stock/bulk",
+    { preHandler: authenticated },
+    bulkAddMedicineStock,
+  );
+  fastify.get(
+    "/medicine/expiration",
+    { preHandler: authenticated },
+    expirationList,
+  );
+  fastify.get(
+    "/medicine/expiration/export",
+    { preHandler: authenticated },
+    exportExpirationList,
+  );
+  // Export a storage's medicines into the Excel report template.
+  fastify.get(
+    "/medicine/export/report",
+    { preHandler: authenticated },
+    exportMedicineReport,
+  );
+  // Bulk-import medicines from an uploaded spreadsheet (web Config page).
+  fastify.post(
+    "/medicine/bulk-upload",
+    { preHandler: authenticated },
+    medicineBulkUpload,
   );
 };

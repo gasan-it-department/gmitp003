@@ -2,6 +2,8 @@ import { FastifyRequest, FastifyReply } from "../barrel/fastify";
 import { Prisma, prisma } from "../barrel/prisma";
 import { AppError, NotFoundError, ValidationError } from "../errors/errors";
 import { generatePrescriptionRef } from "../middleware/handler";
+import { checkAndNotifyLowStock } from "../service/medicineAlerts";
+import { createUserNotification } from "../service/notificationEvents";
 import {
   PagingProps,
   PrescriptionDispenseProps,
@@ -123,7 +125,7 @@ export const createPrescriptions = async (
       if (body.unitId) {
         notRequired.departmentId = body.unitId;
       }
-      await tx.medicineNotification.create({
+      const medNotif = await tx.medicineNotification.create({
         data: {
           userId: body.userId,
           view: 0,
@@ -133,7 +135,40 @@ export const createPrescriptions = async (
           lineId: body.lineId,
           ...notRequired,
         },
+        select: {
+          id: true,
+          userId: true,
+          title: true,
+          message: true,
+          lineId: true,
+          path: true,
+          timestamp: true,
+          type: true,
+          view: true,
+        },
       });
+
+      // Real-time push so anyone on this line sees the new prescription
+      // notification without a refresh.
+      try {
+        const { notificationSocket } = await import("..");
+        notificationSocket.emitMedicineNotification(medNotif.lineId, {
+          id: medNotif.id,
+          userId: medNotif.userId,
+          title: medNotif.title,
+          message: medNotif.message,
+          lineId: medNotif.lineId,
+          path: medNotif.path ?? undefined,
+          timestamp:
+            typeof medNotif.timestamp === "string"
+              ? medNotif.timestamp
+              : medNotif.timestamp.toISOString(),
+          type: medNotif.type,
+          view: medNotif.view,
+        });
+      } catch (e) {
+        console.warn("[prescription] medicine notif emit failed:", e);
+      }
 
       return prescription;
     });
@@ -589,6 +624,10 @@ export const prescriptionDispense = async (
             },
           });
 
+          // Auto low-stock alert (no-op when stock is above threshold or
+          // when an active alert already exists for this row).
+          await checkAndNotifyLowStock(tx, item.id);
+
           await tx.medicineTransactionItem.create({
             data: {
               medicineTransactionId: transaction.id,
@@ -641,14 +680,12 @@ export const prescriptionDispense = async (
         },
       });
 
-      await tx.notification.create({
-        data: {
-          recipientId: prescription.userId,
-          title: "New Notification",
-          content: `The prescription #${prescription.refNumber} you prescribed has been dispensed to the patient.`,
-          path: `prescribe-medicine/transaction/${prescription.id}`,
-          senderId: body.userId,
-        },
+      await createUserNotification(tx, {
+        recipientId: prescription.userId,
+        title: "New Notification",
+        content: `The prescription #${prescription.refNumber} you prescribed has been dispensed to the patient.`,
+        path: `prescribe-medicine/transaction/${prescription.id}`,
+        senderId: body.userId,
       });
     });
 

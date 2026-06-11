@@ -8,6 +8,7 @@ import {
 import { AppError, NotFoundError, ValidationError } from "../errors/errors";
 import argon from "argon2";
 import { getAreaData, sendEmail } from "../middleware/handler";
+import { createUserNotification } from "../service/notificationEvents";
 import { EncryptionService } from "../service/encryption";
 import { semaphoreKey } from "../class/Semaphore";
 import cloudinary from "../class/Cloundinary";
@@ -40,6 +41,17 @@ export const positionList = async (req: FastifyRequest, res: FastifyReply) => {
               },
             },
             occupied: true,
+            // Occupant info so the Vacant flow can list filled slots with
+            // the person currently sitting in each one.
+            userId: true,
+            user: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                accountId: true,
+              },
+            },
           },
         },
         position: {
@@ -615,102 +627,558 @@ export const publicJobPost = async (req: FastifyRequest, res: FastifyReply) => {
   }
 };
 
+// Default invitation lifetime — long enough for an applicant to schedule
+// a registration session, short enough that HR can re-send if it lapses.
+const INVITE_TTL_DAYS = 7;
+
+const isValidEmail = (s: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
+
+/**
+ * Send a Fill Position invitation.
+ *
+ * What this enforces (the legacy version skipped most of these and was
+ * easy to misuse from the dashboard):
+ *
+ *   1. The target slot belongs to the named unitPosition.
+ *   2. The slot is still VACANT — can't invite into an occupied chair.
+ *   3. No active (non-concluded, non-expired) invite already exists for
+ *      the same email + slot — prevents accidental duplicate emails.
+ *   4. Email is syntactically valid.
+ *   5. The persisted row carries `message`, `expiresAt`, and the canonical
+ *      front-end origin so the registration link is reconstructable.
+ *   6. HR logs the action with the slot id for traceability.
+ */
 export const fillPositionInvite = async (
   req: FastifyRequest,
   res: FastifyReply,
 ) => {
   const body = req.body as {
     email: string;
-    message: string;
+    message?: string | null;
     lineId: string;
     unitPositionId: string;
     userId: string;
     slotId: string;
   };
-  console.log({ body });
 
-  if (!body.email || !body.lineId || !frontEnd) {
+  if (
+    !body.email ||
+    !body.lineId ||
+    !body.unitPositionId ||
+    !body.slotId ||
+    !body.userId
+  ) {
     throw new ValidationError("INVALID REQUIRED FIELDS");
   }
+  if (!isValidEmail(body.email)) {
+    throw new ValidationError("Email address is not valid.");
+  }
+  if (!frontEnd) {
+    throw new ValidationError(
+      "Server misconfigured: FRONTEND_URL is not set.",
+    );
+  }
+
   try {
-    const response = await prisma.$transaction(async (tx) => {
-      const line = await tx.line.findUnique({
-        where: {
-          id: body.lineId,
-        },
-      });
-      const position = await tx.unitPosition.findUnique({
-        where: {
-          id: body.unitPositionId,
-        },
+    const result = await prisma.$transaction(async (tx) => {
+      // 1 + 2: slot must belong to this unitPosition and be vacant.
+      const slot = await tx.positionSlot.findUnique({
+        where: { id: body.slotId },
         select: {
           id: true,
-          position: {
-            select: {
-              name: true,
-            },
-          },
+          occupied: true,
+          unitPositionId: true,
+          userId: true,
+          salaryGrade: { select: { grade: true, amount: true } },
         },
       });
+      if (!slot || slot.unitPositionId !== body.unitPositionId) {
+        throw new ValidationError("Slot does not belong to this position.");
+      }
+      if (slot.occupied || !!slot.userId) {
+        throw new ValidationError("That slot is already filled.");
+      }
 
+      // 3: block duplicate active invites for the same email + slot.
+      const now = new Date();
+      const existingActive = await tx.fillPositionInvitation.findFirst({
+        where: {
+          email: body.email,
+          positionSlotId: body.slotId,
+          concluded: false,
+          OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+        },
+      });
+      if (existingActive) {
+        throw new ValidationError(
+          "An active invitation already exists for this email + slot. Cancel it first or wait for it to expire.",
+        );
+      }
+
+      const [line, position] = await Promise.all([
+        tx.line.findUnique({ where: { id: body.lineId } }),
+        tx.unitPosition.findUnique({
+          where: { id: body.unitPositionId },
+          select: { id: true, position: { select: { name: true } } },
+        }),
+      ]);
       if (!line || !position) throw new ValidationError("INVALID LINE");
 
       const [municipal, province] = await Promise.all([
         getAreaData(line.municipalId, 1),
         getAreaData(line.provinceId, 0),
       ]);
-
       if (!municipal || !province) {
         throw new ValidationError("INVALID AREA DATA");
       }
-      const optional: any = {};
 
-      if (body.message) {
-        optional.message = body.message;
-      }
+      const expiresAt = new Date(now.getTime() + INVITE_TTL_DAYS * 86_400_000);
       const link = await tx.fillPositionInvitation.create({
         data: {
           email: body.email,
+          message: body.message?.trim() || null,
           lineId: body.lineId,
           unitPositionId: body.unitPositionId,
           positionSlotId: body.slotId,
+          expiresAt,
         },
       });
 
       await tx.humanResourcesLogs.create({
         data: {
           action: "ADD",
-          desc: `FILL POSITION (Invite -> email: ${body.email})`,
+          desc: `FILL POSITION (Invite -> email: ${body.email}, slot: ${body.slotId})`,
           lineId: body.lineId,
           userId: body.userId,
         },
       });
 
-      await sendEmail(
-        `Registration Invitation for ${municipal.name} Portal Position: ${position.position.name}`,
-        body.email,
-        `
-  Good day,
-
-  You are invited to register and create an account on the Gasan Portal.
-
-  Please click the link below to proceed with your registration:
-  ${frontEnd}position/register/${link.id}
-
-  Best regards,
-  Human Resource Management Office (HRMO)
-  ${municipal.name}, ${province.name}
-  `,
-        "",
-      );
-      return true;
+      return { link, municipal, province, position };
     });
 
-    if (!response) {
-      throw new ValidationError("TRANSACTION FAILED");
-    }
-    return res.code(200).send({ message: "OK" });
+    // Email is fire-and-forget: a transient SMTP failure shouldn't roll
+    // back the invitation row (HR can re-send from the dashboard).
+    const personalMsg = body.message?.trim()
+      ? `\n\nMessage from HR:\n${body.message.trim()}\n`
+      : "";
+    sendEmail(
+      `Registration Invitation for ${result.municipal.name} Portal Position: ${result.position.position.name}`,
+      body.email,
+      `
+Good day,
+
+You are invited to register and create an account on the Gasan Portal
+for the position of ${result.position.position.name}.
+
+Please click the link below to proceed with your registration. This
+invitation expires on ${result.link.expiresAt?.toLocaleString()}.
+
+${frontEnd}position/register/${result.link.id}
+${personalMsg}
+Best regards,
+Human Resource Management Office (HRMO)
+${result.municipal.name}, ${result.province.name}
+`,
+      "",
+    ).catch((e) => console.warn("[fillPositionInvite] email send failed", e));
+
+    return res.code(200).send({
+      message: "OK",
+      invitation: {
+        id: result.link.id,
+        email: result.link.email,
+        expiresAt: result.link.expiresAt,
+        slotId: result.link.positionSlotId,
+      },
+    });
   } catch (error) {
+    if (error instanceof ValidationError) throw error;
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+/**
+ * Variant of fillPositionInvite that picks the recipient from an existing
+ * SubmittedApplication instead of asking HR to type the email by hand.
+ *
+ * Why a separate endpoint instead of overloading fillPositionInvite:
+ *   - the source-of-truth email lives encrypted on SubmittedApplication
+ *     so the server has to decrypt it here (the dashboard never sees
+ *     plaintext)
+ *   - we link the invitation back to the source application via
+ *     `submittedApplicationId`, which makes accept-link landing pages
+ *     able to pre-fill the candidate's data
+ *
+ * Validation:
+ *   - slot must belong to the named unitPosition and be vacant
+ *   - application must exist and belong to the same line
+ *   - dedupe by (resolved email + slot) so we don't spam the same person
+ */
+export const inviteFromApplication = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as {
+    applicationId: string;
+    slotId: string;
+    unitPositionId: string;
+    userId: string;
+    lineId: string;
+    message?: string | null;
+  };
+
+  if (
+    !body.applicationId ||
+    !body.slotId ||
+    !body.unitPositionId ||
+    !body.userId ||
+    !body.lineId
+  ) {
+    throw new ValidationError("INVALID REQUIRED FIELDS");
+  }
+  if (!frontEnd) {
+    throw new ValidationError(
+      "Server misconfigured: FRONTEND_URL is not set.",
+    );
+  }
+
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      // 1. Slot must belong to this UnitPosition and be vacant.
+      const slot = await tx.positionSlot.findUnique({
+        where: { id: body.slotId },
+        select: {
+          id: true,
+          occupied: true,
+          unitPositionId: true,
+          userId: true,
+        },
+      });
+      if (!slot || slot.unitPositionId !== body.unitPositionId) {
+        throw new ValidationError("Slot does not belong to this position.");
+      }
+      if (slot.occupied || !!slot.userId) {
+        throw new ValidationError("That slot is already filled.");
+      }
+
+      // 2. Application must exist and belong to the line, AND be eligible
+      //    (no userId set, and any prior invite must be concluded as
+      //    cancelled/expired — accepted/live invites can't be reused).
+      const application = await tx.submittedApplication.findUnique({
+        where: { id: body.applicationId },
+        select: {
+          id: true,
+          lineId: true,
+          firstname: true,
+          lastname: true,
+          email: true,
+          emailIv: true,
+          userId: true,
+          fillPositionInvitations: {
+            select: {
+              id: true,
+              concluded: true,
+              concludedReason: true,
+              expiresAt: true,
+            },
+          },
+        },
+      });
+      if (!application) throw new NotFoundError("Application not found.");
+      if (application.lineId !== body.lineId) {
+        throw new ValidationError("Application is not in this line.");
+      }
+      if (application.userId) {
+        throw new ValidationError(
+          "This applicant has already completed registration.",
+        );
+      }
+      const prevInv = application.fillPositionInvitations;
+      if (prevInv) {
+        const prevExpired = !!(
+          prevInv.expiresAt &&
+          new Date(prevInv.expiresAt).getTime() < Date.now()
+        );
+        const reusable =
+          prevInv.concluded &&
+          (prevInv.concludedReason === "cancelled" ||
+            prevInv.concludedReason === "expired" ||
+            prevExpired);
+        if (!reusable) {
+          throw new ValidationError(
+            prevInv.concluded
+              ? "This application was already accepted — pick a different applicant."
+              : "This application already has a live invitation — cancel it first.",
+          );
+        }
+      }
+
+      // 3. Decrypt the applicant's email so we can dedupe + send.
+      let plainEmail: string | null = null;
+      if (application.email && application.emailIv) {
+        try {
+          plainEmail = await EncryptionService.decrypt(
+            application.email,
+            application.emailIv,
+          );
+        } catch (e) {
+          console.warn(
+            "[inviteFromApplication] failed to decrypt email",
+            e,
+          );
+        }
+      }
+      if (!plainEmail) {
+        throw new ValidationError(
+          "Couldn't read the applicant's email address.",
+        );
+      }
+
+      // 4. Block duplicate active invites for the same email + slot.
+      const now = new Date();
+      const existingActive = await tx.fillPositionInvitation.findFirst({
+        where: {
+          email: plainEmail,
+          positionSlotId: body.slotId,
+          concluded: false,
+          OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+        },
+      });
+      if (existingActive) {
+        throw new ValidationError(
+          "An active invitation already exists for this applicant + slot.",
+        );
+      }
+
+      // 5. Look up the line + area so we can address the email.
+      const [line, position] = await Promise.all([
+        tx.line.findUnique({ where: { id: body.lineId } }),
+        tx.unitPosition.findUnique({
+          where: { id: body.unitPositionId },
+          select: { id: true, position: { select: { name: true } } },
+        }),
+      ]);
+      if (!line || !position) throw new ValidationError("INVALID LINE");
+      const [municipal, province] = await Promise.all([
+        getAreaData(line.municipalId, 1),
+        getAreaData(line.provinceId, 0),
+      ]);
+      if (!municipal || !province) {
+        throw new ValidationError("INVALID AREA DATA");
+      }
+
+      const expiresAt = new Date(now.getTime() + INVITE_TTL_DAYS * 86_400_000);
+      const link = await tx.fillPositionInvitation.create({
+        data: {
+          email: plainEmail,
+          message: body.message?.trim() || null,
+          lineId: body.lineId,
+          unitPositionId: body.unitPositionId,
+          positionSlotId: body.slotId,
+          submittedApplicationId: body.applicationId,
+          expiresAt,
+        },
+      });
+
+      await tx.humanResourcesLogs.create({
+        data: {
+          action: "ADD",
+          desc: `FILL POSITION (from application) -> applicant: ${application.firstname} ${application.lastname} (${plainEmail}), slot: ${body.slotId}`,
+          lineId: body.lineId,
+          userId: body.userId,
+        },
+      });
+
+      return {
+        link,
+        plainEmail,
+        applicant: application,
+        line,
+        municipal,
+        province,
+        position,
+      };
+    });
+
+    // Email — fire-and-forget.
+    const personalMsg = body.message?.trim()
+      ? `\n\nMessage from HR:\n${body.message.trim()}\n`
+      : "";
+    sendEmail(
+      `Registration Invitation for ${result.municipal.name} Portal Position: ${result.position.position.name}`,
+      result.plainEmail,
+      `
+Good day ${result.applicant.firstname},
+
+Based on your submitted application, you are invited to register and
+create an account on the Gasan Portal for the position of
+${result.position.position.name}.
+
+Please click the link below to proceed with your registration. This
+invitation expires on ${result.link.expiresAt?.toLocaleString()}.
+
+${frontEnd}position/register/${result.link.id}
+${personalMsg}
+Best regards,
+Human Resource Management Office (HRMO)
+${result.municipal.name}, ${result.province.name}
+`,
+      "",
+    ).catch((e) =>
+      console.warn("[inviteFromApplication] email send failed", e),
+    );
+
+    return res.code(200).send({
+      message: "OK",
+      invitation: {
+        id: result.link.id,
+        email: result.link.email,
+        expiresAt: result.link.expiresAt,
+        slotId: result.link.positionSlotId,
+        applicantName: `${result.applicant.firstname} ${result.applicant.lastname}`,
+      },
+    });
+  } catch (error) {
+    if (error instanceof ValidationError) throw error;
+    if (error instanceof NotFoundError) throw error;
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+/**
+ * List invitations for a given unitPosition (or for a specific slot).
+ * Used by the Fill Position modal so HR can see who's already been
+ * invited and avoid spamming candidates.
+ */
+export const listPositionInvitations = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as {
+    unitPositionId?: string;
+    slotId?: string;
+    /** "active" (default) | "all" — gate concluded/expired out by default. */
+    status?: "active" | "all";
+  };
+  if (!params.unitPositionId && !params.slotId) {
+    throw new ValidationError(
+      "Either unitPositionId or slotId is required.",
+    );
+  }
+
+  const now = new Date();
+  const where: any = {};
+  if (params.unitPositionId) where.unitPositionId = params.unitPositionId;
+  if (params.slotId) where.positionSlotId = params.slotId;
+  if ((params.status ?? "active") === "active") {
+    where.concluded = false;
+    where.OR = [{ expiresAt: null }, { expiresAt: { gt: now } }];
+  }
+
+  try {
+    const rows = await prisma.fillPositionInvitation.findMany({
+      where,
+      orderBy: { timestamp: "desc" },
+      select: {
+        id: true,
+        email: true,
+        message: true,
+        timestamp: true,
+        expiresAt: true,
+        concluded: true,
+        concludedAt: true,
+        concludedReason: true,
+        positionSlotId: true,
+        slot: {
+          select: {
+            id: true,
+            occupied: true,
+            salaryGrade: { select: { grade: true } },
+          },
+        },
+        submittedApplicationId: true,
+      },
+    });
+
+    // Tag rows whose expiresAt has already passed but were never marked
+    // concluded — keeps the dashboard counts honest without an extra job.
+    const decorated = rows.map((r) => {
+      const expired =
+        !r.concluded && r.expiresAt && r.expiresAt.getTime() <= now.getTime();
+      const status = r.concluded
+        ? (r.concludedReason ?? "concluded")
+        : expired
+          ? "expired"
+          : "pending";
+      return { ...r, status, isExpired: !!expired };
+    });
+
+    return res.code(200).send({ list: decorated });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+/**
+ * Cancel (soft-conclude) a pending invitation. Safe no-op if already
+ * concluded.
+ */
+export const cancelPositionInvitation = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as { id: string; userId: string; lineId: string };
+  if (!body.id || !body.userId || !body.lineId) {
+    throw new ValidationError("INVALID REQUIRED FIELDS");
+  }
+
+  try {
+    const updated = await prisma.$transaction(async (tx) => {
+      const row = await tx.fillPositionInvitation.findUnique({
+        where: { id: body.id },
+        select: { id: true, concluded: true, email: true, lineId: true },
+      });
+      if (!row) throw new NotFoundError("Invitation not found");
+      if (row.lineId !== body.lineId) {
+        throw new ValidationError("Line mismatch.");
+      }
+      if (row.concluded) return row;
+      const out = await tx.fillPositionInvitation.update({
+        where: { id: body.id },
+        data: {
+          concluded: true,
+          concludedAt: new Date(),
+          concludedReason: "cancelled",
+          // Release the @unique link on submittedApplicationId so the
+          // same application can be picked again from the picker page.
+          // The cancelled row stays in history with its email, the rest
+          // of its metadata, and a `null` submittedApplicationId.
+          submittedApplicationId: null,
+        },
+      });
+      await tx.humanResourcesLogs.create({
+        data: {
+          action: "DELETE",
+          desc: `CANCEL FILL POSITION INVITE -> email: ${row.email}`,
+          lineId: body.lineId,
+          userId: body.userId,
+        },
+      });
+      return out;
+    });
+    return res.code(200).send({ ok: true, id: updated.id });
+  } catch (error) {
+    if (error instanceof ValidationError) throw error;
+    if (error instanceof NotFoundError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
     }
@@ -800,12 +1268,17 @@ export const positionRegister = async (
         select: {
           id: true,
           positionId: true,
+          salaryGradeId: true,
           unitPosition: {
             select: {
+              id: true,
               departmentId: true,
+              positionId: true,
               position: {
                 select: {
+                  id: true,
                   name: true,
+                  salaryGradeId: true,
                 },
               },
             },
@@ -831,6 +1304,28 @@ export const positionRegister = async (
       if (!application) {
         throw new ValidationError("APPLICATION NOT FOUND");
       }
+      // Resolve the *effective* position / department / SG from the slot
+      // OR its parent UnitPosition. `PositionSlot.positionId` is
+      // optional in the schema and is usually NULL — the canonical
+      // position id lives on the UnitPosition. Same for salary grade,
+      // which is normally set on the Position row rather than per-slot.
+      const effectivePositionId =
+        slot.positionId ?? slot.unitPosition?.positionId ?? null;
+      const effectiveDepartmentId = slot.unitPosition?.departmentId ?? null;
+      const effectiveSalaryGradeId =
+        body.sgId ??
+        slot.salaryGradeId ??
+        slot.unitPosition?.position?.salaryGradeId ??
+        null;
+
+      if (!effectivePositionId) {
+        // Shouldn't happen for a well-formed UnitPosition; bail loudly
+        // so HR can fix the data instead of getting a silent "No position".
+        throw new ValidationError(
+          "Slot has no resolvable position — check that the UnitPosition references a Position.",
+        );
+      }
+
       const hashedPassword = await argon.hash(body.password);
 
       const account = await tx.account.create({
@@ -850,8 +1345,11 @@ export const positionRegister = async (
           email: application.email,
           emailIv: application.emailIv,
           lineId: body.lineId,
-          positionId: slot.positionId,
-          departmentId: slot.unitPosition?.departmentId,
+          positionId: effectivePositionId,
+          departmentId: effectiveDepartmentId,
+          ...(effectiveSalaryGradeId
+            ? { salaryGradeId: effectiveSalaryGradeId }
+            : {}),
           phoneNumber: application.mobileNo,
           phoneNumberIv: application.ivMobileNo,
         },
@@ -872,17 +1370,30 @@ export const positionRegister = async (
         },
         data: {
           userId: user.id,
-          salaryGradeId: body.sgId,
+          // Backfill positionId on the slot itself so future reads don't
+          // depend on the unitPosition join, AND set salaryGradeId from
+          // whichever source resolved above.
+          positionId: effectivePositionId,
+          ...(effectiveSalaryGradeId
+            ? { salaryGradeId: effectiveSalaryGradeId }
+            : {}),
           occupied: true,
         },
       });
-      await tx.notification.create({
-        data: {
-          recipientId: user.id,
-          title: "Welcome to the Portal!",
-          content: `Welcome ${body.firstname} ${body.lastname}! You have been successfully registered as the ${slot.unitPosition?.position.name || "Unknown"}. Your username is: ${body.username}. You now have full access to the Human Resources module.`,
-          senderId: user.id,
-        },
+      // Name comes from the submitted application — the register body
+      // doesn't carry firstname/lastname (that's why the old message
+      // rendered "Welcome undefined undefined").
+      const fullName = [application.firstname, application.lastname]
+        .filter(Boolean)
+        .join(" ")
+        .trim();
+      const positionName =
+        slot.unitPosition?.position?.name ?? "your new position";
+      await createUserNotification(tx, {
+        recipientId: user.id,
+        title: "Welcome to the Portal!",
+        content: `Welcome ${fullName || body.username}! You have been successfully registered as ${positionName}. Your username is: ${body.username}. You now have full access to the Human Resources module.`,
+        senderId: null,
       });
       return true;
     });
@@ -902,7 +1413,25 @@ export const positionRegister = async (
   }
 };
 
-export const vacentPosition = async (
+/**
+ * Vacate an occupied position slot.
+ *
+ * Body:
+ *   slotId  — the PositionSlot to free up
+ *   userId  — the ACTOR (HR user performing the action), for the audit log
+ *   lineId  — line scope guard
+ *   action  — what to do with the displaced occupant:
+ *               0 "Remove User"     → unassign them from the slot/position
+ *                                     (account stays active, becomes
+ *                                     position-less)
+ *               1 "Disable Access"  → also suspend their account so they
+ *                                     can no longer sign in (data retained)
+ *
+ * Always: clears slot.userId + occupied, clears the occupant's
+ * position/department/salaryGrade, records a UnitPositionHistory row and
+ * an HR audit log, and notifies the displaced user.
+ */
+export const vacantPosition = async (
   req: FastifyRequest,
   res: FastifyReply,
 ) => {
@@ -910,35 +1439,72 @@ export const vacentPosition = async (
     slotId: string;
     userId: string;
     lineId: string;
-    slotUserId: string;
+    action?: number | string;
   };
 
   if (!body.lineId || !body.slotId || !body.userId) {
     throw new ValidationError("INVALID REQUIRED ID");
   }
+
+  // Normalise action → 0 (remove) | 1 (disable access). Anything else
+  // falls back to a plain unassign (0).
+  const action = Number(body.action ?? 0) === 1 ? 1 : 0;
+
   try {
-    const response = await prisma.$transaction(async (tx) => {
-      const slot = await tx.positionSlot.update({
-        where: {
-          id: body.slotId,
-        },
-        data: {
-          occupied: false,
-          userId: null,
-        },
-        include: {
-          pos: {
+    const result = await prisma.$transaction(async (tx) => {
+      const slot = await tx.positionSlot.findUnique({
+        where: { id: body.slotId },
+        select: {
+          id: true,
+          occupied: true,
+          userId: true,
+          unitPositionId: true,
+          pos: { select: { name: true } },
+          unitPosition: {
+            select: { lineId: true, position: { select: { name: true } } },
+          },
+          user: {
             select: {
-              name: true,
+              id: true,
+              firstName: true,
+              lastName: true,
+              accountId: true,
             },
           },
         },
       });
 
-      const user = await tx.user.update({
-        where: {
-          id: body.slotUserId,
-        },
+      if (!slot) throw new NotFoundError("Slot not found.");
+      if (slot.unitPosition && slot.unitPosition.lineId !== body.lineId) {
+        throw new ValidationError("Slot does not belong to this line.");
+      }
+      if (!slot.userId || !slot.user) {
+        throw new ValidationError("This slot is already vacant.");
+      }
+
+      // An HR officer must not vacate their OWN seat — doing so would strip
+      // their position/department (and optionally suspend their account),
+      // potentially locking the line out of its only HR administrator.
+      // Only a *different* administrator may vacate this slot.
+      if (slot.userId === body.userId) {
+        throw new ValidationError(
+          "You can't vacate your own seat. Ask another administrator to do this for you.",
+        );
+      }
+
+      const occupant = slot.user;
+      const positionName =
+        slot.pos?.name ?? slot.unitPosition?.position?.name ?? "the position";
+
+      // 1. Free the slot.
+      await tx.positionSlot.update({
+        where: { id: slot.id },
+        data: { occupied: false, userId: null },
+      });
+
+      // 2. Unassign the occupant from their position/department/SG.
+      await tx.user.update({
+        where: { id: occupant.id },
         data: {
           departmentId: null,
           positionId: null,
@@ -946,23 +1512,64 @@ export const vacentPosition = async (
         },
       });
 
+      // 3. Optionally suspend the account (Disable Access).
+      if (action === 1 && occupant.accountId) {
+        await tx.account.update({
+          where: { id: occupant.accountId },
+          data: { status: 2, active: false },
+        });
+      }
+
+      // 4. History — record the vacancy against the unit position.
+      if (slot.unitPositionId) {
+        await tx.unitPositionHistory.create({
+          data: {
+            unitPositionId: slot.unitPositionId,
+            positionSlotId: slot.id,
+            userId: occupant.id,
+          },
+        });
+      }
+
+      // 5. HR audit log.
       await tx.humanResourcesLogs.create({
         data: {
           userId: body.userId,
-          action: "UPDATE",
-          desc: `UPDATE POSITION SLOT: Vacant ${slot.pos?.name}'s position slot'`,
+          action: action === 1 ? "DELETE" : "UPDATE",
+          desc:
+            action === 1
+              ? `VACATE + DISABLE ACCESS: ${occupant.firstName} ${occupant.lastName} removed from ${positionName} and account suspended.`
+              : `VACATE SLOT: ${occupant.firstName} ${occupant.lastName} unassigned from ${positionName}.`,
           lineId: body.lineId,
         },
       });
-      return true;
+
+      return { occupant, positionName };
     });
 
-    if (!response) {
-      throw new ValidationError("TRANSACTION FAILED");
+    // 6. Notify the displaced user (outside the tx isn't necessary — the
+    //    helper participates in the tx — but we already committed, so
+    //    fire a standalone notification here).
+    try {
+      await prisma.notification.create({
+        data: {
+          recipientId: result.occupant.id,
+          title:
+            action === 1 ? "Account access disabled" : "Position vacated",
+          content:
+            action === 1
+              ? `You have been removed from ${result.positionName} and your account access has been disabled. Contact HR for assistance.`
+              : `You have been unassigned from ${result.positionName}. Contact HR if you believe this is a mistake.`,
+        },
+      });
+    } catch (e) {
+      console.warn("[vacantPosition] notification failed:", e);
     }
 
     return res.code(200).send({ message: "OK" });
   } catch (error) {
+    if (error instanceof ValidationError) throw error;
+    if (error instanceof NotFoundError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
     }
@@ -1383,24 +1990,17 @@ export const submitApplication = async (
       const application = await tx.submittedApplication.create({
         data: applicationData,
       });
+      // Mark the invite as accepted in one shot. The legacy code did
+      // this twice (once with everything, then again with just step),
+      // which was redundant and accidentally widened the failure window.
       await tx.fillPositionInvitation.update({
-        where: {
-          id: inviteLink.id,
-        },
+        where: { id: inviteLink.id },
         data: {
           step: 1,
           submittedApplicationId: application.id,
           concluded: true,
-          concludedAt: new Date().toISOString(),
-        },
-      });
-
-      await tx.fillPositionInvitation.update({
-        data: {
-          step: 1,
-        },
-        where: {
-          id: inviteLink.id,
+          concludedAt: new Date(),
+          concludedReason: "accepted",
         },
       });
 
@@ -1440,12 +2040,32 @@ export const submitApplication = async (
       profilePictureUploaded: !!profilePicture,
     });
   } catch (err) {
-    console.log(err);
-
+    // Pull as much useful detail as we can out of *whatever* was thrown
+    // so the FE doesn't just see "Unknown error". Prisma's known errors
+    // are Error instances but carry a `code` + `meta`; plain thrown
+    // strings/numbers used to fall through and surface "Unknown error".
+    const prismaCode = (err as any)?.code;
+    const prismaMeta = (err as any)?.meta;
+    const errorMsg =
+      err instanceof Error
+        ? err.message
+        : typeof err === "string"
+          ? err
+          : (err as any)?.message
+            ? String((err as any).message)
+            : `Unhandled (${typeof err})`;
+    console.error("[submitApplication] failed:", {
+      message: errorMsg,
+      prismaCode,
+      prismaMeta,
+      stack: err instanceof Error ? err.stack : undefined,
+    });
     return res.status(500).send({
       success: false,
       message: "Failed to submit application",
-      error: err instanceof Error ? err.message : "Unknown error",
+      error: errorMsg,
+      code: prismaCode ?? null,
+      meta: prismaMeta ?? null,
     });
   }
 };
@@ -1460,6 +2080,11 @@ export const positionRecords = async (
     throw new ValidationError("INVALID REQUIRED ID");
   }
   try {
+    // Pull everything the PositionDetail header needs in one shot:
+    //  - line + unit (department) names (FE was rendering departmentId uuid)
+    //  - slot fill ratio (occupied vs total) for the stats badge
+    //  - submittedApplications count for the Applications tab badge
+    //  - position.salaryGrade so the header can display the grade + amount
     const response = await prisma.unitPosition.findUnique({
       where: {
         id: params.id,
@@ -1469,17 +2094,30 @@ export const positionRecords = async (
           select: {
             name: true,
             id: true,
+            SalaryGrade: {
+              select: { grade: true, amount: true },
+            },
           },
         },
         unit: {
+          select: { id: true, name: true },
+        },
+        line: {
+          select: { id: true, name: true },
+        },
+        slot: {
           select: {
-            name: true,
+            id: true,
+            occupied: true,
+            userId: true,
           },
+          orderBy: { id: "asc" },
         },
         _count: {
           select: {
             slot: true,
             submittedApplications: true,
+            unitPositionHistories: true,
           },
         },
       },
@@ -1489,7 +2127,16 @@ export const positionRecords = async (
       throw new NotFoundError("UNIT POSITION NOT FOUND");
     }
 
-    return res.code(200).send(response);
+    // Convenience: occupied/total numbers so FE doesn't recompute.
+    const occupiedSlots = (response.slot ?? []).filter(
+      (s) => s.occupied || !!s.userId,
+    ).length;
+
+    return res.code(200).send({
+      ...response,
+      occupiedSlots,
+      totalSlots: response._count?.slot ?? response.slot?.length ?? 0,
+    });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("Database operation failed", 500, "DB_ERROR");
@@ -1512,9 +2159,19 @@ export const positionApplications = async (
     const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
     const limit = params.limit ? parseInt(params.limit, 10) : 20;
 
+    // Mirror what /line-applications returns so the FE can reuse
+    // <ApplicationItem /> 1:1. The position view always filters by
+    // unitPositionId, so the result is a strict subset.
     const response = await prisma.submittedApplication.findMany({
       where: {
         unitPositionId: params.id,
+      },
+      include: {
+        forPosition: { select: { id: true, name: true } },
+        unitPos: { select: { id: true, designation: true } },
+        ApplicationSkillTags: {
+          select: { id: true, tags: true },
+        },
       },
       cursor,
       skip: cursor ? 1 : 0,
@@ -1553,6 +2210,19 @@ export const unitPositionRecord = async (
     const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
     const limit = params.limit ? parseInt(params.limit, 10) : 20;
 
+    // Derive a stable slot "number" per UnitPosition: ordered by id, the
+    // index inside that array. The PositionSlot model has no slotNumber
+    // column, but the UI just needs a friendly handle ("Slot #2") instead
+    // of the raw uuid.
+    const slotOrder = await prisma.positionSlot.findMany({
+      where: { unitPositionId: params.id },
+      orderBy: { id: "asc" },
+      select: { id: true },
+    });
+    const slotNumberById = new Map(
+      slotOrder.map((s, i) => [s.id, i + 1]),
+    );
+
     const response = await prisma.unitPositionHistory.findMany({
       where: {
         unitPositionId: params.id,
@@ -1560,8 +2230,18 @@ export const unitPositionRecord = async (
       include: {
         user: {
           select: {
+            id: true,
             firstName: true,
             lastName: true,
+            username: true,
+          },
+        },
+        slot: {
+          select: {
+            id: true,
+            occupied: true,
+            userId: true,
+            designation: true,
           },
         },
       },
@@ -1573,13 +2253,30 @@ export const unitPositionRecord = async (
       },
     });
 
-    const newLastCursorId =
-      response.length > 0 ? response[response.length - 1].id : null;
-    const hasMore = response.length === limit;
+    const list = response.map((row) => {
+      const slotNumber = row.positionSlotId
+        ? (slotNumberById.get(row.positionSlotId) ?? null)
+        : null;
+      // Best-effort action label: if the slot is currently occupied by
+      // this same user, this row likely represents the assignment; if a
+      // newer history row exists for the same slot, this one is a vacate.
+      // We don't track action explicitly, so the FE just renders
+      // "Assigned" when the slot still belongs to the user.
+      const currentlyHolds =
+        row.slot?.userId && row.user?.id && row.slot.userId === row.user.id;
+      return {
+        ...row,
+        slotNumber,
+        action: currentlyHolds ? "assigned" : "vacated",
+      };
+    });
+
+    const newLastCursorId = list.length > 0 ? list[list.length - 1].id : null;
+    const hasMore = list.length === limit;
 
     return res
       .code(200)
-      .send({ list: response, hasMore, lastCursor: newLastCursorId });
+      .send({ list, hasMore, lastCursor: newLastCursorId });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("Database operation failed", 500, "DB_ERROR");
@@ -1588,46 +2285,68 @@ export const unitPositionRecord = async (
   }
 };
 
+/**
+ * Remove a unit-position binding.
+ *
+ * Refuses if any slot is currently filled — would orphan the user.
+ * Logged to humanResourcesLogs (was previously writing to medicineLogs
+ * by mistake, which is the wrong audit table for HR actions).
+ */
 export const removeUnitPosition = async (
   req: FastifyRequest,
   res: FastifyReply,
 ) => {
   const params = req.query as { id: string; userId: string; lineId: string };
-
   if (!params.id || !params.userId || !params.lineId) {
     throw new ValidationError("INVALID REQUIRED ID");
   }
 
   try {
-    await prisma.$transaction(async (tx) => {
-      await tx.unitPosition.delete({
-        where: {
-          id: params.id,
+    const result = await prisma.$transaction(async (tx) => {
+      const target = await tx.unitPosition.findUnique({
+        where: { id: params.id },
+        include: {
+          position: { select: { name: true } },
+          slot: { select: { id: true, occupied: true, userId: true } },
         },
       });
-      await tx.medicineLogs.create({
+      if (!target) throw new NotFoundError("Unit position not found");
+
+      const filled = (target.slot ?? []).filter(
+        (s) => s.occupied || !!s.userId,
+      ).length;
+      if (filled > 0) {
+        throw new ValidationError(
+          `Cannot remove — ${filled} slot${
+            filled === 1 ? " is" : "s are"
+          } still occupied. Vacate or transfer first.`,
+        );
+      }
+
+      await tx.unitPosition.delete({ where: { id: params.id } });
+
+      await tx.humanResourcesLogs.create({
         data: {
-          action: 4,
-          message: `Removed unit position with ID ${params.id}`,
+          action: "REMOVE",
+          tab: 7,
           userId: params.userId,
           lineId: params.lineId,
+          desc: `Removed unit position: ${target.position?.name ?? params.id}`,
         },
       });
+
+      return { id: params.id };
     });
+
     return res
       .code(200)
-      .send({ message: "Unit position removed successfully" });
+      .send({ message: "OK", ...result });
   } catch (error) {
+    if (error instanceof NotFoundError) throw error;
+    if (error instanceof ValidationError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("Database operation failed", 500, "DB_ERROR");
     }
     throw error;
   }
-};
-
-export const vacantPosition = async (
-  req: FastifyRequest,
-  res: FastifyReply,
-) => {
-  const body = req.body as { userId: string; id: string; lineId: string };
 };

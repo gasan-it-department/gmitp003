@@ -77,5 +77,8 @@ export const notification = (fastify: FastifyInstance) => {
     { preHandler: authenticated },
     markAsRead,
   );
-  fastify.get("/notification/realtime", { websocket: true }, realTimeNoif);
+  // Disabled along with @fastify/websocket — Socket.IO covers real-time
+  // notification delivery. Re-enable only if you bring fastify-websocket
+  // back (see comment in src/index.ts).
+  // fastify.get("/notification/realtime", { websocket: true }, realTimeNoif);
 };

@@ -74,6 +74,12 @@ model Line {
   unitPositions           UnitPosition[]
   User                    User[]
   patients                Patient[]
+  leaves                  Leave[]
+  leaveCredits            LeaveCredit[]
+  payrollPeriods          PayrollPeriod[]
+  payslips                Payslip[]
+  payrollDeductions       PayrollDeduction[]
+  complaints              Complaint[]
 }
 
 model LineInvitation {
@@ -148,7 +154,9 @@ model ProfilePicture {
 
 model InventoryBox {
   id                      String                  @id @default(uuid())
-  name                    String                  @unique
+  /// Name is unique *within* a line — two different lines can each have
+  /// an "Office Supplies" container without colliding.
+  name                    String
   code                    Int                     @unique
   createdAt               DateTime                @default(now())
   lineId                  String
@@ -167,6 +175,10 @@ model InventoryBox {
   supplyDispenseRecords   SupplyDispenseRecord[]
   SupplyStockTrack        SupplyStockTrack[]
   supplyTransactions      SupplyTransaction[]
+
+  @@unique([lineId, name])
+  @@index([lineId])
+  @@index([departmentId])
 }
 
 model InventoryInbox {
@@ -377,7 +389,7 @@ model Supplier {
   supplieRecieveHistories SupplieRecieveHistory[]
   line                    Line                    @relation(fields: [lineId], references: [id])
   supplies                Supplies[]
-  SupplyOrder             SupplyOrder?
+  SupplyOrder             SupplyOrder[]
   SupplyStockTrack        SupplyStockTrack[]
 }
 
@@ -403,7 +415,7 @@ model SupplyOrder {
   timestamp               DateTime?              @default(now())
   comments                String?                @default("N/A")
   price                   Float?                 @default(0.0)
-  supplierId              String?                @unique
+  supplierId              String?
   perQuantity             Int                    @default(1)
   quality                 String?
   receivedQuantity        Int                    @default(1)
@@ -790,6 +802,14 @@ model FillPositionInvitation {
   message                String?
   concluded              Boolean               @default(false)
   concludedAt            DateTime?
+  /// Why the invitation was concluded (auto-set when concluded=true).
+  ///   "accepted"  → applicant registered + submitted
+  ///   "cancelled" → HR revoked the invite from the dashboard
+  ///   "expired"   → expiresAt passed, surfaced lazily on read
+  concludedReason        String?
+  /// 7 days from creation by default. Read-time filters can compare to
+  /// `now()` to treat anything past as expired.
+  expiresAt              DateTime?
   timestamp              DateTime              @default(now())
   unitPositionId         String
   lineId                 String
@@ -984,6 +1004,8 @@ model User {
   salaryGradeId                    String?
   status                           String                           @default("Regular")
   suffix                           String?
+  // (Per-signature `qrEnabled` lives on the Signature model now —
+  // each saved signature can opt in independently.)
   username                         String                           @unique
   accountId                        String?                          @unique
   barangayId                       String?
@@ -1030,6 +1052,19 @@ model User {
   InventoryBox                     InventoryBox[]                   @relation("createdBy")
   inventoryLogs                    InventoryLogs[]
   Leave                            Leave[]
+  approvedLeaves                   Leave[]                          @relation("LeaveApprover")
+  leaveLedgers                     LeaveLedger[]                    @relation("LeaveLedgerBy")
+  leaveCredits                     LeaveCredit[]
+  leaveLedger                      LeaveLedger[]
+  payslips                         Payslip[]
+  payrollDeductions                PayrollDeduction[]
+  payrollPeriodsCreated            PayrollPeriod[]                  @relation("PayrollPeriodCreatedBy")
+  signatoryArrangements            SignatoryArrangement[]           @relation("SignatoryArrangementUser")
+  complaintsFiled                  Complaint[]                      @relation("ComplaintAuthor")
+  complaintsAgainst                Complaint[]                      @relation("ComplaintAgainst")
+  complaintsAssigned               Complaint[]                      @relation("ComplaintAssignee")
+  complaintReplies                 ComplaintReply[]
+  complaintEvidence                ComplaintEvidence[]
   hrmoLin                          Line?                            @relation("hrmo")
   LogRecord                        LogRecord[]
   MedicineLogs                     MedicineLogs[]
@@ -1039,6 +1074,7 @@ model User {
   modules                          Module[]
   receivedNotifications            Notification[]                   @relation("ReceivedNotifications")
   sentNotifications                Notification[]                   @relation("SentNotifications")
+  pushTokens                       PushToken[]
   PositionSlot                     PositionSlot?
   respondedBy                      Prescription[]                   @relation("respondedBy")
   processBy                        Prescription[]                   @relation("processBy")
@@ -1147,6 +1183,27 @@ model Notification {
   sender      User?    @relation("SentNotifications", fields: [senderId], references: [id], onDelete: Cascade)
 }
 
+/**
+ * Push-notification token registered by a mobile device (Expo Push token,
+ * one per device + user). Used to deliver OS-level pushes when the app is
+ * closed or backgrounded. Multiple rows per user supported: one phone,
+ * one tablet, etc. The unique constraint on `token` lets us upsert
+ * without first looking up.
+ */
+model PushToken {
+  id         String   @id @default(uuid())
+  token      String   @unique
+  userId     String
+  platform   String?
+  deviceName String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  lastSeenAt DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
 model Position {
   id                   String                 @id @default(uuid())
   name                 String
@@ -1231,6 +1288,7 @@ model SalaryGrade {
   line               Line?                @relation(fields: [lineId], references: [id])
   SalaryGradeHistory SalaryGradeHistory[]
   users              User[]
+  payslips           Payslip[]
 }
 
 model HumanResourcesLogs {
@@ -1255,16 +1313,208 @@ model SalaryGradeHistory {
   salaryGrade   SalaryGrade @relation(fields: [salaryGradeId], references: [id], onDelete: Cascade)
 }
 
+// ─── Leave management ────────────────────────────────────────────────
+// `category` carries the canonical leave kind ("vacation" | "sick" |
+// "mandatory" | "maternity" | "paternity" | "soloParent" |
+// "specialPrivilege" | "bereavement" | "emergency" | "others"). `type`
+// is preserved for backward compatibility with older callers.
+// `status` enum: "pending" | "approved" | "denied" | "cancelled".
 model Leave {
+  id             String        @id @default(uuid())
+  userId         String
+  lineId         String?
+  type           String
+  category       String        @default("vacation")
+  withPay        Boolean       @default(true)
+  days           Float         @default(0)
+  startDate      DateTime
+  endDate        DateTime
+  reason         String?
+  attachmentUrl  String?
+  attachmentType String?
+  status         String        @default("pending")
+  approverId     String?
+  decidedAt      DateTime?
+  decisionRemark String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  user           User          @relation(fields: [userId], references: [id], onDelete: SetDefault)
+  approver       User?         @relation("LeaveApprover", fields: [approverId], references: [id])
+  line           Line?         @relation(fields: [lineId], references: [id], onDelete: SetNull)
+  ledger         LeaveLedger[]
+
+  @@index([userId, status])
+  @@index([lineId, status, createdAt])
+}
+
+// Per-user, per-category, per-year credit bucket. Updated by ledger
+// entries (accrual, usage, refund, adjustment) so balance is always
+// auditable.
+model LeaveCredit {
   id        String   @id @default(uuid())
   userId    String
-  type      String
-  startDate DateTime
-  endDate   DateTime
-  reason    String?
-  status    String   @default("pending")
+  lineId    String?
+  category  String
+  year      Int
+  accrued   Float    @default(0)
+  used      Float    @default(0)
+  balance   Float    @default(0)
   createdAt DateTime @default(now())
-  user      User     @relation(fields: [userId], references: [id], onDelete: SetDefault)
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  line      Line?    @relation(fields: [lineId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, category, year])
+}
+
+// Append-only ledger for any change to a user's leave credits.
+// `kind` ∈ "accrual" | "usage" | "refund" | "adjustment".
+model LeaveLedger {
+  id       String   @id @default(uuid())
+  userId   String
+  category String
+  year     Int
+  delta    Float
+  kind     String
+  note     String?
+  leaveId  String?
+  byUserId String?
+  at       DateTime @default(now())
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  leave    Leave?   @relation(fields: [leaveId], references: [id], onDelete: SetNull)
+  by       User?    @relation("LeaveLedgerBy", fields: [byUserId], references: [id])
+
+  @@index([userId, category, year])
+}
+
+// ─── Payroll ─────────────────────────────────────────────────────────
+// Period status: "draft" | "computed" | "released".
+model PayrollPeriod {
+  id              String    @id @default(uuid())
+  lineId          String
+  label           String
+  periodStart     DateTime
+  periodEnd       DateTime
+  status          String    @default("draft")
+  computedAt      DateTime?
+  releasedAt      DateTime?
+  createdByUserId String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  line            Line      @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  createdBy       User?     @relation("PayrollPeriodCreatedBy", fields: [createdByUserId], references: [id])
+  payslips        Payslip[]
+
+  @@index([lineId, periodStart])
+}
+
+// One per user per period. All monetary fields stored in pesos (Float).
+model Payslip {
+  id              String        @id @default(uuid())
+  userId          String
+  periodId        String
+  lineId          String
+  salaryGradeId   String?
+  basicMonthly    Float         @default(0)
+  workingDays     Float         @default(0)
+  daysAbsent      Float         @default(0)
+  paidLeaveDays   Float         @default(0)
+  unpaidLeaveDays Float         @default(0)
+  grossPay        Float         @default(0)
+  sssEE           Float         @default(0)
+  philhealthEE    Float         @default(0)
+  pagibigEE       Float         @default(0)
+  withholdingTax  Float         @default(0)
+  otherDeductions Float         @default(0)
+  netPay          Float         @default(0)
+  breakdown       Json?
+  status          String        @default("computed")
+  computedAt      DateTime      @default(now())
+  releasedAt      DateTime?
+  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  period          PayrollPeriod @relation(fields: [periodId], references: [id], onDelete: Cascade)
+  line            Line          @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  salaryGrade     SalaryGrade?  @relation(fields: [salaryGradeId], references: [id])
+
+  @@unique([userId, periodId])
+  @@index([lineId, periodId])
+}
+
+// ─── Services (employee-self-service) ─────────────────────────────────
+// `category` ∈ "general" | "hr" | "facilities" | "it" | "payroll" | "safety"
+// `status`   ∈ "open" | "in_progress" | "resolved" | "closed"
+// `priority` ∈ "low" | "normal" | "high"
+model Complaint {
+  id               String              @id @default(uuid())
+  userId           String
+  againstUserId    String?
+  lineId           String
+  title            String
+  category         String              @default("general")
+  description      String
+  attachmentUrl    String?
+  attachmentType   String?
+  status           String              @default("open")
+  priority         String              @default("normal")
+  assignedToUserId String?
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+  resolvedAt       DateTime?
+  user             User                @relation("ComplaintAuthor", fields: [userId], references: [id], onDelete: Cascade)
+  againstUser      User?               @relation("ComplaintAgainst", fields: [againstUserId], references: [id])
+  line             Line                @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  assignedTo       User?               @relation("ComplaintAssignee", fields: [assignedToUserId], references: [id])
+  replies          ComplaintReply[]
+  evidence         ComplaintEvidence[]
+
+  @@index([lineId, status, createdAt])
+  @@index([userId, createdAt])
+  @@index([againstUserId, createdAt])
+}
+
+// Files uploaded as evidence. Bytes stored in-row (matching the existing
+// DecodedFile pattern) so we don't need separate object storage. Caller
+// streams them back via the `/service/complaint/evidence/file` endpoint.
+model ComplaintEvidence {
+  id           String    @id @default(uuid())
+  complaintId  String
+  fileName     String
+  fileType     String
+  fileSize     Int
+  data         Bytes
+  uploadedById String?
+  caption      String?
+  createdAt    DateTime  @default(now())
+  complaint    Complaint @relation(fields: [complaintId], references: [id], onDelete: Cascade)
+  uploadedBy   User?     @relation(fields: [uploadedById], references: [id])
+}
+
+model ComplaintReply {
+  id          String    @id @default(uuid())
+  complaintId String
+  userId      String
+  content     String
+  internal    Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  complaint   Complaint @relation(fields: [complaintId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id])
+}
+
+// Custom deduction rules (loans, uniforms, etc.). When periodId is null
+// the deduction is recurring and applied to every period the user is in.
+model PayrollDeduction {
+  id        String   @id @default(uuid())
+  userId    String
+  lineId    String
+  periodId  String?
+  label     String
+  amount    Float
+  recurring Boolean  @default(false)
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  line      Line     @relation(fields: [lineId], references: [id], onDelete: Cascade)
+
+  @@index([userId, recurring])
 }
 
 model Announcement {
@@ -1656,6 +1906,9 @@ model Signature {
   active               Boolean             @default(false)
   roomAuthorizedUserId String?
   signature            Bytes?
+  // Per-signature toggle: when true, downloaded signed PDFs stamp a
+  // verification QR beside any box that used THIS signature.
+  qrEnabled            Boolean             @default(false)
   roomAuthorizedUser   RoomAuthorizedUser? @relation(fields: [roomAuthorizedUserId], references: [id])
   user                 User                @relation(fields: [userId], references: [id])
 }
@@ -1667,7 +1920,15 @@ model SignatoryArrangement {
   signedAt             DateTime?
   timestamp            DateTime            @default(now())
   signatureQueueRoomId String?
+  userId               String?
+  // Geolocation captured from the browser at sign time. Used by the
+  // verification QR — the QR payload is a URL to a readable HTML page
+  // that shows these values + a Google Maps link.
+  signedLat            Float?
+  signedLng            Float?
+  signedAccuracy       Float?
   signatureQueueRoom   SignatureQueueRoom? @relation(fields: [signatureQueueRoomId], references: [id], onDelete: Cascade)
+  user                 User?               @relation("SignatoryArrangementUser", fields: [userId], references: [id])
   sign                 SignatureCoor[]
 }
 
@@ -1881,6 +2142,9 @@ model MedicineLogs {
 model Medicine {
   id                       String                    @id @default(uuid())
   serialNumber             String
+  /// Scanned barcode (EAN/UPC/CODE128/QR). Optional — older rows
+  /// captured before the mobile scanner existed won't have one.
+  barcode                  String?                   @unique
   name                     String
   desc                     String?                   @default("None")
   phase                    Int                       @default(0)
@@ -1965,6 +2229,33 @@ model MedicineStock {
   line               Line                 @relation(fields: [lineId], references: [id], onDelete: Cascade)
   medicine           Medicine?            @relation(fields: [medicineId], references: [id], onDelete: SetNull)
   MedicineStorage    MedicineStorage?     @relation(fields: [medicineStorageId], references: [id], onDelete: Cascade)
+}
+
+/**
+ * Idempotency log for mobile bulk uploads. Each row tracks a single
+ * client-generated `clientOpId` (UUID minted on the mobile when the user
+ * fills in the Add Stock form, captured in the local `stock_add_queue`
+ * table). The backend uses this to dedupe retries — if the mobile lost
+ * a response and replays the same op, we recognise the id and short-
+ * circuit with the previous result instead of writing stock twice.
+ *
+ * The `kind` column lets the same table cover other queueable mobile
+ * operations later (medicine scan log, etc.) without a new model.
+ */
+model MobileUploadLog {
+  id          String   @id @default(uuid())
+  clientOpId  String   @unique
+  kind        String
+  userId      String?
+  lineId      String?
+  /** Foreign id the op produced (e.g. MedicineStock.id) — useful for
+   *  reporting back "your op landed on row X" on a replay. */
+  resultId    String?
+  message     String?
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@index([kind])
 }
 
 model MedicineTrack {
@@ -2110,7 +2401,7 @@ model JobPost {
   slot                  Int
   showApplicationCount  Boolean
   timestamp             DateTime               @default(now())
-  positionId            String
+  positionId            String?
   location              String
   desc                  String?                @default("N/A")
   status                Int
@@ -2118,10 +2409,18 @@ model JobPost {
   lineId                String?
   unitPositionId        String?
   deadline              DateTime?
+  postType              String                 @default("HR")
+  applyMode             String                 @default("INTERNAL")
+  jobTitle              String?
+  employerName          String?
+  employmentType        String?
+  salaryText            String?
+  applyUrl              String?
+  contactInfo           String?
   application           Application[]
   applicationInquiries  ApplicationInquiry[]
   line                  Line?                  @relation(fields: [lineId], references: [id], onDelete: Cascade)
-  position              Position               @relation(fields: [positionId], references: [id], onDelete: Cascade)
+  position              Position?              @relation(fields: [positionId], references: [id], onDelete: Cascade)
   salaryGrade           SalaryGrade?           @relation(fields: [salaryGradeId], references: [id])
   unitPos               UnitPosition?          @relation(fields: [unitPositionId], references: [id])
   requirements          JobPostRequirements[]

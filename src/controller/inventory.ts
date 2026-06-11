@@ -83,10 +83,12 @@ export const createInventory = async (
     if (!body.name) {
       return res.code(400).send({ message: "Bad Request 12" });
     }
-    const check = await prisma.inventoryBox.findUnique({
+    const check = await prisma.inventoryBox.findFirst({
       where: {
-        name: body.name,
+        lineId: body.lineId,
+        name: { equals: body.name, mode: "insensitive" },
       },
+      select: { id: true },
     });
     if (check) {
       return res

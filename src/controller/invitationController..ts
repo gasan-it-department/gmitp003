@@ -16,78 +16,89 @@ import { semaphoreKey } from "../class/Semaphore";
 
 const officialUrl = process.env.VITE_LOCAL_FRONTEND_URL;
 
+/**
+ * Generate a unique 6-digit invitation code. Retries until findFirst returns
+ * null for the candidate. Kept short because the previous implementation
+ * picked a single number and looped against the same value forever.
+ */
+const generateInvitationCode = async (
+  tx: Prisma.TransactionClient,
+): Promise<string> => {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const candidate = Math.floor(100000 + Math.random() * 900000).toString();
+    const clash = await tx.invitationLink.findFirst({
+      where: { code: candidate },
+      select: { id: true },
+    });
+    if (!clash) return candidate;
+  }
+  throw new AppError(
+    "CODE_GEN_FAILED",
+    500,
+    "Could not generate a unique invitation code.",
+  );
+};
+
 export const createInvitationLink = async (
   req: FastifyRequest,
   res: FastifyReply,
 ) => {
   try {
-    const body = req.body as { date: string; time: string; lineId: string };
-    if (!body) {
-      return res.code(400).send({ message: "Invalid request" });
+    const body = req.body as {
+      date?: string;
+      time?: string;
+      lineId: string;
+    };
+    if (!body || !body.lineId) {
+      throw new ValidationError("Line is required");
     }
 
-    // Calculate expiresAt based on date and time
+    // Build expiresAt. Default is 24 h from now if the caller didn't pick
+    // a date.
     let expiresAt: Date;
-
     if (body.date && body.time) {
-      // Combine date "2025-10-25" and time "16:00" into ISO string
-      const dateTimeString = `${body.date}T${body.time}:00`; // Add seconds
-      expiresAt = new Date(dateTimeString);
+      expiresAt = new Date(`${body.date}T${body.time}:00`);
     } else if (body.date) {
-      // If only date is provided, set time to end of day (23:59:59)
-      const dateTimeString = `${body.date}T23:59:59`;
-      expiresAt = new Date(dateTimeString);
+      expiresAt = new Date(`${body.date}T23:59:59`);
     } else {
-      // If no date provided, use default expiration (24 hours from now)
       expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
     }
-
-    // Validate that the expiration date is in the future
+    if (Number.isNaN(expiresAt.getTime())) {
+      throw new ValidationError("Invalid expiration date.");
+    }
     if (expiresAt <= new Date()) {
-      throw new ValidationError("INVALID_DATA");
+      throw new ValidationError("Expiration must be in the future.");
     }
 
-    await prisma.$transaction(async (tx) => {
-      const generatedInvitationCode = async () => {
-        let isUnique = false;
-        const generated = Math.floor(100000 + Math.random() * 900000);
-        while (!isUnique) {
-          const check = await tx.invitationLink.findFirst({
-            where: {
-              code: generated.toString(),
-            },
-          });
-          if (!check) isUnique = true;
-        }
-        return generated.toString();
-      };
-      const code = await generatedInvitationCode();
-      const newInviteLink = await tx.invitationLink.create({
+    const created = await prisma.$transaction(async (tx) => {
+      const code = await generateInvitationCode(tx);
+      const row = await tx.invitationLink.create({
         data: {
-          code: code,
-          expiresAt: expiresAt,
-          url: "none",
+          code,
+          expiresAt,
+          url: "",
           used: false,
           lineId: body.lineId,
+          status: 1,
         },
       });
-
-      if (!newInviteLink)
-        throw new AppError("DB_CONNECTION_FAILED", 400, "DB_ERROR");
-
-      await tx.invitationLink.update({
-        where: { id: newInviteLink.id },
-        data: {
-          url: `/invitation/${newInviteLink.id}`,
-        },
+      // Persist the public URL using the row id we just created.
+      return tx.invitationLink.update({
+        where: { id: row.id },
+        data: { url: `/invitation/${row.id}` },
       });
     });
 
-    return res.code(201).send({
-      message: "Invitation link created successfully",
-      error: 0,
+    return res.code(200).send({
+      message: "OK",
+      id: created.id,
+      code: created.code,
+      url: created.url,
+      expiresAt: created.expiresAt,
     });
   } catch (error) {
+    if (error instanceof ValidationError) throw error;
+    if (error instanceof AppError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
     }
@@ -170,6 +181,20 @@ export const invitationAuth = async (
   }
 };
 
+/**
+ * Paginated list of active invitation links for a line.
+ *
+ * Excludes soft-deleted rows (status = 0). Computes an effective status
+ * on the fly: any non-suspended row whose expiresAt has passed is
+ * surfaced as `effectiveStatus: 3` (expired) so the UI can label it
+ * accurately without needing a cron sweep.
+ *
+ * Status convention (matches utils/helper.inviteLinkStatus on the FE):
+ *   0 = removed (filtered out)
+ *   1 = active
+ *   2 = suspended
+ *   3 = expired
+ */
 export const invitations = async (req: FastifyRequest, res: FastifyReply) => {
   const params = req.query as PagingProps;
   if (!params.id) throw new ValidationError("BAD_REQUEST");
@@ -177,25 +202,32 @@ export const invitations = async (req: FastifyRequest, res: FastifyReply) => {
   try {
     const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
     const limit = params.limit ? parseInt(params.limit, 10) : 30;
-    const response = await prisma.invitationLink.findMany({
-      where: {
-        lineId: params.id,
-      },
+
+    const where: any = { lineId: params.id, status: { not: 0 } };
+    if (params.query) {
+      where.code = { contains: params.query.trim(), mode: "insensitive" };
+    }
+
+    const rows = await prisma.invitationLink.findMany({
+      where,
       take: limit,
       skip: cursor ? 1 : 0,
-      orderBy: {
-        createdAt: "desc",
-      },
+      orderBy: { createdAt: "desc" },
       cursor,
     });
 
-    const newLastCursorId = response.length
-      ? response[response.length - 1].id
-      : null;
-    const hasMore = response.length === limit;
+    const now = new Date();
+    const list = rows.map((r) => ({
+      ...r,
+      effectiveStatus:
+        r.status === 1 && r.expiresAt && r.expiresAt <= now ? 3 : r.status,
+    }));
 
-    res.code(200).send({
-      list: response,
+    const newLastCursorId = list.length ? list[list.length - 1].id : null;
+    const hasMore = list.length === limit;
+
+    return res.code(200).send({
+      list,
       lastCursor: newLastCursorId,
       hasMore,
     });
@@ -237,29 +269,77 @@ export const containerOverview = async (
   }
 };
 
+/**
+ * Soft-delete an invitation link. Marks status = 0 so the row disappears
+ * from the list but stays in the DB for any historical references (e.g.
+ * a registration that used this code).
+ */
 export const deleteInvitationLink = async (
   req: FastifyRequest,
   res: FastifyReply,
 ) => {
   const params = req.query as { id: string; userId: string; lineId: string };
-  console.log("recieve", { params });
-
-  if (!params.id || !params.lineId || !params.userId)
+  if (!params.id || !params.lineId || !params.userId) {
     throw new ValidationError("BAD_REQUEST");
+  }
 
   try {
-    const links = await prisma.invitationLink.findMany();
-    console.log({ links });
-
-    await prisma.$transaction(async (tx) => {
-      await tx.invitationLink.delete({
-        where: {
-          id: params.id,
-        },
-      });
+    const link = await prisma.invitationLink.findUnique({
+      where: { id: params.id },
     });
-    return res.code(200).send({ message: "OK" });
+    if (!link) throw new NotFoundError("Invitation link not found");
+    if (link.status === 0) return res.code(200).send({ message: "OK" });
+
+    await prisma.invitationLink.update({
+      where: { id: link.id },
+      data: { status: 0 },
+    });
+    return res.code(200).send({ message: "OK", id: link.id });
   } catch (error) {
+    if (error instanceof NotFoundError) throw error;
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+/**
+ * Toggle an invitation link between active (1) and suspended (2).
+ * Refuses to flip a removed (0) or expired link.
+ */
+export const suspendInvitationLink = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as {
+    id: string;
+    suspend: boolean;
+    userId: string;
+    lineId: string;
+  };
+  if (!body.id || !body.lineId) throw new ValidationError("BAD_REQUEST");
+
+  try {
+    const link = await prisma.invitationLink.findUnique({
+      where: { id: body.id },
+    });
+    if (!link) throw new NotFoundError("Invitation link not found");
+    if (link.status === 0) {
+      throw new ValidationError("Cannot modify a removed link.");
+    }
+    const nextStatus = body.suspend ? 2 : 1;
+    if (link.status === nextStatus) {
+      return res.code(200).send({ message: "OK", status: link.status });
+    }
+    const updated = await prisma.invitationLink.update({
+      where: { id: link.id },
+      data: { status: nextStatus },
+    });
+    return res.code(200).send({ message: "OK", status: updated.status });
+  } catch (error) {
+    if (error instanceof NotFoundError) throw error;
+    if (error instanceof ValidationError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
     }

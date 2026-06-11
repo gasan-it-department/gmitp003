@@ -5,6 +5,9 @@ import {
   salaryGradeList,
   saveNewSalaryGrade,
   updateSalaryGrade,
+  salaryGradeInfo,
+  salaryGradeHistory,
+  salaryGradeUsers,
 } from "../controller/salaryGradeController";
 export const salaryGrade = (fastify: FastifyInstance) => {
   fastify.get(
@@ -17,5 +20,20 @@ export const salaryGrade = (fastify: FastifyInstance) => {
     "/salary-grade/update",
     { preHandler: authenticated },
     updateSalaryGrade,
+  );
+  fastify.get(
+    "/salary-grade/info",
+    { preHandler: authenticated },
+    salaryGradeInfo,
+  );
+  fastify.get(
+    "/salary-grade/history",
+    { preHandler: authenticated },
+    salaryGradeHistory,
+  );
+  fastify.get(
+    "/salary-grade/users",
+    { preHandler: authenticated },
+    salaryGradeUsers,
   );
 };

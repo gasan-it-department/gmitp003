@@ -18,6 +18,7 @@ import {
   updateSupplyDispense,
   timebaseReport,
   timebaseReportExport,
+  uploadBulkExcel,
 } from "../controller/supplyController";
 
 export const supply = (fastify: FastifyInstance) => {
@@ -84,5 +85,10 @@ export const supply = (fastify: FastifyInstance) => {
     "/supply/inventory/timebase/report/export",
     { preHandler: authenticated },
     timebaseReportExport,
+  );
+  fastify.post(
+    "/supply/upload-excel",
+    { preHandler: authenticated },
+    uploadBulkExcel,
   );
 };

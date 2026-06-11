@@ -18,6 +18,7 @@ import {
 } from "../models/route";
 import { semaphoreKey } from "../class/Semaphore";
 import { phNumberFormat, sendEmail } from "../middleware/handler";
+import { notificationSocket } from "..";
 import { semaphoreService } from "../class/Semaphore";
 import axios from "axios";
 
@@ -170,7 +171,7 @@ export const updatePostApplication = async (
           userId: body.userId,
           action: "UPDATE",
           lineId: body.lineId,
-          desc: `UPDATED JOB POST STATUS: ${post.position.name}`,
+          desc: `UPDATED JOB POST STATUS: ${post.position?.name ?? "N/A"}`,
         },
       });
       return true;
@@ -186,72 +187,87 @@ export const updatePostApplication = async (
   }
 };
 
+/**
+ * Update a job posting's editable fields.
+ *
+ * Caller sends only what changed (undefined = leave alone). To CLEAR a
+ * deadline, send `deadline: null`. Status transitions are validated
+ * against a small whitelist (draft → published, published ↔ paused).
+ */
 export const updatePostJob = async (req: FastifyRequest, res: FastifyReply) => {
-  const param = req.body as PostNewJobProps;
+  const param = req.body as Partial<PostNewJobProps> & {
+    id: string;
+    userId: string;
+    lineId: string;
+    deadline?: string | null;
+  };
 
   if (!param.id) throw new ValidationError("INVALID REQUIRED ID");
 
   try {
-    const response = await prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx) => {
       const jobPost = await tx.jobPost.findUnique({
-        where: {
-          id: param.id,
-        },
-        include: {
-          position: {
-            select: {
-              id: true,
-              name: true,
-            },
-          },
-        },
+        where: { id: param.id },
+        include: { position: { select: { id: true, name: true } } },
       });
-
       if (!jobPost) throw new NotFoundError("JOB POST NOT FOUND");
 
-      const optional: any = {};
-
-      if (jobPost.desc !== param.desc) {
-        optional.desc = param.desc;
+      // Validate status transition. 0 = draft, 1 = published, 3 = paused.
+      if (param.status !== undefined && param.status !== jobPost.status) {
+        const allowed: Record<number, number[]> = {
+          0: [1], // draft → published
+          1: [3], // published → paused
+          3: [1, 0], // paused → published or back to draft
+        };
+        const ok = allowed[jobPost.status]?.includes(param.status) ?? false;
+        if (!ok) {
+          throw new ValidationError(
+            `Cannot move status from ${jobPost.status} to ${param.status}.`,
+          );
+        }
       }
 
-      if (param.deadline) {
-        optional.deadline = param.deadline;
+      const data: any = {};
+      if (param.desc !== undefined) data.desc = param.desc;
+      if (param.hideSG !== undefined) data.hideSG = param.hideSG;
+      if (param.showApplicationCount !== undefined)
+        data.showApplicationCount = param.showApplicationCount;
+      if (param.salaryGrade !== undefined)
+        data.salaryGradeId = param.salaryGrade || null;
+      if (param.status !== undefined) data.status = param.status;
+      if (param.deadline !== undefined) {
+        data.deadline = param.deadline ? new Date(param.deadline) : null;
+      }
+      if (param.location !== undefined) data.location = param.location;
+
+      if (Object.keys(data).length > 0) {
+        await tx.jobPost.update({ where: { id: jobPost.id }, data });
       }
 
-      await tx.jobPost.update({
-        where: {
-          id: jobPost.id,
-        },
-        data: {
-          hideSG: param.hideSG,
-          showApplicationCount: param.showApplicationCount,
-          status: param.status,
-          salaryGradeId: param.salaryGrade,
-          ...optional,
-        },
-      });
+      const wasStatusChange =
+        param.status !== undefined && param.status !== jobPost.status;
 
       await tx.humanResourcesLogs.create({
         data: {
-          action: "UPDATED",
+          action: wasStatusChange ? "STATUS" : "UPDATED",
           userId: param.userId,
           lineId: param.lineId,
-          desc: `New job posting created: ${
-            jobPost.position.name || "N/A"
-          } | Hide SG: ${param.hideSG ? "Yes" : "No"} | Show App Count: ${
-            param.showApplicationCount ? "Yes" : "No"
-          }`,
+          desc:
+            `Job posting "${jobPost.position?.name ?? "N/A"}" ` +
+            (wasStatusChange
+              ? `status ${jobPost.status} → ${param.status}`
+              : `updated (hideSG=${param.hideSG ?? jobPost.hideSG}, ` +
+                `showCount=${param.showApplicationCount ?? jobPost.showApplicationCount})`),
         },
       });
 
-      return "OK";
+      return { id: jobPost.id, fields: Object.keys(data) };
     });
 
-    if (response !== "OK") throw new AppError("DB_CONNECTION", 500, "DB_ERROR");
-
-    return res.code(200).send({ message: "OK" });
+    return res.code(200).send({ message: "OK", ...result });
   } catch (error) {
+    if (error instanceof NotFoundError) throw error;
+    if (error instanceof ValidationError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DATABASE_CONNECTION_FAILED", 500, "DB_ERROR");
     }
@@ -575,93 +591,172 @@ export const postJobRequirementsRemoveAsset = async (
   }
 };
 
+/**
+ * Public job-board listing for one municipality.
+ *
+ * Returns only published posts (`status: 1`) whose deadline (if any) is
+ * still in the future. Each row carries enough metadata (position, unit,
+ * salary grade, requirements, submitted-application count, municipality
+ * label) for the public board to render without secondary calls.
+ *
+ * `id` (query param) — the Municipal id taken from the route.
+ */
 export const jobPost = async (req: FastifyRequest, res: FastifyReply) => {
   const params = req.query as PagingProps;
-
   if (!params.id) throw new ValidationError("INVALID ID");
+
   try {
     const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
     const limit = params.limit ? parseInt(params.limit, 10) : 20;
+    const now = new Date();
 
-    const filter: any = {};
+    // Build the where clause as a single AND list so combining OR-blocks
+    // with other top-level fields can't be misinterpreted by Prisma.
+    const andClauses: any[] = [
+      { status: 1 },
+      { line: { municipalId: params.id } },
+      // Drop expired postings. Posts without a deadline are open-ended.
+      { OR: [{ deadline: null }, { deadline: { gte: now } }] },
+    ];
+
     if (params.query) {
-      filter.position = {
-        name: {
-          contains: params.query,
-          mode: "insensitive",
-        },
-      };
+      const q = params.query.trim();
+      andClauses.push({
+        OR: [
+          { position: { name: { contains: q, mode: "insensitive" } } },
+          { desc: { contains: q, mode: "insensitive" } },
+          { unitPos: { unit: { name: { contains: q, mode: "insensitive" } } } },
+          // PESO / external posts have no internal position — search their
+          // free-text title and employer instead.
+          { jobTitle: { contains: q, mode: "insensitive" } },
+          { employerName: { contains: q, mode: "insensitive" } },
+        ],
+      });
     }
 
-    const response = await prisma.jobPost.findMany({
-      where: {
-        line: {
-          municipalId: params.id,
+    const where: any = { AND: andClauses };
+
+    const [municipality, list] = await Promise.all([
+      prisma.municipal.findUnique({
+        where: { id: params.id },
+        select: {
+          id: true,
+          name: true,
+          Province: { select: { id: true, name: true } },
         },
-        status: 1,
-        ...filter,
-      },
-      include: {
-        position: {
-          select: {
-            name: true,
-            id: true,
-          },
-        },
-        requirements: {
-          select: {
-            id: true,
-            title: true,
-            asset: {
-              select: {
-                fileName: true,
-                fileSize: true,
-                fileUrl: true,
-                id: true,
+      }),
+      prisma.jobPost.findMany({
+        where,
+        include: {
+          position: { select: { id: true, name: true } },
+          requirements: {
+            select: {
+              id: true,
+              title: true,
+              asset: {
+                select: {
+                  id: true,
+                  fileName: true,
+                  fileSize: true,
+                  fileUrl: true,
+                },
               },
             },
           },
+          salaryGrade: { select: { id: true, grade: true } },
+          _count: { select: { submittedApplications: true } },
+          unitPos: { select: { unit: { select: { name: true } } } },
+          line: { select: { id: true, name: true, municipalId: true } },
         },
-        salaryGrade: {
-          select: {
-            grade: true,
-            id: true,
-          },
-        },
-        _count: {
-          select: {
-            application: {
-              where: {
-                status: "pending",
-              },
+        skip: cursor ? 1 : 0,
+        take: limit,
+        orderBy: { timestamp: "desc" },
+        cursor,
+      }),
+    ]);
+
+    // Normalize `_count` to the application-count shape the UI already
+    // reads (`item._count.application`). Server now counts SUBMITTED
+    // applications, which is what HR actually cares about.
+    const shaped = list.map((j) => ({
+      ...j,
+      _count: { application: j._count?.submittedApplications ?? 0 },
+    }));
+
+    const lastCursor = shaped.length > 0 ? shaped[shaped.length - 1].id : null;
+    const hasMore = shaped.length === limit;
+
+    // ── Diagnostic block ────────────────────────────────────────────
+    // Pulls a few signals so we can pinpoint exactly why a published post
+    // might not surface here: wrong municipal id, deadline already past,
+    // or simply nothing published.
+    const [totalForMuni, publishedForMuni, allPublished] = await Promise.all([
+      prisma.jobPost.count({
+        where: { line: { municipalId: params.id } },
+      }),
+      prisma.jobPost.count({
+        where: { line: { municipalId: params.id }, status: 1 },
+      }),
+      prisma.jobPost.findMany({
+        where: { status: 1 },
+        select: {
+          id: true,
+          status: true,
+          deadline: true,
+          position: { select: { name: true } },
+          line: {
+            select: {
+              id: true,
+              name: true,
+              municipalId: true,
             },
           },
         },
-        unitPos: {
-          select: {
-            unit: {
-              select: {
-                name: true,
-              },
-            },
-          },
-        },
+        take: 20,
+        orderBy: { timestamp: "desc" },
+      }),
+    ]);
+
+    console.log(
+      `[jobPost] muni=${params.id} q="${params.query ?? ""}" ` +
+        `published=${publishedForMuni}/${totalForMuni} returned=${shaped.length} now=${now.toISOString()}`,
+    );
+    if (allPublished.length > 0) {
+      console.log(
+        "[jobPost] published posts (any muni):",
+        allPublished.map((p) => ({
+          id: p.id.slice(0, 8),
+          name: p.position?.name,
+          lineId: p.line?.id?.slice(0, 8),
+          lineMuni: p.line?.municipalId,
+          deadline: p.deadline,
+          expired: p.deadline ? new Date(p.deadline) < now : false,
+        })),
+      );
+    } else {
+      console.log("[jobPost] no published posts in DB at all.");
+    }
+
+    return res.code(200).send({
+      list: shaped,
+      hasMore,
+      lastCursor,
+      municipality,
+      debug: {
+        totalForMuni,
+        publishedForMuni,
+        requestedMuni: params.id,
+        // Surface the municipal IDs of every published post so the UI can
+        // tell the operator "your post's municipality is X, you opened Y".
+        publishedMunis: Array.from(
+          new Set(
+            allPublished
+              .map((p) => p.line?.municipalId)
+              .filter((m): m is string => !!m),
+          ),
+        ),
       },
-      skip: cursor ? 1 : 0,
-      take: limit,
-      orderBy: {
-        timestamp: "desc",
-      },
-      cursor,
     });
-
-    const newLastCursorId =
-      response.length > 0 ? response[response.length - 1].id : null;
-    const hasMore = limit === response.length;
-
-    return res
-      .code(200)
-      .send({ list: response, hasMore, lastCursor: newLastCursorId });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
@@ -1187,17 +1282,35 @@ export const applicationList = async (
   req: FastifyRequest,
   res: FastifyReply,
 ) => {
-  const params = req.query as PagingProps;
+  const params = req.query as PagingProps & {
+    /** When set, drops applications that are already accounted for —
+     *  used by the Position → Select from Applications picker so HR
+     *  can't accidentally invite somebody who's already been onboarded
+     *  or has a live invitation in flight. */
+    eligibleOnly?: string | boolean;
+  };
 
   if (!params.id) throw new ValidationError("INVALID REQUIRED ID");
   try {
     const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
     const limit = params.limit ? parseInt(params.limit, 10) : 20;
+    const eligibleOnly =
+      params.eligibleOnly === true ||
+      params.eligibleOnly === "true" ||
+      params.eligibleOnly === "1";
 
     // Build the where clause conditionally
     const whereClause: any = {
       lineId: params.id,
     };
+
+    if (eligibleOnly) {
+      // Drop applications already converted into a User — at that point
+      // the applicant has finished registration and shouldn't be invited
+      // again. Live-invite dedup happens after the fetch (see below) so
+      // the prisma where clause stays simple.
+      whereClause.userId = null;
+    }
 
     // Add positionId filter if provided
     if (params.positionId) {
@@ -1266,6 +1379,7 @@ export const applicationList = async (
         firstname: true,
         lastname: true,
         status: true,
+        userId: true,
         forPosition: {
           select: {
             name: true,
@@ -1278,15 +1392,56 @@ export const applicationList = async (
             file_name: true,
           },
         },
+        // Whether this application is currently tied to a live invitation.
+        // The @unique on FillPositionInvitation.submittedApplicationId
+        // means at most one row per application; we read it to flag the
+        // row in the UI even when the caller didn't ask to filter.
+        fillPositionInvitations: {
+          select: {
+            id: true,
+            concluded: true,
+            concludedReason: true,
+            expiresAt: true,
+          },
+        },
       },
     });
 
+    // ── Eligibility annotation + optional drop ─────────────────────────
+    // An application's invitation is "live" when it isn't concluded AND
+    // either has no expiresAt or hasn't expired yet. Once that's true,
+    // the applicant can't be re-invited (FE disables the row; eligibleOnly
+    // strips it from the list entirely).
+    const now = Date.now();
+    const decorated = response.map((row) => {
+      const inv = row.fillPositionInvitations;
+      const invExpired = !!(
+        inv?.expiresAt && new Date(inv.expiresAt).getTime() < now
+      );
+      const liveInvite = !!inv && !inv.concluded && !invExpired;
+      const accepted =
+        !!inv && inv.concluded && inv.concludedReason === "accepted";
+      const converted = !!row.userId;
+      const eligibility = converted
+        ? "registered"
+        : accepted
+          ? "accepted"
+          : liveInvite
+            ? "invited"
+            : "eligible";
+      return { ...row, eligibility };
+    });
+
+    const filtered = eligibleOnly
+      ? decorated.filter((r) => r.eligibility === "eligible")
+      : decorated;
+
     const newLastCursorId =
-      response.length > 0 ? response[response.length - 1].id : null;
+      filtered.length > 0 ? filtered[filtered.length - 1].id : null;
     const hasMore = limit === response.length;
 
     return res.code(200).send({
-      list: response,
+      list: filtered,
       hasMore,
       lastCursor: newLastCursorId,
     });
@@ -1887,7 +2042,7 @@ export const adminApplicationSendConversation = async (
         applicant.emailIv &&
           EncryptionService.decrypt(applicant.email, applicant.emailIv),
       ]);
-      await tx.applicationConversation.create({
+      const created = await tx.applicationConversation.create({
         data: {
           message: encryptedMessage.encryptedData,
           messageIv: encryptedMessage.iv,
@@ -1895,8 +2050,19 @@ export const adminApplicationSendConversation = async (
           submittedApplicationId: body.applicationId,
           title: "New message",
           lineId: user.lineId as string,
+          fromHr: true,
+        },
+        select: {
+          id: true,
+          timestamp: true,
+          submittedApplicationId: true,
+          fromHr: true,
+          hrAdmin: {
+            select: { id: true, firstName: true, lastName: true },
+          },
         },
       });
+      return created;
       //       if (email) {
       //         await sendEmail(
       //           "New Message Regarding Your Application",
@@ -1917,12 +2083,32 @@ export const adminApplicationSendConversation = async (
       //           `HR Team <${user.lastName}, ${user.firstName}>`
       //         );
       //       }
-      return "OK";
+      return created;
     });
-    if (response !== "OK") {
+    if (!response) {
       throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
     }
-    return res.code(200).send({ message: "OK" });
+
+    // Emit real-time payload to anyone joined to this chat room (applicant
+    // side + every HR session viewing this application). Plaintext is OK
+    // because socket delivery is scoped to the room.
+    try {
+      notificationSocket.emitChatMessage(body.applicationId, {
+        id: response.id,
+        messageContent: body.message,
+        fromHr: response.fromHr ?? true,
+        timestamp:
+          typeof response.timestamp === "string"
+            ? response.timestamp
+            : new Date(response.timestamp).toISOString(),
+        submittedApplicationId: response.submittedApplicationId,
+        hrAdmin: response.hrAdmin,
+      });
+    } catch (e) {
+      console.warn("[chat] failed to emit admin message:", e);
+    }
+
+    return res.code(200).send({ message: "OK", id: response.id });
   } catch (error) {
     console.log(error);
 
@@ -1961,7 +2147,7 @@ export const sendPublicApplicationMessage = async (
 
       if (!application) throw new NotFoundError("APPLICATION NOT FOUND");
 
-      await tx.applicationConversation.create({
+      const created = await tx.applicationConversation.create({
         data: {
           message: encryptedMessage.encryptedData,
           messageIv: encryptedMessage.iv,
@@ -1970,12 +2156,36 @@ export const sendPublicApplicationMessage = async (
           fromHr: false,
           submittedApplicationId: body.applicationId,
         },
+        select: {
+          id: true,
+          timestamp: true,
+          submittedApplicationId: true,
+          fromHr: true,
+        },
       });
-      return true;
+      return created;
     });
 
     if (!response) throw new ValidationError("TRANSACTION FAILED");
-    return res.code(200).send({ message: "OK" });
+
+    // Real-time push to anyone in this chat room (HR side).
+    try {
+      notificationSocket.emitChatMessage(body.applicationId, {
+        id: response.id,
+        messageContent: body.message,
+        fromHr: response.fromHr ?? false,
+        timestamp:
+          typeof response.timestamp === "string"
+            ? response.timestamp
+            : new Date(response.timestamp).toISOString(),
+        submittedApplicationId: response.submittedApplicationId,
+        hrAdmin: null,
+      });
+    } catch (e) {
+      console.warn("[chat] failed to emit applicant message:", e);
+    }
+
+    return res.code(200).send({ message: "OK", id: response.id });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_ERROR", 500, "DB_ERROR");
@@ -2328,7 +2538,7 @@ export const applicationRegisterUser = async (
           lastName: application.lastname,
           email: application.email,
           emailIv: application.emailIv,
-          positionId: application.jobPost?.position.id as string,
+          positionId: application.jobPost?.position?.id as string,
           salaryGradeId: application.jobPost?.salaryGradeId as string,
         },
       });

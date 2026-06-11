@@ -383,60 +383,15 @@ export const fullFillOrder = async (req: FastifyRequest, res: FastifyReply) => {
 
     if (!order) throw new NotFoundError("Order not found!");
     if (items.length === 0) throw new NotFoundError("No items found!");
-    const stocks = await prisma.supplyStockTrack.findMany({
-      where: {
-        suppliesId: { in: items.map((i) => i.id) },
-        inventoryBoxId: body.inventoryBoxId,
-      },
-    });
 
+    // IMPORTANT: Stock writes happen in saveItemOrder (per-item, supplier-
+    // aware). Do NOT add stock here or it gets recorded twice. This handler
+    // is now strictly the "close out the batch" pass: flip order/item
+    // statuses, log the access, and append the recieve history.
     const operations: Prisma.PrismaPromise<any>[] = [];
 
     items.forEach((item) => {
       const status = item.status !== "OK" ? item.status : "OK";
-      const existed = stocks.find((i) => i.suppliesId === item.suppliesId);
-      const actualStock = item.perQuantity * item.receivedQuantity;
-      if (existed) {
-        operations.push(
-          prisma.supplyStockTrack.update({
-            where: { id: existed.id },
-            data: {
-              stock: existed.stock + actualStock,
-              inventoryBoxId: order.inventoryBoxId,
-              price: {
-                create: {
-                  value: item.price ? item.price : 0,
-                  suppliesId: item.suppliesId,
-                },
-              },
-              perQuantity: item.perQuantity,
-              quantity: item.quantity,
-              quality: item.quality,
-            },
-          }),
-        );
-      } else {
-        operations.push(
-          prisma.supplyStockTrack.create({
-            data: {
-              suppliesId: item.suppliesId,
-              stock: actualStock,
-              inventoryBoxId: order.inventoryBoxId,
-              supplyBatchId: order.supplyBatchId,
-              price: {
-                create: {
-                  value: item.price ? item.price : 0,
-                  suppliesId: item.suppliesId,
-                },
-              },
-              perQuantity: item.perQuantity,
-              quantity: item.receivedQuantity,
-              quality: item.quality,
-              desc: item.desc,
-            },
-          }),
-        );
-      }
       operations.push(
         prisma.inventoryAccessLogs.create({
           data: {
@@ -532,22 +487,32 @@ export const saveItemOrder = async (req: FastifyRequest, res: FastifyReply) => {
 
       if (!item) throw new NotFoundError("Item not found!");
 
-      let supplier;
-      if (body.supplier) {
-        const check = await tx.supplier.findFirst({
-          where: { name: body.supplier },
-        });
-
-        if (!check) {
-          const Newsupplier = await tx.supplier.create({
-            data: {
-              name: body.supplier,
+      // Resolve supplier — frontend can send either the supplier's id
+      // (when the user picked one from the search list) or a free-text
+      // name (when they typed but didn't pick). Try id first, then name,
+      // then create if it's a brand-new name.
+      let supplier: string | undefined;
+      if (body.supplier && body.supplier.trim()) {
+        const raw = body.supplier.trim();
+        const byId = await tx.supplier.findUnique({ where: { id: raw } });
+        if (byId) {
+          supplier = byId.id;
+        } else {
+          const byName = await tx.supplier.findFirst({
+            where: {
+              name: { equals: raw, mode: "insensitive" },
               lineId: body.lineId,
             },
           });
-          supplier = Newsupplier.id;
+          if (byName) {
+            supplier = byName.id;
+          } else if (body.lineId) {
+            const created = await tx.supplier.create({
+              data: { name: raw, lineId: body.lineId },
+            });
+            supplier = created.id;
+          }
         }
-        supplier = check?.id;
       }
 
       if (body.expirationDate) {
@@ -583,58 +548,114 @@ export const saveItemOrder = async (req: FastifyRequest, res: FastifyReply) => {
           receivedQuantity: quantity,
           perQuantity: body.perQuantity,
           quality: body.quality,
+          ...(supplier ? { supplierId: supplier } : {}),
           ...orderOptionalData,
         },
       });
 
-      // if (stock) {
-      //   await tx.supplyStockTrack.update({
-      //     where: { id: stock.id },
-      //     data: {
-      //       stock: stock.stock + parseInt(body.quantity, 10),
-      //       brand: {
-      //         create: {
-      //           brand: body.brand || "N/A",
-      //           suppliesId: body.id,
-      //         },
-      //       },
-      //       price: {
-      //         create: {
-      //           value: body.price ? parseFloat(body.price) : 0,
-      //           suppliesId: body.id,
-      //           timestamp: threeMonthsAgo.toISOString(),
-      //         },
-      //       },
-      //       supplyBatchId: body.listId,
-      //     },
-      //   });
-      // } else {
-      //   await tx.supplyStockTrack.create({
-      //     data: {
-      //       suppliesId: body.id,
-      //       stock: quantity * body.perQuantity,
-      //       quantity: quantity,
-      //       quality: body.quality,
-      //       perQuantity: body.perQuantity,
-      //       inventoryBoxId: body.inventoryBoxId,
-      //       supplyBatchId: body.listId,
-      //       ...optional,
-      //       price: {
-      //         create: {
-      //           value: body.price ? parseFloat(body.price) : 0,
-      //           suppliesId: body.id,
-      //           timestamp: threeMonthsAgo.toISOString(),
-      //         },
-      //       },
-      //       brand: {
-      //         create: {
-      //           brand: body.brand || "N/A",
-      //           suppliesId: body.id,
-      //         },
-      //       },
-      //     },
-      //   });
-      // }
+      // Only register stock when the resolution actually adds stock
+      // (status code maps to received/accepted). For now we mirror the
+      // SupplyOrder update — any fulfillment increments stock.
+      const priceValue = body.price ? parseFloat(body.price) : 0;
+      const perQuantity = body.perQuantity || 1;
+      const addedStock = quantity * perQuantity;
+
+      // ── EDIT-SAFETY: reverse the previous contribution of this order
+      // item before applying the new one. Without this, re-saving the
+      // same line stacks stock on top of itself (e.g. 100 → 200 → 300
+      // for the same Save click). We use the pre-update snapshot of the
+      // order item (already in `item`) to figure out what it contributed
+      // last time and which stock row it landed on.
+      const prevQty = item.receivedQuantity || 0;
+      const prevPerQ = item.perQuantity || 1;
+      const prevAdded = prevQty * prevPerQ;
+      if (prevAdded > 0) {
+        const prior = await tx.supplyStockTrack.findFirst({
+          where: {
+            suppliesId: body.id,
+            supplyBatchId: body.listId,
+            inventoryBoxId: body.inventoryBoxId,
+            supplierId: item.supplierId ?? null,
+            quality: item.quality ?? null,
+            perQuantity: prevPerQ,
+          },
+        });
+        if (prior) {
+          await tx.supplyStockTrack.update({
+            where: { id: prior.id },
+            data: {
+              stock: Math.max(0, prior.stock - prevAdded),
+              quantity: Math.max(0, prior.quantity - prevQty),
+            },
+          });
+        }
+      }
+
+      // Stock is segmented per (item, batch, container, supplier, unit,
+      // perQuantity). Two batches with the same unit but different suppliers
+      // MUST stay separate rows — never collapse them. Same supplier with
+      // different unit (piece vs box) also stays separate. A null supplier
+      // only merges into another null-supplier row.
+      const stock = await tx.supplyStockTrack.findFirst({
+        where: {
+          suppliesId: body.id,
+          supplyBatchId: body.listId,
+          inventoryBoxId: body.inventoryBoxId,
+          supplierId: supplier ?? null,
+          quality: body.quality ?? null,
+          perQuantity: perQuantity,
+        },
+      });
+
+      const brandCreates = brands
+        .map((b) => b.trim())
+        .filter((b) => b.length > 0)
+        .map((brand) => ({ brand, suppliesId: body.id }));
+
+      if (stock) {
+        await tx.supplyStockTrack.update({
+          where: { id: stock.id },
+          data: {
+            stock: stock.stock + addedStock,
+            quantity: stock.quantity + quantity,
+            ...(body.quality ? { quality: body.quality } : {}),
+            ...optional,
+            ...(brandCreates.length > 0
+              ? { brand: { createMany: { data: brandCreates } } }
+              : {}),
+            price: {
+              create: {
+                value: priceValue,
+                suppliesId: body.id,
+                timestamp: threeMonthsAgo.toISOString(),
+              },
+            },
+          },
+        });
+      } else {
+        await tx.supplyStockTrack.create({
+          data: {
+            suppliesId: body.id,
+            stock: addedStock,
+            quantity: quantity,
+            quality: body.quality,
+            perQuantity: perQuantity,
+            inventoryBoxId: body.inventoryBoxId,
+            supplyBatchId: body.listId,
+            ...optional,
+            price: {
+              create: {
+                value: priceValue,
+                suppliesId: body.id,
+                timestamp: threeMonthsAgo.toISOString(),
+              },
+            },
+            ...(brandCreates.length > 0
+              ? { brand: { createMany: { data: brandCreates } } }
+              : {}),
+          },
+        });
+      }
     });
 
     // Return information about whether stock was created or updated

@@ -53,24 +53,35 @@ export class EmbeddingService {
     });
   }
 
-  // Generate abstract from PDF file
+  // Generate abstract from a PDF on disk (kept for back-compat)
   async generateAbstractFromPDF(pdfPath: string): Promise<string> {
     await this.initializeSummarizer();
 
-    // Extract text from PDF
     const parser = new PDFParse({ url: pdfPath });
     const result = await parser.getText();
     await parser.destroy();
+    return this.summarizeText(result.text);
+  }
 
-    const text = result.text;
+  // Generate abstract from a PDF buffer (no disk I/O)
+  async generateAbstractFromBuffer(buffer: Buffer): Promise<string> {
+    await this.initializeSummarizer();
 
-    // Clean and truncate text (summarizer has token limits)
-    const cleanedText = text.replace(/\s+/g, " ").trim();
-    const truncatedText =
-      cleanedText.length > 3000 ? cleanedText.substring(0, 3000) : cleanedText;
+    // pdf-parse takes ArrayBuffer/TypedArray; ensure the input matches.
+    const parser = new PDFParse({ data: new Uint8Array(buffer) });
+    const result = await parser.getText();
+    await parser.destroy();
+    return this.summarizeText(result.text);
+  }
 
-    // Generate summary
-    const summary = await this.summarizer(truncatedText, {
+  private async summarizeText(text: string): Promise<string> {
+    // Clean + truncate to fit the summarizer's effective input window
+    const cleaned = (text || "").replace(/\s+/g, " ").trim();
+    if (!cleaned) return "";
+
+    const input = cleaned.length > 3000 ? cleaned.substring(0, 3000) : cleaned;
+
+    const summary = await this.summarizer(input, {
       max_length: 500,
       min_length: 30,
       do_sample: false,

@@ -59,6 +59,9 @@ export const supplyOverview = async (
               orderBy: { timestamp: "desc" },
               take: 1,
             },
+            supplier: {
+              select: { id: true, name: true },
+            },
           },
         },
         SupplyPriceTrack: {

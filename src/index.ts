@@ -3,10 +3,16 @@ import multipart from "@fastify/multipart";
 import { jwt } from "./barrel/fastify";
 import { prisma } from "./barrel/prisma";
 import cors from "@fastify/cors";
-import { createServer } from "node:http";
 import { Server } from "socket.io";
 import { NotificationSocket } from "./class/NotificationSocket";
-import fastifyWebsocket from "@fastify/websocket";
+// `@fastify/websocket` would attach its own HTTP `upgrade` listener to
+// the same http.Server we hand Socket.IO. The two listeners fight over
+// /socket.io/* upgrades and the fastify-ws side returns 400, which the
+// browser surfaces as "websocket error". Nothing currently uses
+// fastify-ws (the only route was /notification/realtime, unreferenced on
+// the frontend) so we drop the registration to let Socket.IO own
+// upgrades. Re-enable carefully if you bring fastify-ws back.
+// import fastifyWebsocket from "@fastify/websocket";
 //routes
 import { auth } from "./route/auth";
 import { employee } from "./route/employee";
@@ -33,6 +39,7 @@ import { prescription } from "./route/prescription";
 import { notification } from "./route/notification";
 import { salaryGrade } from "./route/salaryGrade";
 import { application } from "./route/application";
+import { push } from "./route/push";
 import { otp } from "./route/otp";
 import { modules } from "./route/module";
 import { document } from "./route/document";
@@ -43,6 +50,9 @@ import { supply } from "./route/supply";
 //
 import { user } from "./route/user";
 import { patient } from "./route/patient";
+import { leave } from "./route/leave";
+import { services } from "./route/services";
+import { peso } from "./route/peso";
 
 import errorHandlerPlugin from "./plugin/errorHandlers";
 //
@@ -50,9 +60,20 @@ import errorHandlerPlugin from "./plugin/errorHandlers";
 //
 import { EncryptionService } from "./service/encryption";
 import { testGemini } from "./utils/gemini";
-const app = fastify();
-const server = createServer(app.server);
-const io = new Server(server, {
+// Allow large archive uploads. PostgreSQL bytea tops out at ~1GB. The body
+// limit covers multipart framing; the connection/keepalive timeouts are
+// bumped so a slow client uploading hundreds of MB doesn't get cut off.
+const app = fastify({
+  bodyLimit: 1024 * 1024 * 1024, // 1GB
+  connectionTimeout: 30 * 60 * 1000, // 30 min
+  keepAliveTimeout: 5 * 60 * 1000, // 5 min
+});
+// Attach Socket.IO directly to Fastify's HTTP server (`app.server`). The
+// previous `createServer(app.server)` wrapped Fastify's server in a second
+// http.Server that was never `.listen()`'d — Socket.IO was effectively
+// offline. Binding to `app.server` makes the socket reachable on the same
+// port Fastify is listening on.
+const io = new Server(app.server, {
   cors: {
     origin: [
       "http://localhost:5173",
@@ -66,12 +87,12 @@ const io = new Server(server, {
 });
 export const notificationSocket = new NotificationSocket(io);
 //plugin
-app.register(fastifyWebsocket);
+// app.register(fastifyWebsocket); // disabled — see import comment above
 app.register(errorHandlerPlugin);
 app.register(multipart, {
   attachFieldsToBody: false,
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB
+    fileSize: 1024 * 1024 * 1024, // 1GB (PostgreSQL bytea max)
     files: 10,
   },
 });
@@ -133,10 +154,14 @@ app.register(prescription);
 app.register(notification);
 app.register(salaryGrade);
 app.register(application);
+app.register(push);
 app.register(otp);
 app.register(modules);
 app.register(document);
 app.register(patient);
+app.register(leave);
+app.register(services);
+app.register(peso);
 io.on("connection", (socket) => {
   console.log("User connected: ", socket.id);
 
@@ -168,9 +193,26 @@ io.on("connection", (socket) => {
 
 //middleware
 app.get("/admin-test", async (request, reply) => {
+  const jobPost = await prisma.jobPost.findMany({
+    include: {
+      line: {
+        select: {
+          municipalId: true,
+        },
+      },
+      position: {
+        select: {
+          name: true,
+        },
+      },
+    },
+    orderBy: {
+      timestamp: "desc",
+    },
+  });
   console.log("Admin Reached");
 
-  return reply.code(200).send({ message: "OK na" });
+  return reply.code(200).send({ message: jobPost });
   // const text = "JudePogdasdasd";
   // const encrypted = {
   //   encryptedData: "05f9ee6af31971537b09794e0b35a988",

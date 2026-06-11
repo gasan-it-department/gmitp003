@@ -4,6 +4,7 @@ import {
   groupList,
   unitInfo,
   deleteUnit,
+  updateGroup,
 } from "../controller/groupController";
 import { groupListSchema } from "../models/request";
 import { authenticated } from "../middleware/handler";
@@ -18,4 +19,5 @@ export const unit = async (fasitfy: FastifyInstance) => {
   fasitfy.get("/unit-info", { preHandler: authenticated }, unitInfo);
   fasitfy.get("/unit/search", { preHandler: authenticated }, searchUnit);
   fasitfy.delete("/unit/delete", { preHandler: authenticated }, deleteUnit);
+  fasitfy.patch("/unit/update", { preHandler: authenticated }, updateGroup);
 };

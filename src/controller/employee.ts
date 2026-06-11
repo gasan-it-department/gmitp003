@@ -245,7 +245,11 @@ export const employees = async (req: FastifyRequest, res: FastifyReply) => {
         id: true,
         firstName: true,
         lastName: true,
+        middleName: true,
+        suffix: true,
         username: true,
+        email: true,
+        birthDate: true,
         PositionSlot: {
           select: {
             pos: {
@@ -293,17 +297,13 @@ export const viewUserProfile = async (
   if (!params.userProfileId || !params.userId)
     throw new ValidationError("INVALID REQUIRED ID");
   try {
-    const response = prisma.$transaction(async (tx) => {
+    const response = await prisma.$transaction(async (tx) => {
       const currUser = await tx.user.findUnique({
-        where: {
-          id: params.userId,
-        },
+        where: { id: params.userId },
       });
 
       const targetUser = await tx.user.findUnique({
-        where: {
-          id: params.userProfileId,
-        },
+        where: { id: params.userProfileId },
       });
 
       if (!currUser || !targetUser) throw new ValidationError("USER NOT FOUND");
@@ -356,6 +356,21 @@ export const decryptUserData = async (
         department: {
           select: {
             name: true,
+          },
+        },
+        // Position + salary grade so the profile can render the role and
+        // level badges. Relations are PascalCase on the User model.
+        Position: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+        SalaryGrade: {
+          select: {
+            id: true,
+            grade: true,
+            amount: true,
           },
         },
         email: true,
@@ -447,7 +462,74 @@ export const decryptUserData = async (
     });
 
     if (!targetUser) throw new NotFoundError("USER NOT FOUND!");
-    console.log({ targetUser });
+
+    // ── Legacy application recovery ──────────────────────────────────
+    // Some accounts have no linked SubmittedApplication — either they were
+    // created before the application↔user link was wired, or their
+    // application was submitted under a different line. Without the link
+    // the mobile profile wrongly reports "HR application hasn't been
+    // submitted." Recover it by matching the user's name + decrypted email
+    // against orphaned applications (userId still null), then self-heal the
+    // link so subsequent reads use the direct relation.
+    if (!targetUser.submittedApplications) {
+      try {
+        const decOne = async (d: string | null, iv: string | null) => {
+          if (!d || !iv) return null;
+          try {
+            return await EncryptionService.decrypt(d, iv);
+          } catch {
+            return null;
+          }
+        };
+
+        const userEmail =
+          (await decOne(targetUser.email, targetUser.emailIv))?.toLowerCase() ??
+          null;
+
+        const candidates = await prisma.submittedApplication.findMany({
+          where: {
+            userId: null,
+            firstname: { equals: targetUser.firstName, mode: "insensitive" },
+            lastname: { equals: targetUser.lastName, mode: "insensitive" },
+          },
+          orderBy: { id: "desc" }, // most-recent submission first
+        });
+
+        let recovered: (typeof candidates)[number] | null = null;
+        for (const c of candidates) {
+          // Name + email is a strong identity match. If the user has no
+          // stored email to compare, fall back to the name match alone.
+          if (!userEmail) {
+            recovered = c;
+            break;
+          }
+          const e = (await decOne(c.email, c.emailIv))?.toLowerCase();
+          if (e && e === userEmail) {
+            recovered = c;
+            break;
+          }
+        }
+
+        if (recovered) {
+          // Best-effort self-heal — bind the application to this user so we
+          // never need to recover again (ignore unique-constraint races).
+          try {
+            await prisma.submittedApplication.update({
+              where: { id: recovered.id },
+              data: { userId: params.userProfileId },
+            });
+          } catch (e) {
+            console.warn("[decryptUserData] self-heal link failed:", e);
+          }
+          // Feed the recovered row into the decrypt pipeline below. It's a
+          // superset of the original select, so every field accessed there
+          // is present.
+          (targetUser as any).submittedApplications = recovered;
+        }
+      } catch (e) {
+        console.warn("[decryptUserData] application recovery failed:", e);
+      }
+    }
 
     // Create a mutable copy of the user object with proper typing
     const decryptedUser: any = {
@@ -460,6 +542,12 @@ export const decryptUserData = async (
       firstName: targetUser.firstName,
       lastName: targetUser.lastName,
       department: targetUser.department,
+      // Position + salary grade. Expose under both the relation name the
+      // web app already reads (Position/SalaryGrade) and a lowercase
+      // `position` alias the mobile profile consumes.
+      Position: targetUser.Position,
+      position: targetUser.Position,
+      SalaryGrade: targetUser.SalaryGrade,
     };
 
     // Decrypt submitted application if it exists

@@ -11,6 +11,7 @@ export const authController = async (
 ) => {
   try {
     const { username, password } = request.body as AuthUser;
+    console.log({ username, password });
 
     if (!username || !password) {
       return res

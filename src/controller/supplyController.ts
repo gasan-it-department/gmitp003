@@ -1,6 +1,7 @@
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
 import { Prisma, prisma } from "../barrel/prisma";
 import ExcelJS from "exceljs";
+import { Readable } from "stream";
 //
 import {
   AddNewSupplyProps,
@@ -385,9 +386,21 @@ export const updateSupplyDispense = async (
 ) => {
   const body = req.body as {
     id: string;
+    // ── ADJUST mode ──────────────────────────────────────────────────
+    // Change the original transaction's quantity (delta hits stock).
+    // Optionally also reassign the recipient on the same record.
     quantity?: string;
     userId?: string | null;
     unitId?: string | null;
+
+    // ── TRANSFER mode ────────────────────────────────────────────────
+    // Move N units from the original recipient to a new recipient.
+    // Splits into TWO compensating records, no stock movement.
+    mode?: "adjust" | "transfer";
+    transferQuantity?: string;
+    toUserId?: string | null;
+    toUnitId?: string | null;
+
     remarks?: string;
     currUserId?: string;
   };
@@ -395,8 +408,6 @@ export const updateSupplyDispense = async (
   if (!body.id) throw new ValidationError("Transaction ID is required");
 
   try {
-    const refCode = await generateDispenseRef();
-
     const result = await prisma.$transaction(async (tx) => {
       const original = await tx.supplyDispenseRecord.findUnique({
         where: { id: body.id },
@@ -409,6 +420,8 @@ export const updateSupplyDispense = async (
               perQuantity: true,
             },
           },
+          user:       { select: { id: true, firstName: true, lastName: true, username: true } },
+          unit:       { select: { id: true, name: true } },
         },
       });
 
@@ -417,8 +430,7 @@ export const updateSupplyDispense = async (
         throw new ValidationError(
           "Dispense record has no linked stock — cannot adjust quantity.",
         );
-      // Adjustment records carry a "ADJ:<parentId>" marker in their desc.
-      // They are themselves audit entries and must not be edited further.
+      // Adjustment records (created by previous edits) cannot be re-edited.
       if (original.desc && original.desc.startsWith("ADJ:"))
         throw new ValidationError(
           "This is an adjustment record and cannot be edited.",
@@ -428,20 +440,148 @@ export const updateSupplyDispense = async (
       const perQ = stock.perQuantity || 1;
       const currentStockPieces = stock.stock;
       const oldQty = parseInt(original.quantity, 10) || 0;
+      const parentRef = original.refCode ?? original.id.slice(0, 8);
 
-      // ── Compute the quantity delta (if quantity was sent) ───────────────
+      // Human-readable label for the original recipient
+      const labelRecipient = (
+        userId: string | null | undefined,
+        unitId: string | null | undefined,
+        user?: { firstName?: string | null; lastName?: string | null; username?: string | null } | null,
+        unit?: { name?: string | null } | null,
+      ): string => {
+        if (unitId && unit?.name) return `Unit: ${unit.name}`;
+        if (userId && user) {
+          const nm = [user.firstName, user.lastName].filter(Boolean).join(" ");
+          return nm ? `User: ${nm}` : `User: @${user.username ?? userId}`;
+        }
+        return "Unassigned";
+      };
+
+      const originalRecipientLabel = labelRecipient(
+        original.userId,
+        original.departmentId,
+        original.user,
+        original.unit,
+      );
+
+      // ────────────────────────────────────────────────────────────────
+      // TRANSFER MODE — split N units to a new recipient
+      // ────────────────────────────────────────────────────────────────
+      if (body.mode === "transfer") {
+        const transferQty = parseInt(body.transferQuantity ?? "", 10);
+        if (Number.isNaN(transferQty) || transferQty <= 0)
+          throw new ValidationError(
+            "Transfer quantity must be a positive number.",
+          );
+        if (transferQty > oldQty)
+          throw new ValidationError(
+            `Cannot transfer ${transferQty} units — original transaction only has ${oldQty} units.`,
+          );
+
+        const newToUserId = body.toUserId || null;
+        const newToUnitId = body.toUnitId || null;
+        if (!newToUserId && !newToUnitId)
+          throw new ValidationError(
+            "Specify a destination user or unit for the transfer.",
+          );
+        if (newToUserId && newToUnitId)
+          throw new ValidationError(
+            "Pick exactly one destination — either a user OR a unit.",
+          );
+
+        // Look up the destination's label for nicer remarks
+        let destinationLabel = "";
+        if (newToUserId) {
+          const u = await tx.user.findUnique({
+            where: { id: newToUserId },
+            select: { firstName: true, lastName: true, username: true },
+          });
+          const nm = u ? [u.firstName, u.lastName].filter(Boolean).join(" ") : "";
+          destinationLabel = nm
+            ? `User: ${nm}`
+            : `User: @${u?.username ?? newToUserId}`;
+        } else if (newToUnitId) {
+          const d = await tx.department.findUnique({
+            where: { id: newToUnitId },
+            select: { name: true },
+          });
+          destinationLabel = `Unit: ${d?.name ?? newToUnitId}`;
+        }
+
+        // Allocate two ref codes
+        const deductRef  = await generateDispenseRef();
+        const transferRef = await generateDispenseRef();
+
+        // 1) Deduction from original recipient
+        const remarksDeduct =
+          `Transferred ${transferQty} units to ${destinationLabel}. ` +
+          `Original txn ${parentRef} reduced from ${oldQty} → ${oldQty - transferQty}. ` +
+          `See ${transferRef} for the receiving side.`;
+
+        const deduction = await tx.supplyDispenseRecord.create({
+          data: {
+            refCode: deductRef,
+            quantity: `-${transferQty}`,
+            suppliesId: original.suppliesId,
+            supplyStockTrackId: original.supplyStockTrackId,
+            inventoryBoxId: original.inventoryBoxId,
+            supplyBatchId: original.supplyBatchId,
+            userId: original.userId,            // keep original recipient
+            departmentId: original.departmentId,
+            dispensaryId: body.currUserId || original.dispensaryId,
+            desc: `ADJ:${original.id}`,
+            remarks: body.remarks
+              ? `${remarksDeduct} | ${body.remarks}`
+              : remarksDeduct,
+          },
+        });
+
+        // 2) Receipt by the new recipient
+        const remarksTransfer =
+          `Received ${transferQty} units transferred from ${originalRecipientLabel}. ` +
+          `Source txn ${parentRef}. See ${deductRef} for the deduction side.`;
+
+        const transferIn = await tx.supplyDispenseRecord.create({
+          data: {
+            refCode: transferRef,
+            quantity: `+${transferQty}`,
+            suppliesId: original.suppliesId,
+            supplyStockTrackId: original.supplyStockTrackId,
+            inventoryBoxId: original.inventoryBoxId,
+            supplyBatchId: original.supplyBatchId,
+            userId: newToUserId,
+            departmentId: newToUnitId,
+            dispensaryId: body.currUserId || original.dispensaryId,
+            desc: `ADJ:${original.id}`,
+            remarks: body.remarks
+              ? `${remarksTransfer} | ${body.remarks}`
+              : remarksTransfer,
+          },
+        });
+
+        // NO stock change — items physically just moved between recipients.
+        return { mode: "transfer" as const, deduction, transferIn };
+      }
+
+      // ────────────────────────────────────────────────────────────────
+      // ADJUST MODE (default) — quantity delta and/or recipient reassign
+      // ────────────────────────────────────────────────────────────────
+
+      // ── Compute the quantity delta (if quantity was sent) ─────────────
       let delta = 0;
       let quantityChanged = false;
 
       if (body.quantity !== undefined && body.quantity !== null) {
         const newQty = parseInt(body.quantity, 10);
         if (isNaN(newQty) || newQty < 0)
-          throw new ValidationError("Quantity must be a non-negative number");
+          throw new ValidationError(
+            "Quantity must be a non-negative number",
+          );
         delta = newQty - oldQty;
         if (delta !== 0) quantityChanged = true;
       }
 
-      // ── Resolve the new recipient (or keep original) ────────────────────
+      // ── Resolve the new recipient (or keep original) ──────────────────
       let recipientChanged = false;
       let newUserId: string | null = original.userId ?? null;
       let newDepartmentId: string | null = original.departmentId ?? null;
@@ -487,33 +627,49 @@ export const updateSupplyDispense = async (
         });
       }
 
-      // ── Build remarks describing what changed ────────────────────────────
+      // ── Build clear, human-readable remarks ────────────────────────────
       const parts: string[] = [];
       if (quantityChanged) {
-        const sign = delta > 0 ? "+" : "";
-        const verb = delta > 0 ? "additional dispense" : "return to stock";
-        parts.push(`Qty ${verb}: ${sign}${delta} (was ${oldQty})`);
+        if (delta > 0) {
+          parts.push(
+            `Additional ${delta} unit${delta === 1 ? "" : "s"} dispensed (was ${oldQty}, now ${oldQty + delta}); deducted from stock.`,
+          );
+        } else {
+          parts.push(
+            `${Math.abs(delta)} unit${Math.abs(delta) === 1 ? "" : "s"} returned to stock (was ${oldQty}, now ${oldQty + delta}).`,
+          );
+        }
       }
       if (recipientChanged) {
-        const beforeRecipient = original.departmentId
-          ? `dept:${original.departmentId}`
-          : original.userId
-            ? `user:${original.userId}`
-            : "none";
-        const afterRecipient = newDepartmentId
-          ? `dept:${newDepartmentId}`
-          : newUserId
-            ? `user:${newUserId}`
-            : "none";
-        parts.push(`Recipient: ${beforeRecipient} → ${afterRecipient}`);
+        // Best-effort label for the new recipient
+        let newRecipientLabel = "Unassigned";
+        if (newDepartmentId) {
+          const d = await tx.department.findUnique({
+            where: { id: newDepartmentId },
+            select: { name: true },
+          });
+          newRecipientLabel = `Unit: ${d?.name ?? newDepartmentId}`;
+        } else if (newUserId) {
+          const u = await tx.user.findUnique({
+            where: { id: newUserId },
+            select: { firstName: true, lastName: true, username: true },
+          });
+          const nm = u ? [u.firstName, u.lastName].filter(Boolean).join(" ") : "";
+          newRecipientLabel = nm
+            ? `User: ${nm}`
+            : `User: @${u?.username ?? newUserId}`;
+        }
+        parts.push(
+          `Recipient reassigned: ${originalRecipientLabel} → ${newRecipientLabel}.`,
+        );
       }
-      const autoRemarks = `Adjustment of ${original.refCode ?? original.id.slice(0, 8)}: ${parts.join("; ")}`;
+
+      const autoRemarks = `Adjustment of txn ${parentRef}: ${parts.join(" ")}`;
       const finalRemarks = body.remarks
         ? `${autoRemarks} | ${body.remarks}`
         : autoRemarks;
 
-      // ── Create the compensating audit record ────────────────────────────
-      // quantity is signed: "+N" or "-N" so the sign is preserved historically.
+      const refCode = await generateDispenseRef();
       const signedQty = quantityChanged
         ? delta > 0
           ? `+${delta}`
@@ -536,10 +692,10 @@ export const updateSupplyDispense = async (
         },
       });
 
-      return { adjustment, original };
+      return { mode: "adjust" as const, adjustment };
     });
 
-    return res.code(200).send({ message: "OK", data: result.adjustment });
+    return res.code(200).send({ message: "OK", data: result });
   } catch (error) {
     console.error("Error in updateSupplyDispense:", error);
     if (error instanceof ValidationError) throw error;
@@ -778,6 +934,10 @@ export const supplyList = async (req: FastifyRequest, res: FastifyReply) => {
               orderBy: { timestamp: "desc" },
               take: 1,
             },
+            // Pulled so the Dispense flow can label each batch with its
+            // supplier name (e.g. "Stock: 12 → Supplier 1"). Null when
+            // the stock row was created without a supplier reference.
+            supplier: { select: { id: true, name: true } },
           },
         },
         SupplyPriceTrack: {
@@ -2374,6 +2534,144 @@ export const timebaseReportExport = async (
     if (error instanceof ValidationError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_ERROR", 500, "Database error occurred");
+    }
+    throw new AppError("INTERNAL_ERROR", 500, "An unexpected error occurred");
+  }
+};
+
+export const uploadBulkExcel = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const isMultipart = req.isMultipart();
+  if (!isMultipart) {
+    throw new ValidationError("INVALID MULTI-PART");
+  }
+
+  try {
+    const parts = req.parts();
+    let fileBuffer: Buffer | null = null;
+    const formData: Record<string, string> = {};
+
+    for await (const part of parts) {
+      if (part.type === "file") {
+        const buffers: Buffer[] = [];
+        for await (const chunk of part.file) buffers.push(chunk as Buffer);
+        fileBuffer = Buffer.concat(buffers);
+      } else {
+        formData[part.fieldname] = part.value as string;
+      }
+    }
+
+    if (!formData.lineId) {
+      throw new ValidationError("INVALID REQUIRED FIELD: lineId");
+    }
+    if (!formData.dataSetId) {
+      throw new ValidationError("INVALID REQUIRED FIELD: dataSetId");
+    }
+    if (!fileBuffer) {
+      throw new ValidationError("INVALID FILE");
+    }
+
+    const workbook = new ExcelJS.Workbook();
+    const stream = Readable.from(fileBuffer);
+    await workbook.xlsx.read(stream);
+
+    const itemsToInsert: string[] = [];
+    workbook.eachSheet((sheet) => {
+      sheet.eachRow((row) => {
+        const value = row.getCell(1).value;
+        if (value && value.toString().trim()) {
+          itemsToInsert.push(value.toString());
+        }
+      });
+    });
+
+    if (itemsToInsert.length === 0) {
+      throw new ValidationError("No valid data found in Excel file");
+    }
+
+    const BATCH_SIZE = 50;
+    const existingItems = new Set<string>();
+
+    for (let i = 0; i < itemsToInsert.length; i += BATCH_SIZE) {
+      const batch = itemsToInsert.slice(i, i + BATCH_SIZE);
+      const existingBatch = await prisma.supplies.findMany({
+        where: {
+          item: { in: batch },
+          suppliesDataSetId: formData.dataSetId,
+          lineId: formData.lineId,
+        },
+        select: { item: true },
+      });
+      existingBatch.forEach((item) => existingItems.add(item.item));
+    }
+
+    const newItems = itemsToInsert.filter((item) => !existingItems.has(item));
+
+    if (newItems.length === 0) {
+      return res.status(200).send({
+        message: "All items already exist. No new items to insert.",
+        totalChecked: itemsToInsert.length,
+        existingCount: existingItems.size,
+        insertedCount: 0,
+      });
+    }
+
+    const suppliesData: Array<{
+      item: string;
+      code: number;
+      suppliesDataSetId: string;
+      lineId: string;
+      consumable: boolean;
+      description: string;
+    }> = [];
+    for (const item of newItems) {
+      const code = await generatedItemCode();
+      suppliesData.push({
+        item,
+        code,
+        suppliesDataSetId: formData.dataSetId,
+        lineId: formData.lineId,
+        consumable: false,
+        description: "",
+      });
+    }
+
+    let insertedCount = 0;
+    for (let i = 0; i < suppliesData.length; i += BATCH_SIZE) {
+      const batch = suppliesData.slice(i, i + BATCH_SIZE);
+      try {
+        const result = await prisma.supplies.createMany({
+          data: batch,
+          skipDuplicates: true,
+        });
+        insertedCount += result.count;
+      } catch (error) {
+        console.error(`Error inserting batch ${i / BATCH_SIZE + 1}:`, error);
+        throw new AppError(
+          "BATCH_INSERT_ERROR",
+          500,
+          `Failed to insert batch ${i / BATCH_SIZE + 1}`,
+        );
+      }
+    }
+
+    return res.status(200).send({
+      message: "Bulk upload completed",
+      totalChecked: itemsToInsert.length,
+      existingCount: existingItems.size,
+      insertedCount,
+      skippedCount: itemsToInsert.length - insertedCount,
+    });
+  } catch (error) {
+    if (error instanceof ValidationError) throw error;
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      console.error("Prisma error code:", error.code);
+      throw new AppError("DB_CONNECTION_ERROR", 500, "Database error occurred");
+    }
+    if (error instanceof Error) {
+      console.error("Error stack:", error.stack);
     }
     throw new AppError("INTERNAL_ERROR", 500, "An unexpected error occurred");
   }

@@ -21,8 +21,9 @@ export const getSuppliers = async (req: FastifyRequest, res: FastifyReply) => {
       take: limit,
       skip: cursor ? 1 : 0,
       cursor: cursor,
-      orderBy: { id: "asc" },
+      orderBy: { name: "asc" },
       where: {
+        lineId: params.id,
         name: {
           contains: params.query,
           mode: "insensitive",

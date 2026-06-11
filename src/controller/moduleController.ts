@@ -4,6 +4,7 @@ import { PagingProps } from "../models/route";
 import { AppError, NotFoundError, ValidationError } from "../errors/errors";
 import { sendEmail } from "../middleware/handler";
 import { EncryptionService } from "../service/encryption";
+import { createUserNotification } from "../service/notificationEvents";
 
 export const modules = async (req: FastifyRequest, res: FastifyReply) => {
   const params = req.query as { id: string; indexes: string }; // indexes is a string
@@ -208,21 +209,19 @@ export const addModuleAccess = async (
         },
       });
 
-      // Create notification
-      await tx.notification.create({
-        data: {
-          recipientId: user.id,
-          senderId: body.currUserId,
-          title: "Module Access Granted",
-          content: `${
-            currentUser?.firstName || "A system administrator"
-          } has granted you access to the ${
-            body.module
-          } module with ${getPrivilegeLevel(
-            body.privilege,
-          )} privileges. You can now access this module from your dashboard.`,
-          path: `${body.module}`,
-        },
+      // Create notification (with real-time push)
+      await createUserNotification(tx, {
+        recipientId: user.id,
+        senderId: body.currUserId,
+        title: "Module Access Granted",
+        content: `${
+          currentUser?.firstName || "A system administrator"
+        } has granted you access to the ${
+          body.module
+        } module with ${getPrivilegeLevel(
+          body.privilege,
+        )} privileges. You can now access this module from your dashboard.`,
+        path: `${body.module}`,
       });
 
       // Send email

@@ -7,11 +7,16 @@ import { AppError, NotFoundError, ValidationError } from "../errors/errors";
 import path from "path";
 import ExcelJS from "exceljs";
 import XLSX from "xlsx";
+import { Readable } from "stream";
 import { PagingProps } from "../models/route";
 
 //
 import { generateMedRef, generateStorageRef } from "../middleware/handler";
 import { getQuarter } from "../utils/date";
+import {
+  checkAndNotifyLowStock,
+  clearLowStockAlerts,
+} from "../service/medicineAlerts";
 
 export const medicineStorage = async (
   req: FastifyRequest,
@@ -28,6 +33,7 @@ export const medicineStorage = async (
     const response = await prisma.medicineStorage.findMany({
       where: {
         lineId: params.id,
+        status: { not: 0 },
       },
       skip: cursor ? 1 : 0,
       take: limit,
@@ -100,42 +106,133 @@ export const addMedicineStorage = async (
   }
 };
 
+/**
+ * Catalog list — the master list of medicines available in a line.
+ *
+ * Excludes soft-deleted entries (phase=0). Each row carries a small
+ * `stats` block (batches + on-hand units) so the catalog UI can show
+ * "5 batches · 120 units" without an extra trip per row.
+ */
 export const medicineList = async (req: FastifyRequest, res: FastifyReply) => {
   const params = req.query as PagingProps;
-  console.log("dasda", { params });
-
   if (!params.id) throw new ValidationError("BAD_REQUEST");
 
   try {
     const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
     const limit = params.limit ? parseInt(params.limit, 10) : 20;
 
-    const filter: any = { lineId: params.id };
-
+    // Soft-delete marker is `phase: -1`. All existing rows default to
+    // `phase: 0` so we filter "not removed" instead of "phase == 1".
+    const where: any = { lineId: params.id, phase: { not: -1 } };
     if (params.query) {
-      filter.name = {
-        contains: params.query,
-        mode: "insensitive",
-      };
+      const q = params.query.trim();
+      where.OR = [
+        { name:         { contains: q, mode: "insensitive" } },
+        { serialNumber: { contains: q, mode: "insensitive" } },
+      ];
     }
 
-    const response = await prisma.medicine.findMany({
-      where: filter,
+    const rows = await prisma.medicine.findMany({
+      where,
       skip: cursor ? 1 : 0,
       take: limit,
       cursor,
+      orderBy: { name: "asc" },
+      include: {
+        _count: { select: { MedicineStock: true } },
+        MedicineStock: { select: { actualStock: true } },
+      },
     });
 
-    const newLastCursorId =
-      response.length > 0 ? response[response.length - 1].id : null;
-    const hasMore = limit === response.length;
+    const list = rows.map((m) => {
+      const stocks = m.MedicineStock ?? [];
+      const totalUnits = stocks.reduce(
+        (s, r) => s + (r.actualStock ?? 0),
+        0,
+      );
+      const { MedicineStock, _count, ...rest } = m;
+      return {
+        ...rest,
+        stats: {
+          batches: _count?.MedicineStock ?? 0,
+          totalUnits,
+        },
+      };
+    });
 
-    return res
-      .code(200)
-      .send({ list: response, lastCursor: newLastCursorId, hasMore });
+    const lastCursor = list.length > 0 ? list[list.length - 1].id : null;
+    const hasMore = list.length === limit;
+    return res.code(200).send({ list, lastCursor, hasMore });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_EROR", 500, "DB_FAILED");
+    }
+    throw error;
+  }
+};
+
+/**
+ * Update a medicine's catalog metadata (name / description).
+ *
+ * Refuses to change `serialNumber` (immutable — used as a stable
+ * reference across history, transactions, and labels).
+ */
+export const updateMedicineEntry = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as {
+    id: string;
+    name?: string;
+    desc?: string | null;
+    userId?: string;
+    lineId?: string;
+  };
+
+  if (!body.id) throw new ValidationError("INVALID REQUIRED ID");
+
+  const name = body.name?.trim();
+  if (!name) throw new ValidationError("Name is required.");
+
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const existing = await tx.medicine.findUnique({
+        where: { id: body.id },
+      });
+      if (!existing) throw new NotFoundError("Medicine not found");
+      if (existing.phase === -1)
+        throw new ValidationError("This medicine has been removed.");
+
+      const updated = await tx.medicine.update({
+        where: { id: body.id },
+        data: {
+          name,
+          desc: body.desc?.trim() ?? existing.desc,
+        },
+      });
+
+      if (body.userId) {
+        await tx.medicineLogs.create({
+          data: {
+            action: 2,
+            userId: body.userId,
+            lineId: body.lineId ?? null,
+            message:
+              `Updated medicine "${existing.name}" → "${updated.name}" ` +
+              `(serial ${updated.serialNumber})`,
+          },
+        });
+      }
+
+      return updated;
+    });
+
+    return res.code(200).send({ message: "OK", medicine: result });
+  } catch (error) {
+    if (error instanceof NotFoundError) throw error;
+    if (error instanceof ValidationError) throw error;
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
     }
     throw error;
   }
@@ -276,6 +373,8 @@ export const addStorageMed = async (req: FastifyRequest, res: FastifyReply) => {
     desc: string;
     userId: string;
     lineId: string;
+    /** Optional scanned barcode — captured from the mobile scanner. */
+    barcode?: string | null;
   };
 
   if (!body.lineId || !body.userId || !body.name) {
@@ -283,15 +382,22 @@ export const addStorageMed = async (req: FastifyRequest, res: FastifyReply) => {
   }
 
   try {
-    await prisma.$transaction(async (tx) => {
-      const med = await tx.medicine.findFirst({
-        where: {
-          name: {
-            contains: body.name,
-            mode: "insensitive",
+    const created = await prisma.$transaction(async (tx) => {
+      // Prefer barcode match (scanner workflow) before falling back to
+      // the legacy name-based dedupe used by the web Add Medicine flow.
+      let med = null as Awaited<ReturnType<typeof tx.medicine.findFirst>>;
+      if (body.barcode && body.barcode.trim()) {
+        med = await tx.medicine.findFirst({
+          where: { barcode: body.barcode.trim() },
+        });
+      }
+      if (!med) {
+        med = await tx.medicine.findFirst({
+          where: {
+            name: { contains: body.name, mode: "insensitive" },
           },
-        },
-      });
+        });
+      }
 
       if (med) throw new ValidationError("ALREADY_EXIST");
       const serialNumber = await generateMedRef();
@@ -301,6 +407,7 @@ export const addStorageMed = async (req: FastifyRequest, res: FastifyReply) => {
           name: body.name,
           desc: body.desc,
           serialNumber,
+          barcode: body.barcode?.trim() || null,
         },
       });
 
@@ -312,7 +419,9 @@ export const addStorageMed = async (req: FastifyRequest, res: FastifyReply) => {
           lineId: body.lineId,
         },
       });
+      return medicine;
     });
+    return res.code(200).send({ id: created.id, serialNumber: created.serialNumber });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_EROR", 500, "DB_FAILED");
@@ -368,90 +477,84 @@ export const medicineLogList = async (
   }
 };
 
+/**
+ * List medicines that have stock in the given storage.
+ *
+ * Returns one row per Medicine (NOT per MedicineStock). Each row includes the
+ * stock batches for that medicine in this storage, plus precomputed
+ * `totalStock` and `stockToExpire` so the table can render without
+ * client-side aggregation. Cursor pagination is over Medicine.id.
+ */
 export const storageMeds = async (req: FastifyRequest, res: FastifyReply) => {
   const params = req.query as PagingProps;
-  console.log(params);
 
   if (!params.id) throw new ValidationError("BAD_REQUEST");
 
   try {
     const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
     const limit = params.limit ? parseInt(params.limit, 10) : 10;
-    const filter: any = { medicineStorageId: params.id };
+
+    const where: any = {
+      MedicineStock: { some: { medicineStorageId: params.id } },
+    };
 
     if (params.query) {
-      const searchTerms = params.query.trim().split(/\s+/);
-
-      if (searchTerms.length === 1) {
-        filter.OR = [
-          {
-            name: {
-              contains: searchTerms[0],
-              mode: "insensitive",
-            },
-          },
-          {
-            serialNumber: {
-              contains: searchTerms[0],
-              mode: "insensitive",
-            },
-          },
-        ];
-      } else {
-        filter.AND = searchTerms.map((term) => ({
-          OR: [
-            {
-              name: {
-                contains: term,
-                mode: "insensitive",
-              },
-            },
-            {
-              serialNumber: {
-                contains: term,
-                mode: "insensitive",
-              },
-            },
-          ],
-        }));
-      }
+      const terms = params.query.trim().split(/\s+/);
+      const termClauses = terms.map((term) => ({
+        OR: [
+          { name:         { contains: term, mode: "insensitive" } },
+          { serialNumber: { contains: term, mode: "insensitive" } },
+        ],
+      }));
+      where.AND = termClauses;
     }
 
-    const response = await prisma.medicineStock.findMany({
-      where: filter,
+    // 6-month expiration window for "stockToExpire" count.
+    const now = new Date();
+    const sixMonths = new Date(now);
+    sixMonths.setMonth(sixMonths.getMonth() + 6);
+
+    const medicines = await prisma.medicine.findMany({
+      where,
       take: limit,
       skip: cursor ? 1 : 0,
       cursor,
+      orderBy: { timestamp: "desc" },
       include: {
-        stock: {
-          select: {
-            unit: true,
-            quantity: true,
-            perUnit: true,
-          },
-        },
-        price: {
-          select: {
-            value: true,
-          },
-        },
-        medicine: {
-          select: {
-            name: true,
-            serialNumber: true,
-            id: true,
+        MedicineStock: {
+          where: { medicineStorageId: params.id },
+          orderBy: { expiration: "asc" },
+          include: {
+            stock: { select: { unit: true, quantity: true, perUnit: true } },
+            price: {
+              select: { value: true },
+              orderBy: { timestamp: "desc" },
+              take: 1,
+            },
           },
         },
       },
     });
 
+    const list = medicines.map((m) => {
+      const stocks = m.MedicineStock ?? [];
+      const totalStock = stocks.reduce(
+        (sum, s) => sum + (s.actualStock ?? 0),
+        0,
+      );
+      const stockToExpire = stocks.filter(
+        (s) => s.expiration && new Date(s.expiration) <= sixMonths,
+      ).length;
+      return { ...m, totalStock, stockToExpire };
+    });
+
     const newLastCursorId =
-      response.length > 0 ? response[response.length - 1].id : null;
-    const hasMore = limit === response.length;
+      list.length > 0 ? list[list.length - 1].id : null;
+    const hasMore = list.length === limit;
 
     return res
       .code(200)
-      .send({ list: response, lastCursor: newLastCursorId, hasMore });
+      .send({ list, lastCursor: newLastCursorId, hasMore });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_EROR", 500, "DB_FAILED");
@@ -460,6 +563,20 @@ export const storageMeds = async (req: FastifyRequest, res: FastifyReply) => {
   }
 };
 
+/**
+ * Add (or restock) a medicine batch into a storage location.
+ *
+ * Business logic:
+ *   - A batch is uniquely identified by
+ *       (medicine, storage, expiration, manufacturingDate, UoM, perUnit).
+ *   - If an existing batch matches all of those, we RESTOCK it
+ *     (actualStock += perUnit * quantity, quantity += quantity).
+ *   - Otherwise we create a NEW batch row.
+ *   - A MedicinePriceTrack row is always recorded for the batch so price
+ *     history per batch is preserved.
+ *   - Optional shelf address (room/section/row/column/container) is stored
+ *     on the batch.
+ */
 export const addStorageMedInList = async (
   req: FastifyRequest,
   res: FastifyReply,
@@ -472,145 +589,185 @@ export const addStorageMedInList = async (
     quantity: number;
     userId: string;
     storageId: string;
-    price: number;
+    /** Mobile-generated idempotency key. When present, a replay of the
+     *  same op short-circuits with the previously-recorded result. */
+    clientOpId?: string;
+    price?: number;
     expiration: string;
     perUnit: number;
     manufacturingDate: string;
+    addressRoom?: string;
+    addressCol?: string;
+    addressRow?: string;
+    addressSec?: string;
+    container?: string;
   };
-  console.log({ body });
 
-  if (!body.storageId) throw new ValidationError("BAD_REQUEST");
+  if (!body.storageId || !body.medicineId || !body.lineId) {
+    throw new ValidationError("BAD_REQUEST");
+  }
+  if (body.quantity <= 0 || body.perUnit <= 0) {
+    throw new ValidationError("Quantity and per-unit must be positive.");
+  }
+  if (!body.expiration || !body.manufacturingDate) {
+    throw new ValidationError("Manufacturing and expiration dates are required.");
+  }
+
+  const expiration = new Date(body.expiration);
+  const manufacturingDate = new Date(body.manufacturingDate);
+  if (!(expiration > manufacturingDate)) {
+    throw new ValidationError("Expiration must be after manufacturing date.");
+  }
+
+  const price = Math.max(0, Number(body.price ?? 0));
 
   try {
-    const response = await prisma.$transaction(async (tx) => {
-      const medicine = await tx.medicine.findUnique({
-        where: {
-          id: body.medicineId,
-        },
+    // ── Idempotency short-circuit ─────────────────────────────────────
+    // Mobile retries can hit us multiple times with the same op (e.g.
+    // network blip while waiting for the response). If we already have
+    // a log row for this clientOpId we just hand back the cached result
+    // — same stock id, no second write to MedicineStock.
+    if (body.clientOpId) {
+      const prior = await prisma.mobileUploadLog.findUnique({
+        where: { clientOpId: body.clientOpId },
+        select: { resultId: true, message: true },
       });
+      if (prior) {
+        return res.code(200).send({
+          stockId: prior.resultId,
+          mode: "duplicate",
+          message: prior.message ?? "Already processed",
+        });
+      }
+    }
 
-      // FIXED: Add storageId to the where clause to find stock in the SPECIFIC storage
-      const stock = await tx.medicineStock.findFirst({
-        where: {
-          medicineId: body.medicineId,
-          medicineStorageId: body.storageId, // This is the key fix
-          expiration: new Date(body.expiration),
-          manufacturingDate: new Date(body.manufacturingDate),
-          quality: body.unitOfMeasure,
-          perQuantity: body.perUnit,
-        },
-        include: {
-          price: {
-            take: 1,
-            orderBy: {
-              timestamp: "desc",
-            },
-          },
-        },
-      });
-
-      const storage = await tx.medicineStorage.findUnique({
-        where: {
-          id: body.storageId,
-        },
-      });
+    const result = await prisma.$transaction(async (tx) => {
+      const [medicine, storage] = await Promise.all([
+        tx.medicine.findUnique({ where: { id: body.medicineId } }),
+        tx.medicineStorage.findUnique({ where: { id: body.storageId } }),
+      ]);
 
       if (!medicine) throw new NotFoundError("ITEM_NOT_FOUND");
       if (!storage) throw new NotFoundError("STORAGE_NOT_FOUND");
 
-      const total = body.perUnit * body.quantity;
+      // Find an existing batch row that matches on all identity dimensions.
+      const existing = await tx.medicineStock.findFirst({
+        where: {
+          medicineId: body.medicineId,
+          medicineStorageId: body.storageId,
+          expiration,
+          manufacturingDate,
+          quality: body.unitOfMeasure,
+          perQuantity: body.perUnit,
+        },
+      });
 
-      // Debug logging
-      console.log("Stock expiration:", stock?.expiration);
-      console.log("Body expiration:", new Date(body.expiration));
+      const totalItems = body.perUnit * body.quantity;
+      let stockId: string;
+      let mode: "restock" | "new";
 
-      if (stock) {
-        console.log(
-          "Found existing stock in the same storage with matching criteria",
-        );
-        const stockExpirationISO = stock.expiration
-          ?.toISOString()
-          .split("T")[0];
-        const bodyExpirationISO = new Date(body.expiration)
-          .toISOString()
-          .split("T")[0];
-        const sameDate = stockExpirationISO === bodyExpirationISO;
-
-        console.log("Quantity total: ", body.quantity);
-        console.log("Stock unit of measure:", stock?.quality);
-        console.log("Body unit of measure:", body.unitOfMeasure);
-        console.log("Units equal?", body.unitOfMeasure === stock?.quality);
-        console.log("Stock per quantity:", stock?.perQuantity);
-        console.log("Body per unit:", body.perUnit);
-        console.log("Per unit equal?", body.perUnit === stock?.perQuantity);
-        console.log(
-          "Same storage?",
-          stock.medicineStorageId === body.storageId,
-        );
-      } else {
-        console.log("No matching stock found in this storage, creating new");
-      }
-
-      if (
-        stock &&
-        stock.medicineStorageId === body.storageId // Check if it's the same storage
-      ) {
-        // FIXED: Already filtered by all criteria in the findFirst query
-        // So we can be confident this is a matching stock
-        const currStock = stock.actualStock;
-        const currQuantity = stock.quantity;
-        const newActualStock = currStock + total;
-
-        await tx.medicineStock.update({
-          where: {
-            id: stock.id,
-          },
+      if (existing) {
+        mode = "restock";
+        // Clear any active low-stock alert before bumping the count, so
+        // a future dip will notify again. This runs even if the new total
+        // ends up still below threshold (in which case the check below
+        // will re-create the alert with the fresh count).
+        await clearLowStockAlerts(tx, existing.id);
+        const updated = await tx.medicineStock.update({
+          where: { id: existing.id },
           data: {
-            actualStock: newActualStock,
-            quantity: currQuantity + body.quantity,
-            price: {
-              create: {
-                value: body.price,
-              },
-            },
+            actualStock: existing.actualStock + totalItems,
+            quantity: existing.quantity + body.quantity,
+            // Optional: only overwrite threshold/address when caller sent a value.
+            threshold:
+              body.thresHold !== undefined ? body.thresHold : existing.threshold,
+            ...(body.addressRoom ? { addressRoom: body.addressRoom } : {}),
+            ...(body.addressCol  ? { addressCol:  body.addressCol  } : {}),
+            ...(body.addressRow  ? { addressRow:  body.addressRow  } : {}),
+            ...(body.addressSec  ? { addressSec:  body.addressSec  } : {}),
+            ...(body.container   ? { container:   body.container   } : {}),
+            price: { create: { value: price } },
           },
         });
+        stockId = updated.id;
       } else {
-        await tx.medicineStock.create({
+        mode = "new";
+        const created = await tx.medicineStock.create({
           data: {
             quantity: body.quantity,
             medicineId: medicine.id,
-            threshold: body.thresHold,
+            threshold: body.thresHold ?? 0,
             medicineStorageId: body.storageId,
-            actualStock: total,
+            actualStock: totalItems,
             lineId: body.lineId,
             quarter: getQuarter(),
             quality: body.unitOfMeasure,
             perQuantity: body.perUnit,
-            price: {
-              create: {
-                value: body.price,
-              },
-            },
-            expiration: new Date(body.expiration),
+            expiration,
+            manufacturingDate,
+            addressRoom: body.addressRoom || null,
+            addressCol: body.addressCol  || null,
+            addressRow: body.addressRow  || null,
+            addressSec: body.addressSec  || null,
+            container:  body.container   || null,
+            price: { create: { value: price } },
           },
         });
+        stockId = created.id;
       }
+
+      // Even after a restock the new total may still be below threshold —
+      // re-check so the user gets a fresh alert at the current count.
+      await checkAndNotifyLowStock(tx, stockId);
 
       await tx.medicineLogs.create({
         data: {
-          action: 1,
-          message: `Added Item: ${medicine.name} - Serial Ref.: ${medicine.serialNumber}; Quantity: ${body.quantity}; Per Unit: ${body.perUnit}; UoM: ${body.unitOfMeasure} to storage: ${storage.refNumber}`,
+          action: mode === "restock" ? 2 : 1,
+          message:
+            `${mode === "restock" ? "Restocked" : "Added new batch:"} ${medicine.name} ` +
+            `(${medicine.serialNumber}) — qty ${body.quantity} × ${body.perUnit} ${body.unitOfMeasure} ` +
+            `(${totalItems} items) → storage ${storage.refNumber}`,
           userId: body.userId,
           lineId: body.lineId,
         },
       });
-      return "OK";
+
+      return { mode, stockId };
     });
 
-    if (!response) throw new ValidationError("TRANSACTION FAILED");
-    return res.code(200).send({ message: "OK" });
+    // Persist the idempotency log AFTER the transaction commits, keyed on
+    // clientOpId. We deliberately don't wrap this in the transaction:
+    // if the write fails the next replay will still get the dedup hit
+    // from the previous attempt, OR — worst case — re-run the stock
+    // write (rare). Better than aborting the legitimate stock update.
+    if (body.clientOpId) {
+      try {
+        await prisma.mobileUploadLog.create({
+          data: {
+            clientOpId: body.clientOpId,
+            kind: "medicine.addStock",
+            userId: body.userId,
+            lineId: body.lineId,
+            resultId: result.stockId,
+            message: result.mode === "restock" ? "Restocked" : "New batch",
+          },
+        });
+      } catch (e) {
+        // Most likely cause: another concurrent replay just won the race.
+        // Safe to ignore — the @unique on clientOpId means the second
+        // insert can't slip past us anyway.
+        console.warn("[addStorageMedInList] idempotency log write failed:", e);
+      }
+    }
+
+    return res.code(200).send({
+      message: "OK",
+      mode: result.mode,
+      stockId: result.stockId,
+    });
   } catch (error) {
+    if (error instanceof NotFoundError) throw error;
+    if (error instanceof ValidationError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_ERROR", 500, "DB_FAILED");
     }
@@ -786,92 +943,164 @@ export const viewNotification = async (
   }
 };
 
+/**
+ * Transfer N units of a specific stock batch to another storage.
+ *
+ * Inputs:
+ *   - stockId:   the source MedicineStock row (a specific batch).
+ *   - departId:  destination MedicineStorage id.
+ *   - quantity:  how many *units of the batch's UoM* (e.g. boxes, bottles)
+ *                to move. Items moved = quantity * source.perQuantity.
+ *
+ * Semantics:
+ *   - Subtracts `quantity` (and `quantity * perQuantity` items) from the
+ *     source row. The source row stays — it just shrinks, possibly to 0.
+ *   - If the destination already has a batch matching on
+ *       (medicine, expiration, manufacturingDate, UoM, perQuantity),
+ *     we restock that row (preserves price history and shelf address).
+ *   - Otherwise a new batch row is created in the destination with the
+ *     same identity dimensions and a fresh quarter stamp.
+ *   - Refreshes low-stock alerts on both source (may now be low) and
+ *     destination (may have recovered).
+ */
 export const transferMedicine = async (
   req: FastifyRequest,
   res: FastifyReply,
 ) => {
   const body = req.body as {
+    stockId: string;
+    departId: string;
     quantity: number;
     userId: string;
-    departId: string;
-    fromId: string;
-    to: string;
-    stockId: string;
+    fromId?: string; // kept for back-compat — derived from stock if omitted
   };
-  console.log({ body });
 
-  if (!body.departId || !body.quantity || !body.fromId || !body.userId) {
+  if (!body.stockId || !body.departId || !body.userId) {
     throw new ValidationError("INVALID REQUIRED ID");
   }
+  const transferQty = Number(body.quantity);
+  if (!Number.isFinite(transferQty) || transferQty <= 0) {
+    throw new ValidationError("Transfer quantity must be greater than zero.");
+  }
+
   try {
-    const response = await prisma.$transaction(async (tx) => {
-      const stock = await tx.medicineStock.findUnique({
-        where: {
-          id: body.stockId,
-        },
+    const result = await prisma.$transaction(async (tx) => {
+      const source = await tx.medicineStock.findUnique({
+        where: { id: body.stockId },
         include: {
-          medicine: {
-            select: {
-              name: true,
-              serialNumber: true,
-            },
-          },
+          medicine: { select: { id: true, name: true, serialNumber: true } },
+          MedicineStorage: { select: { id: true, name: true, refNumber: true } },
         },
       });
-      const to = await tx.medicineStorage.findUnique({
-        where: {
-          id: body.departId,
-        },
+      if (!source) throw new NotFoundError("STOCK NOT FOUND");
+      if (!source.medicineId)
+        throw new ValidationError(
+          "Stock has no medicine linked — cannot transfer.",
+        );
+      if (!source.MedicineStorage)
+        throw new ValidationError("Source storage missing on this stock row.");
+
+      if (source.MedicineStorage.id === body.departId) {
+        throw new ValidationError(
+          "Destination must be different from the source storage.",
+        );
+      }
+      if (source.quantity < transferQty) {
+        throw new ValidationError(
+          `Not enough on hand. Available: ${source.quantity} ${source.quality}.`,
+        );
+      }
+
+      const destination = await tx.medicineStorage.findUnique({
+        where: { id: body.departId },
       });
+      if (!destination)
+        throw new NotFoundError("TARGET STORAGE NOT FOUND");
 
-      const from = await tx.medicineStorage.findUnique({
-        where: {
-          id: body.fromId,
-        },
-      });
+      const perQuantity = source.perQuantity;
+      const itemsMoved = perQuantity * transferQty;
 
-      if (!stock) throw new NotFoundError("STOCK NOT FOUND");
-      if (!to) throw new NotFoundError("TARGET STORAGE NOT FOUND");
-      if (!from) throw new NotFoundError("ORIGIN STORAGE NOT FOUND");
-
-      const perQuantity = stock.perQuantity;
-      const currStock = stock.quantity * stock.perQuantity;
-      const toTransfer = body.quantity;
-      const actualStockTransfered = perQuantity * toTransfer;
-
-      if (currStock < actualStockTransfered)
-        throw new ValidationError("INVALID QUANTITY");
+      // 1) Decrement source row.
       await tx.medicineStock.update({
-        where: {
-          id: stock.id,
-        },
+        where: { id: source.id },
         data: {
-          medicineStorageId: to.id,
-          actualStock: actualStockTransfered,
-          quality: stock.quality,
-          quantity: toTransfer,
-          perQuantity: perQuantity,
+          quantity: source.quantity - transferQty,
+          actualStock: Math.max(0, source.actualStock - itemsMoved),
         },
       });
 
+      // 2) Find or create the destination batch (same identity).
+      const matching = await tx.medicineStock.findFirst({
+        where: {
+          medicineId: source.medicineId,
+          medicineStorageId: body.departId,
+          expiration: source.expiration ?? undefined,
+          manufacturingDate: source.manufacturingDate ?? undefined,
+          quality: source.quality,
+          perQuantity: source.perQuantity,
+        },
+      });
+
+      let destStockId: string;
+      let mode: "merge" | "new";
+      if (matching) {
+        mode = "merge";
+        const updated = await tx.medicineStock.update({
+          where: { id: matching.id },
+          data: {
+            quantity: matching.quantity + transferQty,
+            actualStock: matching.actualStock + itemsMoved,
+          },
+        });
+        destStockId = updated.id;
+      } else {
+        mode = "new";
+        const created = await tx.medicineStock.create({
+          data: {
+            medicineId: source.medicineId,
+            medicineStorageId: body.departId,
+            lineId: destination.lineId,
+            quarter: getQuarter(),
+            quality: source.quality,
+            perQuantity: source.perQuantity,
+            quantity: transferQty,
+            actualStock: itemsMoved,
+            threshold: source.threshold,
+            expiration: source.expiration,
+            manufacturingDate: source.manufacturingDate,
+          },
+        });
+        destStockId = created.id;
+      }
+
+      // 3) Audit log.
       await tx.medicineLogs.create({
         data: {
           action: 2,
-          message: `Trasnfered ${stock.medicine?.name || "Unknown Medicine"} (${stock.medicine?.serialNumber || "Unknown Medicine"}) ${body.quantity} stock/s from ${from.name} to ${to.name}`,
           userId: body.userId,
+          lineId: source.lineId,
+          message:
+            `Transferred ${source.medicine?.name ?? "?"} ` +
+            `(${source.medicine?.serialNumber ?? "?"}) — ` +
+            `${transferQty} ${source.quality} (${itemsMoved} items) ` +
+            `from ${source.MedicineStorage.refNumber} → ${destination.refNumber}` +
+            (mode === "merge" ? " (merged into existing batch)" : " (new batch)"),
         },
       });
 
-      return "OK";
+      // 4) Refresh low-stock alerts on both rows. Source may now be low;
+      //    destination may have recovered.
+      await checkAndNotifyLowStock(tx, source.id);
+      await clearLowStockAlerts(tx, destStockId);
+      await checkAndNotifyLowStock(tx, destStockId);
+
+      return { mode, sourceStockId: source.id, destStockId };
     });
 
-    if (!response) {
-      throw new ValidationError("TRANSACTION FAILED");
-    }
-    return res.code(200).send({ message: "OK" });
+    return res.code(200).send({ message: "OK", ...result });
   } catch (error) {
-    console.log(error);
-
+    if (error instanceof NotFoundError) throw error;
+    if (error instanceof ValidationError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_ERROR", 500, "DB_FAILED");
     }
@@ -1057,11 +1286,23 @@ export const medicineTransactions = async (
   }
 };
 
+/**
+ * Soft-delete a medicine catalog entry.
+ *
+ * Sets `phase: 0` so the row stays for historical references (transactions,
+ * prescriptions, logs) but disappears from the catalog list. Refuses to
+ * remove a medicine that still has on-hand stock — the user must zero
+ * the stocks out or transfer them first.
+ */
 export const removeMedicine = async (
   req: FastifyRequest,
   res: FastifyReply,
 ) => {
-  const params = req.query as { id: string; userId: string };
+  const params = req.query as {
+    id: string;
+    userId: string;
+    lineId?: string;
+  };
 
   if (!params.id || !params.userId) {
     throw new ValidationError("INVALID REQUIRED ID");
@@ -1070,35 +1311,43 @@ export const removeMedicine = async (
   try {
     const response = await prisma.$transaction(async (tx) => {
       const medicine = await tx.medicine.findUnique({
-        where: {
-          id: params.id,
-        },
+        where: { id: params.id },
       });
+      if (!medicine) throw new NotFoundError("Medicine not found");
+      if (medicine.phase === -1)
+        throw new ValidationError("Medicine already removed.");
 
-      if (!medicine) throw new NotFoundError("Medicine not found!");
+      const onHand = await tx.medicineStock.aggregate({
+        where: { medicineId: params.id },
+        _sum: { actualStock: true },
+      });
+      if ((onHand._sum.actualStock ?? 0) > 0) {
+        throw new ValidationError(
+          "This medicine still has stock on hand. Zero out or transfer the stock before removing.",
+        );
+      }
 
-      await tx.medicine.delete({
-        where: {
-          id: params.id,
-        },
+      const updated = await tx.medicine.update({
+        where: { id: params.id },
+        data: { phase: -1 },
       });
 
       await tx.medicineLogs.create({
         data: {
           action: 0,
           userId: params.userId,
-          message: `REMOVED MEDICINE - ${medicine.name}`,
+          lineId: params.lineId ?? medicine.lineId,
+          message: `Removed medicine — ${updated.name} (${updated.serialNumber})`,
         },
       });
 
-      return true;
+      return { message: "OK", id: updated.id };
     });
 
-    if (!response) {
-      throw new ValidationError("TRANSACTION FAILED");
-    }
-    return res.code(200).send({ message: "OK" });
+    return res.code(200).send(response);
   } catch (error) {
+    if (error instanceof NotFoundError) throw error;
+    if (error instanceof ValidationError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
     }
@@ -1111,63 +1360,88 @@ export const medicineOverview = async (
   res: FastifyReply,
 ) => {
   const params = req.query as { lineId: string };
-  if (!params.lineId) {
-    throw new ValidationError("INVALID REQUIRED ID");
-  }
+  if (!params.lineId) throw new ValidationError("INVALID REQUIRED ID");
+
   try {
-    const response = await prisma.$transaction(async (tx) => {
-      // Total medicines count
-      const medicines = await tx.medicineStock.count({
+    const now = new Date();
+    const sixMonthsFromNow = new Date(now);
+    sixMonthsFromNow.setMonth(sixMonthsFromNow.getMonth() + 6);
+
+    const nearWhere = {
+      lineId: params.lineId,
+      actualStock: { gt: 0 },
+      expiration: { not: null, gt: now, lte: sixMonthsFromNow },
+    } as const;
+    const expiredWhere = {
+      lineId: params.lineId,
+      actualStock: { gt: 0 },
+      expiration: { not: null, lte: now },
+    } as const;
+
+    const [
+      storage,
+      totalBatches,
+      lowStock,
+      nearExpiration,
+      expired,
+      nearAgg,
+      expiredAgg,
+      nearByQty,
+      expiredByQty,
+    ] = await Promise.all([
+      prisma.medicineStorage.count({
+        where: { lineId: params.lineId, status: { not: 0 } },
+      }),
+      prisma.medicineStock.count({ where: { lineId: params.lineId } }),
+      prisma.medicineStock.count({
         where: {
           lineId: params.lineId,
+          threshold: { gt: 0 },
+          actualStock: { lte: prisma.medicineStock.fields.threshold },
         },
-      });
+      }),
+      prisma.medicineStock.count({ where: nearWhere }),
+      prisma.medicineStock.count({ where: expiredWhere }),
+      prisma.medicineStock.aggregate({
+        where: nearWhere,
+        _sum: { actualStock: true },
+      }),
+      prisma.medicineStock.aggregate({
+        where: expiredWhere,
+        _sum: { actualStock: true },
+      }),
+      // Per-quality breakdown so the dashboard can show "120 box, 30 bottle".
+      prisma.medicineStock.groupBy({
+        by: ["quality"],
+        where: nearWhere,
+        _sum: { actualStock: true },
+      }),
+      prisma.medicineStock.groupBy({
+        by: ["quality"],
+        where: expiredWhere,
+        _sum: { actualStock: true },
+      }),
+    ]);
 
-      // Low stock: where actualStock is less than or equal to threshold
-      const lowStock = await tx.medicineStock.count({
-        where: {
-          lineId: params.lineId,
-          actualStock: {
-            lte: tx.medicineStock.fields.threshold, // actualStock <= threshold
-          },
-        },
-      });
+    const byQty = (rows: { quality: string; _sum: { actualStock: number | null } }[]) =>
+      rows
+        .filter((r) => (r._sum.actualStock ?? 0) > 0)
+        .map((r) => ({
+          quality: r.quality,
+          units: r._sum.actualStock ?? 0,
+        }))
+        .sort((a, b) => b.units - a.units);
 
-      // Storage count
-      const storage = await tx.medicineStorage.count({
-        where: {
-          lineId: params.lineId,
-        },
-      });
-
-      // Near expiration: medicines expiring within 6 months from now
-      const sixMonthsFromNow = new Date();
-      sixMonthsFromNow.setMonth(sixMonthsFromNow.getMonth() + 6);
-
-      const nearExpiration = await tx.medicineStock.count({
-        where: {
-          lineId: params.lineId,
-          expiration: {
-            not: null,
-            lte: sixMonthsFromNow, // expiration date <= 6 months from now
-            gte: new Date(), // optional: only future expirations (not already expired)
-          },
-        },
-      });
-
-      // Optional: Get the actual near-expiration medicine details
-
-      return {
-        medicines: {
-          total: medicines,
-          lowStock,
-        },
-        storage,
-        nearExpiration,
-      };
+    return res.send({
+      medicines: { total: totalBatches, lowStock },
+      storage,
+      nearExpiration,
+      expired,
+      nearExpirationUnits: nearAgg._sum.actualStock ?? 0,
+      expiredUnits: expiredAgg._sum.actualStock ?? 0,
+      nearExpirationByQuality: byQty(nearByQty),
+      expiredByQuality: byQty(expiredByQty),
     });
-
-    return res.send(response);
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
@@ -1176,22 +1450,422 @@ export const medicineOverview = async (
   }
 };
 
+// ───────────────────────────────────────────────────────────────────────
+// Expiration list + Excel export
+// ───────────────────────────────────────────────────────────────────────
+
+type ExpirationMode = "soon" | "expired";
+
+const expirationWhere = (
+  lineId: string,
+  mode: ExpirationMode,
+  query?: string,
+) => {
+  const now = new Date();
+  const sixMonthsFromNow = new Date(now);
+  sixMonthsFromNow.setMonth(sixMonthsFromNow.getMonth() + 6);
+
+  const where: any = {
+    lineId,
+    actualStock: { gt: 0 },
+    expiration: { not: null },
+  };
+  if (mode === "soon") {
+    where.expiration = { not: null, gt: now, lte: sixMonthsFromNow };
+  } else {
+    where.expiration = { not: null, lte: now };
+  }
+
+  if (query && query.trim()) {
+    const q = query.trim();
+    where.medicine = {
+      OR: [
+        { name:         { contains: q, mode: "insensitive" } },
+        { serialNumber: { contains: q, mode: "insensitive" } },
+      ],
+    };
+  }
+  return where;
+};
+
+/**
+ * Paginated list of stock batches that are either expiring within 6
+ * months ("soon") or already expired ("expired"), ordered by closest
+ * expiration first.
+ */
+export const expirationList = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as {
+    lineId: string;
+    mode?: ExpirationMode;
+    lastCursor?: string | null;
+    limit?: string;
+    query?: string;
+  };
+  if (!params.lineId) throw new ValidationError("INVALID REQUIRED ID");
+  const mode: ExpirationMode = params.mode === "expired" ? "expired" : "soon";
+  const limit = params.limit ? parseInt(params.limit, 10) : 20;
+  const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
+
+  try {
+    const where = expirationWhere(params.lineId, mode, params.query);
+    const [rows, totalAgg, qualityRows] = await Promise.all([
+      prisma.medicineStock.findMany({
+        where,
+        take: limit,
+        skip: cursor ? 1 : 0,
+        cursor,
+        orderBy: { expiration: mode === "soon" ? "asc" : "desc" },
+        include: {
+          medicine: { select: { id: true, name: true, serialNumber: true } },
+          MedicineStorage: {
+            select: { id: true, name: true, refNumber: true },
+          },
+        },
+      }),
+      prisma.medicineStock.aggregate({
+        where,
+        _sum: { actualStock: true },
+        _count: { _all: true },
+      }),
+      prisma.medicineStock.groupBy({
+        by: ["quality"],
+        where,
+        _sum: { actualStock: true },
+        _count: { _all: true },
+      }),
+    ]);
+
+    const now = new Date();
+    const list = rows.map((r) => {
+      const exp = r.expiration ? new Date(r.expiration) : null;
+      const daysToExpire = exp
+        ? Math.ceil((exp.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
+        : null;
+      return { ...r, daysToExpire };
+    });
+
+    const summary = {
+      totalBatches: totalAgg._count._all,
+      totalUnits: totalAgg._sum.actualStock ?? 0,
+      byQuality: qualityRows
+        .filter((q) => (q._sum.actualStock ?? 0) > 0)
+        .map((q) => ({
+          quality: q.quality,
+          batches: q._count._all,
+          units: q._sum.actualStock ?? 0,
+        }))
+        .sort((a, b) => b.units - a.units),
+    };
+
+    const lastCursor = list.length > 0 ? list[list.length - 1].id : null;
+    const hasMore = list.length === limit;
+    return res
+      .code(200)
+      .send({ list, lastCursor, hasMore, mode, summary });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+/**
+ * Excel export of the expiration list (whole result set, no pagination).
+ */
+export const exportExpirationList = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as {
+    lineId: string;
+    mode?: ExpirationMode;
+    query?: string;
+  };
+  if (!params.lineId) throw new ValidationError("INVALID REQUIRED ID");
+  const mode: ExpirationMode = params.mode === "expired" ? "expired" : "soon";
+
+  try {
+    const rows = await prisma.medicineStock.findMany({
+      where: expirationWhere(params.lineId, mode, params.query),
+      orderBy: { expiration: mode === "soon" ? "asc" : "desc" },
+      include: {
+        medicine: { select: { name: true, serialNumber: true } },
+        MedicineStorage: { select: { name: true, refNumber: true } },
+      },
+    });
+
+    const now = new Date();
+    const wb = new ExcelJS.Workbook();
+    wb.creator = "GMITP";
+    wb.created = new Date();
+    const sheetTitle =
+      mode === "soon" ? "Expiring Soon" : "Expired Medicines";
+    const ws = wb.addWorksheet(sheetTitle, {
+      views: [{ state: "frozen", ySplit: 5 }],
+    });
+
+    ws.columns = [
+      { width: 6 },   // A No.
+      { width: 16 },  // B Serial
+      { width: 32 },  // C Medicine
+      { width: 22 },  // D Storage
+      { width: 8 },   // E Unit
+      { width: 10 },  // F On-hand
+      { width: 12 },  // G Manufactured
+      { width: 12 },  // H Expires
+      { width: 12 },  // I Days to Expire
+      { width: 16 },  // J Shelf Address
+    ];
+
+    // Letterhead
+    const header = [
+      { row: 1, text: "Republic of the Philippines", bold: false, size: 11 },
+      { row: 2, text: "Province of Marinduque",      bold: false, size: 11 },
+      { row: 3, text: "MUNICIPALITY OF GASAN",        bold: true,  size: 11 },
+      {
+        row: 4,
+        text:
+          mode === "soon"
+            ? "MEDICINES EXPIRING WITHIN 6 MONTHS"
+            : "EXPIRED MEDICINES — REQUIRES DISPOSAL",
+        bold: true,
+        size: 13,
+      },
+    ];
+    header.forEach(({ row, text, bold, size }) => {
+      const r = ws.getRow(row);
+      r.getCell(1).value = text;
+      ws.mergeCells(row, 1, row, 10);
+      r.alignment = { horizontal: "center", vertical: "middle" };
+      r.font = { name: "Arial", bold, size };
+    });
+    ws.getRow(5).values = [
+      "No.",
+      "Serial #",
+      "Medicine",
+      "Storage",
+      "Unit",
+      "On-hand",
+      "Manufactured",
+      "Expires",
+      "Days to Expire",
+      "Shelf Address",
+    ];
+    ws.getRow(5).font = { name: "Arial", bold: true, size: 10 };
+    ws.getRow(5).alignment = { horizontal: "center", vertical: "middle" };
+    ws.getRow(5).eachCell((c) => {
+      c.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FFE5E7EB" },
+      };
+      c.border = {
+        top:    { style: "thin" },
+        left:   { style: "thin" },
+        right:  { style: "thin" },
+        bottom: { style: "thin" },
+      };
+    });
+
+    const fmtDate = (d: Date | null) =>
+      d ? d.toISOString().slice(0, 10) : "—";
+
+    rows.forEach((s, i) => {
+      const exp = s.expiration ? new Date(s.expiration) : null;
+      const days = exp
+        ? Math.ceil((exp.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
+        : null;
+      const address = [s.addressRoom, s.addressSec, s.addressRow, s.addressCol]
+        .filter(Boolean)
+        .join(" / ");
+
+      const row = ws.addRow([
+        i + 1,
+        s.medicine?.serialNumber ?? "—",
+        s.medicine?.name ?? "—",
+        s.MedicineStorage?.name ?? "—",
+        s.quality ?? "—",
+        s.actualStock,
+        fmtDate(s.manufacturingDate ? new Date(s.manufacturingDate) : null),
+        fmtDate(exp),
+        days ?? "—",
+        address || (s.container ?? "—"),
+      ]);
+      row.font = { name: "Arial", size: 10 };
+      row.alignment = { vertical: "middle" };
+      row.eachCell((c) => {
+        c.border = {
+          top:    { style: "hair" },
+          left:   { style: "hair" },
+          right:  { style: "hair" },
+          bottom: { style: "hair" },
+        };
+      });
+      // Highlight already-expired rows in red.
+      if (mode === "expired" || (days !== null && days <= 0)) {
+        row.getCell(9).font = {
+          name: "Arial",
+          size: 10,
+          bold: true,
+          color: { argb: "FFC2410C" },
+        };
+      }
+    });
+
+    if (rows.length === 0) {
+      const r = ws.addRow(["No records found"]);
+      ws.mergeCells(r.number, 1, r.number, 10);
+      r.alignment = { horizontal: "center" };
+      r.font = { name: "Arial", italic: true, color: { argb: "FF9CA3AF" } };
+    } else {
+      // ── Summary footer: total units + per-quality breakdown ──────────
+      ws.addRow([]);
+      const totalUnits = rows.reduce((s, r) => s + (r.actualStock ?? 0), 0);
+      const byQuality = new Map<string, { units: number; batches: number }>();
+      for (const r of rows) {
+        const key = r.quality ?? "—";
+        const cur = byQuality.get(key) ?? { units: 0, batches: 0 };
+        cur.units += r.actualStock ?? 0;
+        cur.batches += 1;
+        byQuality.set(key, cur);
+      }
+
+      const totalRow = ws.addRow([
+        "",
+        "",
+        "TOTAL",
+        `${rows.length} batches`,
+        "",
+        totalUnits,
+        "",
+        "",
+        "",
+        "",
+      ]);
+      totalRow.font = { name: "Arial", bold: true, size: 10 };
+      totalRow.getCell(3).alignment = { horizontal: "right" };
+      totalRow.getCell(6).alignment = { horizontal: "center" };
+      totalRow.eachCell((c) => {
+        c.border = { top: { style: "thin" }, bottom: { style: "thin" } };
+      });
+
+      // Per-quality rows
+      [...byQuality.entries()]
+        .sort((a, b) => b[1].units - a[1].units)
+        .forEach(([q, v]) => {
+          const r = ws.addRow([
+            "",
+            "",
+            `By unit: ${q}`,
+            `${v.batches} batch${v.batches === 1 ? "" : "es"}`,
+            "",
+            v.units,
+            "",
+            "",
+            "",
+            "",
+          ]);
+          r.font = { name: "Arial", size: 10 };
+          r.getCell(3).alignment = { horizontal: "right" };
+          r.getCell(3).font = {
+            name: "Arial",
+            italic: true,
+            size: 10,
+            color: { argb: "FF6B7280" },
+          };
+          r.getCell(6).alignment = { horizontal: "center" };
+        });
+    }
+
+    const buffer = await wb.xlsx.writeBuffer();
+    const filename = `medicines_${mode === "soon" ? "expiring_soon" : "expired"}_${now
+      .toISOString()
+      .slice(0, 10)}.xlsx`;
+
+    res.header(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+    res.header("Content-Disposition", `attachment; filename="${filename}"`);
+    return res.code(200).send(Buffer.from(buffer as ArrayBuffer));
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+/**
+ * Storage detail view.
+ *
+ * Returns the storage location with its unit/department + line, plus a
+ * lightweight stats block (medicineCount, totalStockUnits, lowStockCount,
+ * expiringSoonCount, accessCount) so the Information tab can render without
+ * extra round-trips. Stock-level counts are computed server-side from the
+ * MedicineStock rows scoped to this storage.
+ */
 export const storageData = async (req: FastifyRequest, res: FastifyReply) => {
   const params = req.query as { id: string };
   if (!params.id) throw new ValidationError("INVALID REQUIRED ID");
 
   try {
-    const response = await prisma.medicineStorage.findUnique({
-      where: {
-        id: params.id,
+    const storage = await prisma.medicineStorage.findUnique({
+      where: { id: params.id },
+      include: {
+        unit: { select: { id: true, name: true } },
+        line: { select: { id: true, name: true } },
+        _count: { select: { MedicineStorageAccess: true } },
       },
     });
 
-    if (!response) {
-      throw new NotFoundError("STORAGE NOT FOUND!");
-    }
-    return res.code(200).send(response);
+    if (!storage) throw new NotFoundError("STORAGE NOT FOUND!");
+
+    const sixMonths = new Date();
+    sixMonths.setMonth(sixMonths.getMonth() + 6);
+
+    // Pull the stock rows once and aggregate in memory — keeps the response
+    // shape simple and avoids three separate aggregate queries.
+    const stocks = await prisma.medicineStock.findMany({
+      where: { medicineStorageId: params.id },
+      select: {
+        medicineId: true,
+        actualStock: true,
+        threshold: true,
+        expiration: true,
+      },
+    });
+
+    const totalStockUnits = stocks.reduce(
+      (sum, s) => sum + (s.actualStock ?? 0),
+      0,
+    );
+    const lowStockCount = stocks.filter(
+      (s) => (s.actualStock ?? 0) <= (s.threshold ?? 0),
+    ).length;
+    const expiringSoonCount = stocks.filter(
+      (s) => s.expiration && new Date(s.expiration) <= sixMonths,
+    ).length;
+    const medicineCount = new Set(
+      stocks.map((s) => s.medicineId).filter(Boolean),
+    ).size;
+
+    return res.code(200).send({
+      ...storage,
+      stats: {
+        medicineCount,
+        totalStockUnits,
+        lowStockCount,
+        expiringSoonCount,
+        accessCount: storage._count?.MedicineStorageAccess ?? 0,
+      },
+    });
   } catch (error) {
+    if (error instanceof NotFoundError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
     }
@@ -1199,25 +1873,46 @@ export const storageData = async (req: FastifyRequest, res: FastifyReply) => {
   }
 };
 
+/**
+ * Soft-delete a storage location.
+ *
+ * Sets `status: 0` instead of hard-deleting so the audit trail and any
+ * historical transactions / stock rows remain intact. Refuses to remove a
+ * storage that still has on-hand stock — the user must transfer or zero
+ * out stock first.
+ */
 export const removeStorage = async (req: FastifyRequest, res: FastifyReply) => {
   const params = req.query as { id: string; userId: string; lineId: string };
 
-  if (!params.id) {
-    throw new ValidationError("INVALID REQUIRED ID");
-  }
+  if (!params.id) throw new ValidationError("INVALID REQUIRED ID");
 
   try {
     const response = await prisma.$transaction(async (tx) => {
-      const storage = await tx.medicineStorage.delete({
-        where: {
-          id: params.id,
-        },
+      const storage = await tx.medicineStorage.findUnique({
+        where: { id: params.id },
+      });
+      if (!storage) throw new NotFoundError("STORAGE NOT FOUND");
+
+      // Block removal while there is on-hand stock to avoid orphaning units.
+      const onHand = await tx.medicineStock.aggregate({
+        where: { medicineStorageId: params.id },
+        _sum: { actualStock: true },
+      });
+      if ((onHand._sum.actualStock ?? 0) > 0) {
+        throw new ValidationError(
+          "Storage still has on-hand stock. Transfer or zero out the stock before removing.",
+        );
+      }
+
+      const updated = await tx.medicineStorage.update({
+        where: { id: params.id },
+        data: { status: 0 },
       });
 
       await tx.activityLogs.create({
         data: {
           action: 1,
-          desc: `REMOVE MEDICINE STORAGE: ${storage.name}`,
+          desc: `REMOVE MEDICINE STORAGE: ${updated.name}`,
           userId: params.userId,
           lineId: params.lineId,
         },
@@ -1227,15 +1922,739 @@ export const removeStorage = async (req: FastifyRequest, res: FastifyReply) => {
         data: {
           action: 0,
           lineId: params.lineId,
-          message: `STORAGE: ${storage.name}-${storage.refNumber}, has been removed`,
+          message: `STORAGE: ${updated.name}-${updated.refNumber}, has been removed`,
           userId: params.userId,
         },
       });
 
-      return "OK";
+      return { message: "OK", id: updated.id };
     });
     return res.code(200).send(response);
   } catch (error) {
+    if (error instanceof NotFoundError) throw error;
+    if (error instanceof ValidationError) throw error;
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+/**
+ * Manual rescan: walks every stock row in the line and emits low-stock
+ * notifications for ones below threshold that aren't already alerted.
+ *
+ * Useful for the first run after enabling alerts (no historical events
+ * would have fired the inline triggers) and as a "are we current?" check
+ * the UI can call periodically.
+ */
+export const scanLowStock = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as { lineId?: string };
+  if (!params.lineId) throw new ValidationError("INVALID REQUIRED ID");
+
+  try {
+    const candidates = await prisma.medicineStock.findMany({
+      where: {
+        lineId: params.lineId,
+        threshold: { gt: 0 },
+      },
+      select: { id: true, actualStock: true, threshold: true },
+    });
+
+    const below = candidates.filter((s) => s.actualStock <= s.threshold);
+    let notified = 0;
+    let scanned = 0;
+
+    // Run each check inside its own short transaction so one failure
+    // doesn't poison the whole sweep.
+    for (const s of below) {
+      scanned += 1;
+      try {
+        const r = await prisma.$transaction(async (tx) => {
+          return checkAndNotifyLowStock(tx, s.id);
+        });
+        if (r?.notified) notified += r.notified;
+      } catch (e) {
+        console.warn("[scanLowStock] failed for", s.id, e);
+      }
+    }
+
+    return res.code(200).send({
+      message: "OK",
+      totalStocks: candidates.length,
+      belowThreshold: below.length,
+      scanned,
+      notified,
+    });
+  } catch (error) {
+    if (error instanceof ValidationError) throw error;
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+/**
+ * Mobile offline-scan upload.
+ *
+ * The mobile app captures (barcode, name) pairs offline and flushes the
+ * queue here. We treat (serialNumber = barcode, lineId) as the natural
+ * key: if a Medicine row already exists we update its name + desc,
+ * otherwise we create a new draft (phase = 0). The caller persists the
+ * returned `id` locally so subsequent re-syncs of the same row are
+ * idempotent rather than creating duplicates.
+ */
+export const recordMedicineScan = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as {
+    barcode?: string;
+    name?: string;
+    notes?: string | null;
+    scannedAt?: number | string | null;
+    scannedByUserId?: string | null;
+    lineId?: string | null;
+  };
+
+  if (!body?.barcode || !body?.name) {
+    throw new ValidationError("BAD_REQUEST: barcode and name are required");
+  }
+  if (!body.lineId) {
+    throw new ValidationError("BAD_REQUEST: lineId is required");
+  }
+
+  try {
+    const barcode = body.barcode.trim();
+    const name = body.name.trim();
+    const desc = body.notes?.trim() || undefined;
+
+    // Match on barcode first (the natural scanner key), then fall back to
+    // a legacy match on serialNumber so older "barcode = serial" rows are
+    // still picked up instead of duplicated.
+    const existing = await prisma.medicine.findFirst({
+      where: {
+        lineId: body.lineId,
+        OR: [{ barcode }, { serialNumber: barcode }],
+      },
+      select: { id: true, barcode: true },
+    });
+
+    let saved;
+    if (existing) {
+      saved = await prisma.medicine.update({
+        where: { id: existing.id },
+        data: {
+          name,
+          ...(desc ? { desc } : {}),
+          // Backfill barcode on legacy rows that matched by serialNumber.
+          ...(existing.barcode ? {} : { barcode }),
+        },
+        select: { id: true, serialNumber: true, barcode: true, name: true },
+      });
+    } else {
+      const serialNumber = await generateMedRef();
+      saved = await prisma.medicine.create({
+        data: {
+          serialNumber,
+          barcode,
+          name,
+          desc: desc ?? "None",
+          lineId: body.lineId,
+        },
+        select: { id: true, serialNumber: true, barcode: true, name: true },
+      });
+    }
+
+    return res.code(200).send({
+      id: saved.id,
+      serialNumber: saved.serialNumber,
+      barcode: saved.barcode,
+      name: saved.name,
+      mode: existing ? "updated" : "created",
+    });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+/**
+ * Bulk pull for the mobile "morning check for updates" flow.
+ *
+ * Returns every Medicine in the user's line along with its MedicineStock
+ * rows. Mobile mirrors these into local SQLite so the scanner and stock
+ * screens work offline until the next sync. The caller passes `since`
+ * (Unix ms) to get an incremental pull; omit it to download everything.
+ *
+ *   GET /medicine/sync?lineId=<id>&since=<unix-ms>
+ *
+ * Response shape:
+ *   {
+ *     fetchedAt: <unix-ms>,
+ *     medicines: Medicine[],          // with `stocks: MedicineStock[]`
+ *   }
+ */
+export const medicineSync = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as { lineId?: string; since?: string };
+  if (!params.lineId) throw new ValidationError("BAD_REQUEST: lineId required");
+
+  const sinceMs = params.since ? parseInt(params.since, 10) : 0;
+  const sinceDate = sinceMs > 0 ? new Date(sinceMs) : undefined;
+
+  try {
+    const medicines = await prisma.medicine.findMany({
+      where: {
+        lineId: params.lineId,
+        ...(sinceDate ? { timestamp: { gt: sinceDate } } : {}),
+      },
+      orderBy: { timestamp: "desc" },
+      select: {
+        id: true,
+        serialNumber: true,
+        barcode: true,
+        name: true,
+        desc: true,
+        phase: true,
+        timestamp: true,
+        lineId: true,
+        MedicineStock: {
+          select: {
+            id: true,
+            medicineId: true,
+            medicineStorageId: true,
+            quantity: true,
+            perQuantity: true,
+            quality: true,
+            actualStock: true,
+            threshold: true,
+            quarter: true,
+            timestamp: true,
+            expiration: true,
+            manufacturingDate: true,
+            addressRoom: true,
+            addressCol: true,
+            addressRow: true,
+            addressSec: true,
+            container: true,
+            remainingOpenedBox: true,
+            remainingPieces: true,
+          },
+        },
+      },
+    });
+
+    return res.code(200).send({
+      fetchedAt: Date.now(),
+      medicines: medicines.map((m) => ({
+        id: m.id,
+        serialNumber: m.serialNumber,
+        barcode: m.barcode,
+        name: m.name,
+        desc: m.desc,
+        phase: m.phase,
+        timestamp: m.timestamp,
+        lineId: m.lineId,
+        stocks: m.MedicineStock,
+      })),
+    });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+/**
+ * Mobile bulk-upload endpoint. Accepts an array of queued Add Stock
+ * operations and applies them one at a time, returning a per-row outcome
+ * (created / restocked / duplicate / error). Each op carries its own
+ * `clientOpId` so the backend's idempotency log still dedupes within
+ * the batch.
+ *
+ * Why a dedicated endpoint instead of looping client-side:
+ *   - one TCP/TLS handshake instead of N
+ *   - the failure-mode is observable per-row in a single response
+ *   - keeps the mobile happy on flaky connections — partial success is
+ *     reported cleanly rather than half-failing a long sequence
+ */
+export const bulkAddMedicineStock = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as {
+    ops: Array<{
+      clientOpId: string;
+      medicineId: string;
+      storageId: string;
+      lineId: string;
+      userId: string;
+      unitOfMeasure: string;
+      quantity: number;
+      perUnit: number;
+      thresHold?: number;
+      price?: number;
+      expiration: string;
+      manufacturingDate: string;
+      addressRoom?: string | null;
+      addressCol?: string | null;
+      addressRow?: string | null;
+      addressSec?: string | null;
+      container?: string | null;
+    }>;
+  };
+
+  if (!body?.ops || !Array.isArray(body.ops) || body.ops.length === 0) {
+    throw new ValidationError("BAD_REQUEST: ops array required");
+  }
+
+  const results: Array<{
+    clientOpId: string;
+    status: "created" | "restocked" | "duplicate" | "error";
+    stockId?: string;
+    message?: string;
+  }> = [];
+
+  for (const op of body.ops) {
+    if (!op?.clientOpId) {
+      results.push({
+        clientOpId: op?.clientOpId ?? "",
+        status: "error",
+        message: "Missing clientOpId",
+      });
+      continue;
+    }
+
+    // Idempotency short-circuit — same logic as the single endpoint.
+    const prior = await prisma.mobileUploadLog.findUnique({
+      where: { clientOpId: op.clientOpId },
+      select: { resultId: true, message: true },
+    });
+    if (prior) {
+      results.push({
+        clientOpId: op.clientOpId,
+        status: "duplicate",
+        stockId: prior.resultId ?? undefined,
+        message: prior.message ?? "Already processed",
+      });
+      continue;
+    }
+
+    if (op.quantity <= 0 || op.perUnit <= 0) {
+      results.push({
+        clientOpId: op.clientOpId,
+        status: "error",
+        message: "Quantity and per-unit must be positive.",
+      });
+      continue;
+    }
+    if (!op.expiration || !op.manufacturingDate) {
+      results.push({
+        clientOpId: op.clientOpId,
+        status: "error",
+        message: "Manufacturing and expiration dates are required.",
+      });
+      continue;
+    }
+
+    const expiration = new Date(op.expiration);
+    const manufacturingDate = new Date(op.manufacturingDate);
+    if (!(expiration > manufacturingDate)) {
+      results.push({
+        clientOpId: op.clientOpId,
+        status: "error",
+        message: "Expiration must be after manufacturing date.",
+      });
+      continue;
+    }
+
+    const price = Math.max(0, Number(op.price ?? 0));
+
+    try {
+      const txResult = await prisma.$transaction(async (tx) => {
+        const [medicine, storage] = await Promise.all([
+          tx.medicine.findUnique({ where: { id: op.medicineId } }),
+          tx.medicineStorage.findUnique({ where: { id: op.storageId } }),
+        ]);
+        if (!medicine) throw new NotFoundError("ITEM_NOT_FOUND");
+        if (!storage) throw new NotFoundError("STORAGE_NOT_FOUND");
+
+        const existing = await tx.medicineStock.findFirst({
+          where: {
+            medicineId: op.medicineId,
+            medicineStorageId: op.storageId,
+            expiration,
+            manufacturingDate,
+            quality: op.unitOfMeasure,
+            perQuantity: op.perUnit,
+          },
+        });
+
+        const totalItems = op.perUnit * op.quantity;
+        let mode: "restock" | "new";
+        let stockId: string;
+
+        if (existing) {
+          mode = "restock";
+          await clearLowStockAlerts(tx, existing.id);
+          const updated = await tx.medicineStock.update({
+            where: { id: existing.id },
+            data: {
+              actualStock: existing.actualStock + totalItems,
+              quantity: existing.quantity + op.quantity,
+              threshold:
+                op.thresHold !== undefined ? op.thresHold : existing.threshold,
+              ...(op.addressRoom ? { addressRoom: op.addressRoom } : {}),
+              ...(op.addressCol  ? { addressCol:  op.addressCol  } : {}),
+              ...(op.addressRow  ? { addressRow:  op.addressRow  } : {}),
+              ...(op.addressSec  ? { addressSec:  op.addressSec  } : {}),
+              ...(op.container   ? { container:   op.container   } : {}),
+              price: { create: { value: price } },
+            },
+          });
+          stockId = updated.id;
+        } else {
+          mode = "new";
+          const created = await tx.medicineStock.create({
+            data: {
+              quantity: op.quantity,
+              medicineId: medicine.id,
+              threshold: op.thresHold ?? 0,
+              medicineStorageId: op.storageId,
+              actualStock: totalItems,
+              lineId: op.lineId,
+              quarter: getQuarter(),
+              quality: op.unitOfMeasure,
+              perQuantity: op.perUnit,
+              expiration,
+              manufacturingDate,
+              addressRoom: op.addressRoom || null,
+              addressCol:  op.addressCol  || null,
+              addressRow:  op.addressRow  || null,
+              addressSec:  op.addressSec  || null,
+              container:   op.container   || null,
+              price: { create: { value: price } },
+            },
+          });
+          stockId = created.id;
+        }
+
+        await checkAndNotifyLowStock(tx, stockId);
+
+        await tx.medicineLogs.create({
+          data: {
+            action: mode === "restock" ? 2 : 1,
+            message:
+              `${mode === "restock" ? "Restocked" : "Added new batch:"} ${medicine.name} ` +
+              `(${medicine.serialNumber}) — qty ${op.quantity} × ${op.perUnit} ${op.unitOfMeasure} ` +
+              `(${totalItems} items) → storage ${storage.refNumber} [mobile]`,
+            userId: op.userId,
+            lineId: op.lineId,
+          },
+        });
+
+        return { mode, stockId };
+      });
+
+      await prisma.mobileUploadLog
+        .create({
+          data: {
+            clientOpId: op.clientOpId,
+            kind: "medicine.addStock",
+            userId: op.userId,
+            lineId: op.lineId,
+            resultId: txResult.stockId,
+            message: txResult.mode === "restock" ? "Restocked" : "New batch",
+          },
+        })
+        .catch(() => undefined);
+
+      results.push({
+        clientOpId: op.clientOpId,
+        status: txResult.mode === "restock" ? "restocked" : "created",
+        stockId: txResult.stockId,
+      });
+    } catch (e: any) {
+      const message =
+        e?.message ?? String(e?.response?.data?.message ?? "Failed");
+      results.push({
+        clientOpId: op.clientOpId,
+        status: "error",
+        message,
+      });
+    }
+  }
+
+  return res.code(200).send({
+    attempted: body.ops.length,
+    succeeded: results.filter((r) =>
+      ["created", "restocked", "duplicate"].includes(r.status),
+    ).length,
+    failed: results.filter((r) => r.status === "error").length,
+    results,
+  });
+};
+
+export const exportMedicineReport = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as { storgeId: string };
+
+  if (!params.storgeId) {
+    throw new ValidationError("INVALID REQUIRED ID");
+  }
+
+  try {
+    let limit = 20;
+
+    const result = await prisma.$transaction(async (tx) => {
+      let allMedicines: any[] = [];
+      let currentPage = 0;
+      let hasMoreData = true;
+
+      // Get storage info
+      const storage = await tx.medicineStorage.findUnique({
+        where: {
+          id: params.storgeId,
+        },
+      });
+
+      if (!storage) {
+        throw new NotFoundError("STORAGE NOT FOUND");
+      }
+
+      // Fetch all medicines with pagination
+      while (hasMoreData) {
+        const skipping = currentPage * limit;
+        const medicines = await tx.medicineStock.findMany({
+          where: {
+            medicineStorageId: params.storgeId,
+          },
+          take: limit,
+          skip: skipping,
+          include: {
+            medicine: {
+              select: {
+                name: true,
+              },
+            },
+          },
+        });
+
+        if (medicines.length === 0) {
+          hasMoreData = false;
+        } else {
+          allMedicines.push(...medicines);
+          currentPage++;
+
+          if (medicines.length < limit) {
+            hasMoreData = false;
+          }
+        }
+      }
+
+      return { medicines: allMedicines, storage };
+    });
+
+    // Load and process template
+    const medicineReportTemplateLink =
+      "https://res.cloudinary.com/drhkb0ubf/raw/upload/v1776245651/Medicine_Report_Template_ewezx3.xlsx";
+    const response = await fetch(medicineReportTemplateLink);
+    const arrayBuffer = await response.arrayBuffer();
+
+    const buffer = Buffer.from(arrayBuffer);
+
+    const stream = Readable.from(buffer);
+
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.read(stream);
+
+    const worksheet = workbook.worksheets[0];
+
+    if (!worksheet) {
+      throw new Error("Worksheet not found in template");
+    }
+
+    let initRow = 4;
+    let rowIndex = 0;
+
+    result.medicines.forEach((item, i) => {
+      initRow++;
+      rowIndex++;
+      let row = worksheet.getRow(initRow);
+      row.getCell("A").value = rowIndex;
+      row.getCell("B").value = item.medicine?.name || "N/A";
+      row.getCell("F").value = item.manufacturingDate || "N/A";
+      row.getCell("G").value = item.expiration || "N/A";
+      row.getCell("H").value = item.actualStock;
+      row.getCell("I").value =
+        item.perQuantity > 1
+          ? `${item.perQuantity}/${item.quality}`
+          : item.quality;
+    });
+
+    const excelBuffer = await workbook.xlsx.writeBuffer();
+
+    res.header(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+    res.header(
+      "Content-Disposition",
+      `attachment; filename="MedicineReport_${result.storage.name || "export"}.xlsx"`,
+    );
+
+    return res.send(excelBuffer);
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+/**
+ * Bulk-import medicines from an uploaded spreadsheet.
+ *
+ * Multipart form: `file` (.xlsx/.xls/.csv) + `lineId` (+ optional `userId`).
+ *
+ * ONLY the medicine name matters. We read the **first column** of every
+ * sheet — one medicine name per row. An optional header cell on row 1
+ * (e.g. "Name", "Medicine", "Item", "Product") is skipped automatically.
+ * Names are de-duplicated within the file and against medicines that
+ * already exist in the same line, then the new ones are inserted (each
+ * with a generated serial number) scoped to that line.
+ */
+export const medicineBulkUpload = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  if (!req.isMultipart()) {
+    throw new ValidationError("INVALID MULTI-PART");
+  }
+
+  try {
+    const parts = req.parts();
+    const formData: Record<string, string> = {};
+    let fileBuffer: Buffer | null = null;
+
+    for await (const part of parts) {
+      if (part.type === "file") {
+        const buffers: Buffer[] = [];
+        for await (const chunk of part.file) buffers.push(chunk as Buffer);
+        fileBuffer = Buffer.concat(buffers);
+      } else {
+        formData[part.fieldname] = part.value as string;
+      }
+    }
+
+    if (!fileBuffer) {
+      throw new ValidationError("INVALID FILE");
+    }
+    if (!formData.lineId) {
+      throw new ValidationError("lineId is required");
+    }
+
+    const workbook = new ExcelJS.Workbook();
+    const stream = Readable.from(fileBuffer);
+    await workbook.xlsx.read(stream);
+
+    // Header words to ignore if they appear in the first cell of a sheet.
+    const HEADER_WORDS = new Set([
+      "name",
+      "medicine",
+      "medicine name",
+      "item",
+      "item name",
+      "product",
+    ]);
+
+    // Collect unique names (case-insensitive) from column 1 of every sheet.
+    const names: string[] = [];
+    const seen = new Set<string>();
+
+    workbook.eachSheet((sheet) => {
+      sheet.eachRow((row, rowNumber) => {
+        const raw = row.getCell(1).value;
+        const name = raw != null ? raw.toString().trim() : "";
+        if (!name) return;
+        // Skip an optional header label on the first row.
+        if (rowNumber === 1 && HEADER_WORDS.has(name.toLowerCase())) return;
+        const key = name.toLowerCase();
+        if (seen.has(key)) return;
+        seen.add(key);
+        names.push(name);
+      });
+    });
+
+    if (names.length === 0) {
+      throw new ValidationError("No medicine names found in the file.");
+    }
+
+    // Skip names that already exist in THIS line (case-insensitive).
+    const existing = await prisma.medicine.findMany({
+      where: { lineId: formData.lineId, name: { in: names } },
+      select: { name: true },
+    });
+    const existingSet = new Set(existing.map((m) => m.name.toLowerCase()));
+    const newNames = names.filter((n) => !existingSet.has(n.toLowerCase()));
+
+    if (newNames.length === 0) {
+      return res.status(200).send({
+        message: "All medicines already exist. Nothing to import.",
+        total: names.length,
+        inserted: 0,
+        skipped: names.length,
+      });
+    }
+
+    const rows: { name: string; serialNumber: string; lineId: string }[] = [];
+    for (const name of newNames) {
+      const serialNumber = await generateMedRef();
+      rows.push({ name, serialNumber, lineId: formData.lineId });
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      const inserted = await tx.medicine.createMany({
+        data: rows,
+        skipDuplicates: true,
+      });
+
+      // Audit log is best-effort — only when we know who performed it.
+      if (formData.userId) {
+        await tx.medicineLogs.create({
+          data: {
+            lineId: formData.lineId,
+            userId: formData.userId,
+            message: `BULK IMPORT: ${inserted.count} medicine/s added.`,
+            action: 1,
+          },
+        });
+      }
+
+      return inserted;
+    });
+
+    return res.status(200).send({
+      message: "Bulk upload completed",
+      total: names.length,
+      inserted: result.count,
+      skipped: names.length - result.count,
+    });
+  } catch (error) {
+    console.error("Bulk upload error:", error);
+    if (error instanceof ValidationError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
     }

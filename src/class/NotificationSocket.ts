@@ -57,6 +57,23 @@ export class NotificationSocket {
         socket.emit("notification:read-success", notificationId);
       });
 
+      // ── Application chat rooms ───────────────────────────────────
+      // Both the public applicant side and the HR side join the same
+      // room (`chat-<applicationId>`) so messages emitted by one are
+      // delivered instantly to the other without polling.
+      socket.on("chat:join", (applicationId: string) => {
+        if (!applicationId) return;
+        const room = `chat-${applicationId}`;
+        socket.join(room);
+        socket.emit("chat:joined", { applicationId });
+        // console.log(`Socket ${socket.id} joined ${room}`);
+      });
+
+      socket.on("chat:leave", (applicationId: string) => {
+        if (!applicationId) return;
+        socket.leave(`chat-${applicationId}`);
+      });
+
       // Test message handler
       socket.on("send_message", (data) => {
         console.log("Received test message:", data);
@@ -129,6 +146,80 @@ export class NotificationSocket {
 
     this.io.to("admin-room").emit("notification:new", fullNotification);
     console.log(`Notification sent to admins:`, fullNotification.title);
+  }
+
+  /**
+   * Push a freshly-created Notification row to a single user. Used for
+   * line-scoped user notifications (e.g. someone routes a document to
+   * you). The room is `user-<recipientId>` so it only reaches that one
+   * person regardless of how many tabs they have open.
+   */
+  public emitUserNotification(
+    recipientId: string,
+    notification: {
+      id: string;
+      title: string;
+      content: string;
+      path?: string | null;
+      createdAt: string;
+      isRead?: boolean;
+    },
+  ) {
+    if (!recipientId) return;
+    this.io
+      .to(`user-${recipientId}`)
+      .emit("notification:user-new", notification);
+  }
+
+  /**
+   * Push a freshly-created MedicineNotification to every user listening
+   * on this line. Scopes the broadcast so people in other municipalities /
+   * lines don't see it. Each row of MedicineNotification has its own
+   * recipient `userId`; we also fan it out to the per-user room so the
+   * specific recipient can update their badge without subscribing to the
+   * whole line.
+   */
+  public emitMedicineNotification(
+    lineId: string,
+    notification: {
+      id: string;
+      userId: string;
+      title: string;
+      message: string;
+      lineId: string;
+      path?: string | null;
+      timestamp: string;
+      type?: number;
+      view?: number;
+    },
+  ) {
+    if (!lineId) return;
+    this.io.to(`line-${lineId}`).emit("medicine-notification:new", notification);
+    if (notification.userId) {
+      this.io
+        .to(`user-${notification.userId}`)
+        .emit("medicine-notification:new", notification);
+    }
+  }
+
+  /**
+   * Push a new chat message to every socket joined to this application's
+   * chat room. The payload mirrors the ApplicationConversation row shape
+   * so the client can append it directly to the conversation cache.
+   */
+  public emitChatMessage(
+    applicationId: string,
+    message: {
+      id: string;
+      messageContent: string;
+      fromHr: boolean;
+      timestamp: string;
+      submittedApplicationId: string;
+      hrAdmin?: { id: string; firstName?: string; lastName?: string } | null;
+    },
+  ) {
+    if (!applicationId) return;
+    this.io.to(`chat-${applicationId}`).emit("chat:new-message", message);
   }
 
   // Method to broadcast to all connected users

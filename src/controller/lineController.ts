@@ -7,6 +7,7 @@ import { getAreaData } from "../middleware/handler";
 import argon from "argon2";
 import { EncryptionService } from "../service/encryption";
 import { tempURL } from "../service/url";
+import { createUserNotification } from "../service/notificationEvents";
 import cloudinary from "../class/Cloundinary";
 import fs from "fs";
 import path from "path";
@@ -156,57 +157,56 @@ export const createLine = async (req: FastifyRequest, res: FastifyReply) => {
         },
       });
 
-      const position = await tx.position.create({
+      // 1. Position (no nested unitPositions yet so we get the id back).
+      //    The Position is also tied to the highest salary grade we
+      //    just provisioned so the HRMO inherits an SG by default.
+      const hrmoPosition = await tx.position.create({
         data: {
           name: "Human Resources Management Officer",
           departmentId: department.id,
           lineId: newLine.id,
-          unitPositions: {
-            create: {
-              departmentId: department.id,
-              lineId: newLine.id,
-              fixToUnit: true,
-              slot: {
-                create: {
-                  occupied: true,
-                },
-              },
-            },
-          },
+          salaryGradeId: sg[sg.length - 1]?.id ?? null,
         },
-        include: {
-          unitPositions: {
-            where: {
-              departmentId: department.id,
-            },
-            select: {
-              id: true,
-              slot: {
-                where: {
-                  occupied: true,
-                  userId: null,
-                },
-              },
-            },
-          },
+      });
+
+      // 2. UnitPosition for the HR dept.
+      const hrmoUnitPosition = await tx.unitPosition.create({
+        data: {
+          departmentId: department.id,
+          lineId: newLine.id,
+          positionId: hrmoPosition.id,
+          fixToUnit: true,
+        },
+      });
+
+      // 3. Slot — explicitly linked to the Position + the highest SG,
+      //    and starts VACANT (occupied: false). The previous version
+      //    created the slot with occupied: true and a null positionId,
+      //    which left the User row position-less after registration.
+      const hrmoSlot = await tx.positionSlot.create({
+        data: {
+          unitPositionId: hrmoUnitPosition.id,
+          positionId: hrmoPosition.id,
+          salaryGradeId: sg[sg.length - 1]?.id ?? null,
+          occupied: false,
         },
       });
 
       const link = await tx.lineInvitation.create({
         data: {
           lineId: newLine.id,
-          positionSlotId: position.unitPositions[0].slot[0].id,
+          positionSlotId: hrmoSlot.id,
           email: body.email,
-          unitPositionId: position.unitPositions[0].id,
+          unitPositionId: hrmoUnitPosition.id,
         },
       });
 
       return {
         newLine,
-        position,
-        sgId: sg[0].id,
+        position: hrmoPosition,
+        sgId: sg[sg.length - 1]?.id ?? sg[0].id,
         invitationId: link.id,
-        unitPosId: position.unitPositions[0].slot[0].id,
+        unitPosId: hrmoSlot.id,
       };
     });
 
@@ -458,6 +458,13 @@ export const registerLine = async (req: FastifyRequest, res: FastifyReply) => {
           unitPosition: {
             select: {
               departmentId: true,
+              positionId: true,
+              position: {
+                select: {
+                  id: true,
+                  salaryGradeId: true,
+                },
+              },
             },
           },
         },
@@ -484,6 +491,35 @@ export const registerLine = async (req: FastifyRequest, res: FastifyReply) => {
           message: "Username already exist.",
         };
       }
+
+      // Resolve canonical position / department / salary grade.
+      // `PositionSlot.positionId` is optional in the schema and is NULL
+      // on slots minted by createLine (which only sets `occupied` + the
+      // unitPosition link). The canonical ids live on the parent
+      // UnitPosition + Position. Without these fallbacks the HRMO User
+      // is written with positionId: null → "No position" everywhere and
+      // is invisible to any UI joining through Position.
+      const effectivePositionId =
+        slot.positionId ?? slot.unitPosition?.positionId ?? null;
+      const effectiveDepartmentId =
+        slot.unitPosition?.departmentId ?? null;
+      const effectiveSalaryGradeId =
+        body.sgId ??
+        slot.salaryGradeId ??
+        slot.unitPosition?.position?.salaryGradeId ??
+        null;
+
+      if (!effectivePositionId) {
+        throw new ValidationError(
+          "Slot has no resolvable position — check that the UnitPosition references a Position.",
+        );
+      }
+      if (!effectiveDepartmentId) {
+        throw new ValidationError(
+          "Slot has no resolvable department — check that the UnitPosition references a Department.",
+        );
+      }
+
       const hashed = await argon.hash(body.password);
       const account = await tx.account.create({
         data: {
@@ -502,8 +538,11 @@ export const registerLine = async (req: FastifyRequest, res: FastifyReply) => {
           email: application.email,
           emailIv: application.emailIv,
           lineId: body.lineId,
-          positionId: slot.positionId,
-          departmentId: slot.unitPosition?.departmentId,
+          positionId: effectivePositionId,
+          departmentId: effectiveDepartmentId,
+          ...(effectiveSalaryGradeId
+            ? { salaryGradeId: effectiveSalaryGradeId }
+            : {}),
         },
       });
       await tx.submittedApplication.update({
@@ -520,7 +559,10 @@ export const registerLine = async (req: FastifyRequest, res: FastifyReply) => {
         },
         data: {
           userId: user.id,
-          salaryGradeId: body.sgId,
+          // Backfill positionId on the slot itself so future reads don't
+          // need to traverse unitPosition.
+          positionId: effectivePositionId,
+          salaryGradeId: effectiveSalaryGradeId ?? body.sgId,
           occupied: true,
         },
       });
@@ -544,22 +586,25 @@ export const registerLine = async (req: FastifyRequest, res: FastifyReply) => {
         },
       });
 
-      await tx.notification.create({
-        data: {
-          recipientId: user.id,
-          title: "Module Access Granted",
-          content: "Module: Human resources",
-          senderId: user.id,
-        },
+      await createUserNotification(tx, {
+        recipientId: user.id,
+        title: "Module Access Granted",
+        content: "Module: Human resources",
+        senderId: user.id,
       });
 
-      await tx.notification.create({
-        data: {
-          recipientId: user.id,
-          title: "Welcome to the System!",
-          content: `Welcome ${body.firstname} ${body.lastname}! You have been successfully registered as the HRMO Administrator. Your username is: ${body.username}. You now have full access to the Human Resources module.`,
-          senderId: user.id,
-        },
+      // Name lives on the SubmittedApplication — the register body
+      // doesn't carry firstname/lastname (which is why the old message
+      // rendered "Welcome undefined undefined").
+      const fullName = [application.firstname, application.lastname]
+        .filter(Boolean)
+        .join(" ")
+        .trim();
+      await createUserNotification(tx, {
+        recipientId: user.id,
+        title: "Welcome to the System!",
+        content: `Welcome ${fullName || body.username}! You have been successfully registered as the HRMO Administrator. Your username is: ${body.username}. You now have full access to the Human Resources module.`,
+        senderId: null,
       });
 
       return {
@@ -1183,5 +1228,58 @@ export const userDataRegister = async (
       message: "Failed to submit application",
       error: err instanceof Error ? err.message : "Unknown error",
     });
+  }
+};
+
+export const lineData = async (req: FastifyRequest, res: FastifyReply) => {
+  const params = req.query as { id: string };
+
+  if (!params.id) {
+    throw new ValidationError("INVALID REQUIRED ID");
+  }
+  try {
+    const response = await prisma.line.findUnique({
+      where: {
+        id: params.id,
+      },
+      include: {
+        municipal: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+        province: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+        barangay: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+        region: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+      },
+    });
+
+    if (!response) {
+      throw new NotFoundError("LINE NOT FOUND");
+    }
+
+    return res.code(200).send(response);
+  } catch (error) {
+    if (error instanceof NotFoundError) throw error;
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
   }
 };
