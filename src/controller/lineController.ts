@@ -241,7 +241,7 @@ export const createLine = async (req: FastifyRequest, res: FastifyReply) => {
     return res.code(200).send({
       message: "Line created successfully",
       error: 0,
-      link: `${fronURL}line/register/user/${response.newLine.id}/${response.invitationId}/${response.unitPosId}/${response.sgId}`,
+      link: `${fronURL}/line/register/user/${response.newLine.id}/${response.invitationId}/${response.unitPosId}/${response.sgId}`,
     });
   } catch (error) {
     console.log(error);

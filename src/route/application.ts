@@ -28,8 +28,13 @@ import {
   applicationDeleteMany,
 } from "../controller/applicationController";
 
+import { exportPdsExcel } from "../controller/pdsExportController";
+
 export const application = (fastify: FastifyInstance) => {
   fastify.post("/submit-application", () => {});
+  // Download a filled CS Form 212 (.xlsx). `?id=<applicationId>` for an
+  // application, or `?userId=<userId>` for an onboarded employee.
+  fastify.get("/application/pds/export", exportPdsExcel);
   fastify.post("/application/post", { preHandler: authenticated }, postJob);
   fastify.patch(
     "/application/post/update/status",

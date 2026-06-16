@@ -733,6 +733,10 @@ model SubmittedApplication {
   otherInfo               Json[]
   references              Json[]
   govId                   Json
+  // Page-4 disclosure questionnaire (CS Form 212 Q34–40): consanguinity,
+  // admin/criminal/conviction, separation from service, elections,
+  // immigrant status, IP/PWD/solo-parent — each a Y/N + details.
+  disclosures             Json?
   status                  Int                       @default(0)
   lineId                  String
   applicationProfilePicId String?                   @unique
@@ -1911,6 +1915,7 @@ model Signature {
   qrEnabled            Boolean             @default(false)
   roomAuthorizedUser   RoomAuthorizedUser? @relation(fields: [roomAuthorizedUserId], references: [id])
   user                 User                @relation(fields: [userId], references: [id])
+  arrangements         SignatoryArrangement[]
 }
 
 model SignatoryArrangement {
@@ -1927,8 +1932,12 @@ model SignatoryArrangement {
   signedLat            Float?
   signedLng            Float?
   signedAccuracy       Float?
+  // The signature the signer chose at sign time. Null = use the signer's
+  // active signature at download time (legacy behavior).
+  signatureId          String?
   signatureQueueRoom   SignatureQueueRoom? @relation(fields: [signatureQueueRoomId], references: [id], onDelete: Cascade)
   user                 User?               @relation("SignatoryArrangementUser", fields: [userId], references: [id])
+  chosenSignature      Signature?          @relation(fields: [signatureId], references: [id])
   sign                 SignatureCoor[]
 }
 

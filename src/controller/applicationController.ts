@@ -981,8 +981,23 @@ export const submitApplication = async (
         experience: parseArrayField("experience", []),
         tags: parseArrayField("tags", []),
 
+        // CS Form 212 sections VI–VIII + references (stored as plain JSON,
+        // same as the other structured sections above).
+        voluntaryWork: parseArrayField("voluntaryWork", []),
+        learningDev: parseArrayField("learningDev", []),
+        otherInfo: parseArrayField("otherInfo", []),
+        references: parseArrayField("references", []),
+
+        // Page-4 disclosure questionnaire (Q34–40).
+        disclosures: parseObjectField("disclosures", {}),
+
         // gov ID - use object parser
-        govId: parseObjectField("govId", { type: "", number: "" }),
+        govId: parseObjectField("govId", {
+          type: "",
+          number: "",
+          dateIssuance: "",
+          placeIssuance: "",
+        }),
 
         // job
         municipalId: formData.municipalId,
@@ -1089,8 +1104,10 @@ export const submitApplication = async (
         gender: formData.gender || "male",
         filipino: clean.citizenship === "filipino",
         dualCitizen: clean.citizenship === "dual",
-        byBirth: false,
-        byNatural: false,
+        byBirth: String(clean.dualCitizen || "").toLowerCase().includes("birth"),
+        byNatural: String(clean.dualCitizen || "")
+          .toLowerCase()
+          .includes("atural"),
 
         // REQUIRED → NO ENCRYPTION
         dualCitizenHalf: clean.country || "N/A",
@@ -1151,6 +1168,13 @@ export const submitApplication = async (
         // CIVIL SERVICE AND EXPERIENCE - These are Json[] fields (pass arrays directly)
         civilService: clean.civiService,
         experience: clean.experience,
+
+        // CS Form 212 sections VI–VIII + references + disclosures (Json/Json[])
+        voluntaryWork: clean.voluntaryWork,
+        learningDev: clean.learningDev,
+        otherInfo: clean.otherInfo,
+        references: clean.references,
+        disclosures: clean.disclosures,
 
         // GOV ID - This is a Json field (pass object directly)
         govId: clean.govId,
@@ -1223,7 +1247,7 @@ Dear ${formData.firstName} ${formData.lastName},
           
           We will inform you of any further instructions regarding the next steps in the hiring process once your application has been reviewed.
           
-          You can check the status of your application by clicking this link: ${officialUrl}public/application/${application.id}
+          You can check the status of your application by clicking this link: ${officialUrl}/public/application/${application.id}
           
           Sincerely,
           The HR Team
@@ -1642,6 +1666,12 @@ export const applicationData = async (
       ApplicationSkillTags: response.ApplicationSkillTags,
       experience: response.experience,
       civilService: response.civilService,
+      // CS Form 212 sections VI–VIII + references + disclosures (plain JSON).
+      voluntaryWork: response.voluntaryWork,
+      learningDev: response.learningDev,
+      otherInfo: response.otherInfo,
+      references: response.references,
+      disclosures: response.disclosures,
       elementary: response.elementary,
       secondary: response.secondary,
       vocational: response.vocational,
@@ -2322,7 +2352,7 @@ export const concludeApplication = async (
 
       if (!email) throw new ValidationError("FAILED TO PARSE EMAIL");
 
-      const link = `${officialUrl}public/${application.lineId}/application/${application.id}`;
+      const link = `${officialUrl}/public/${application.lineId}/application/${application.id}`;
 
       await tx.submittedApplication.update({
         where: {

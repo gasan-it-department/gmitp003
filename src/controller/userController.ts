@@ -198,6 +198,30 @@ export const getUserInfo = async (req: FastifyRequest, res: FastifyReply) => {
             file_url: true,
           },
         },
+        // The PDS data lives on the application the employee registered with.
+        // Select only plain + structured (JSON) fields — never the encrypted
+        // PII ciphertext columns.
+        submittedApplications: {
+          select: {
+            firstname: true,
+            middleName: true,
+            lastname: true,
+            experience: true,
+            civilService: true,
+            elementary: true,
+            secondary: true,
+            vocational: true,
+            college: true,
+            graduateCollege: true,
+            children: true,
+            voluntaryWork: true,
+            learningDev: true,
+            otherInfo: true,
+            references: true,
+            govId: true,
+            disclosures: true,
+          },
+        },
       },
     });
     if (!user) throw new NotFoundError("USER_NOT_FOUND");

@@ -154,7 +154,7 @@ export const sendResetPasswordLink = async (
       },
     });
     // Create reset link
-    const resetLink = `${frontEnd}public/${line.id}/reset-password/${link.id}/${account.id}`;
+    const resetLink = `${frontEnd}/public/${line.id}/reset-password/${link.id}/${account.id}`;
 
     // Get user name
     const userName = account.username;

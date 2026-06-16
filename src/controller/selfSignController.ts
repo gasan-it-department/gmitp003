@@ -221,6 +221,8 @@ export const selfSignAll = async (req: FastifyRequest, res: FastifyReply) => {
   const body = req.body as {
     arrangementId: string;
     userId: string;
+    // Optional explicit signature choice; omitted/null = active signature.
+    signatureId?: string | null;
     geo?: { lat: number; lng: number; accuracy?: number | null } | null;
   };
   if (!body.arrangementId || !body.userId) {
@@ -246,15 +248,29 @@ export const selfSignAll = async (req: FastifyRequest, res: FastifyReply) => {
         );
       }
 
-      // Confirm the user has an active signature on file.
-      const sig = await tx.signature.findFirst({
-        where: { userId: body.userId, active: true },
-        select: { id: true },
-      });
-      if (!sig) {
-        throw new ValidationError(
-          "You don't have an active signature on file. Upload and activate one in Signature Management first.",
-        );
+      // Resolve which signature stamps this document. Explicit choice
+      // wins (must be the caller's own); otherwise the active one.
+      let sig: { id: string } | null = null;
+      if (body.signatureId) {
+        sig = await tx.signature.findFirst({
+          where: { id: body.signatureId, userId: body.userId },
+          select: { id: true },
+        });
+        if (!sig) {
+          throw new ValidationError(
+            "The selected signature was not found in your account.",
+          );
+        }
+      } else {
+        sig = await tx.signature.findFirst({
+          where: { userId: body.userId, active: true },
+          select: { id: true },
+        });
+        if (!sig) {
+          throw new ValidationError(
+            "You don't have an active signature on file. Upload and activate one in Signature Management first.",
+          );
+        }
       }
 
       const now = new Date();
@@ -263,6 +279,7 @@ export const selfSignAll = async (req: FastifyRequest, res: FastifyReply) => {
         data: {
           status: 1,
           signedAt: now,
+          signatureId: sig.id,
           signedLat: body.geo?.lat ?? null,
           signedLng: body.geo?.lng ?? null,
           signedAccuracy: body.geo?.accuracy ?? null,
@@ -273,6 +290,78 @@ export const selfSignAll = async (req: FastifyRequest, res: FastifyReply) => {
     });
 
     return res.code(200).send({ message: "OK", ...result });
+  } catch (error) {
+    if (error instanceof NotFoundError) throw error;
+    if (error instanceof ValidationError) throw error;
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError(error.message, 500, error.code);
+    }
+    throw error;
+  }
+};
+
+// ─── Undo / revert a signature ─────────────────────────────────────────
+// Signing only flips the arrangement to status=1 (the PDF is stamped at
+// download time), so reverting is safe: status back to 0 and the signed
+// metadata cleared. Blocked once the doc is archived — the archive entry
+// asserts "this doc is signed", so it must be removed first.
+export const selfSignUnsign = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as { arrangementId: string; userId: string };
+  if (!body.arrangementId || !body.userId) {
+    throw new ValidationError("INVALID REQUIRED FIELDS");
+  }
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      const arr = await tx.signatoryArrangement.findUnique({
+        where: { id: body.arrangementId },
+        select: {
+          id: true,
+          userId: true,
+          status: true,
+          sign: { select: { documentPage: { select: { documentId: true } } } },
+        },
+      });
+      if (!arr) throw new NotFoundError("Arrangement not found");
+      if (arr.userId !== body.userId) {
+        throw new ValidationError("Not your arrangement.");
+      }
+      if (arr.status !== 1) {
+        throw new ValidationError("Document is not signed — nothing to undo.");
+      }
+
+      const documentId = arr.sign
+        .map((c) => c.documentPage?.documentId)
+        .find((id): id is string => !!id);
+      if (documentId) {
+        const archived = await tx.archiveDocument.findFirst({
+          where: { documentId, status: { not: 0 } },
+          select: { id: true },
+        });
+        if (archived) {
+          throw new ValidationError(
+            "This document is already archived. Remove it from the archive before undoing the signature.",
+          );
+        }
+      }
+
+      await tx.signatoryArrangement.update({
+        where: { id: arr.id },
+        data: {
+          status: 0,
+          signedAt: null,
+          signatureId: null,
+          signedLat: null,
+          signedLng: null,
+          signedAccuracy: null,
+        },
+      });
+    });
+
+    return res.code(200).send({ message: "OK" });
   } catch (error) {
     if (error instanceof NotFoundError) throw error;
     if (error instanceof ValidationError) throw error;
@@ -414,11 +503,12 @@ export const selfSignDetail = async (
       id: string;
       status: number;
       signedAt: Date | null;
+      signatureId?: string | null;
     } | null = null;
     if (arrIds.length > 0) {
       const row = await prisma.signatoryArrangement.findFirst({
         where: { id: { in: arrIds }, userId: params.userId },
-        select: { id: true, status: true, signedAt: true },
+        select: { id: true, status: true, signedAt: true, signatureId: true },
       });
       arrangement = row ?? null;
     }
@@ -428,19 +518,29 @@ export const selfSignDetail = async (
       arrangement = await prisma.signatoryArrangement.findFirst({
         where: { userId: params.userId, signatureQueueRoomId: null },
         orderBy: { timestamp: "desc" },
-        select: { id: true, status: true, signedAt: true },
+        select: { id: true, status: true, signedAt: true, signatureId: true },
       });
     }
 
     // Always return the caller's signature image as a data URL so the
     // editor can render the stamp inside signed boxes without an extra
-    // round-trip. Active preferred, falls back to most recent.
+    // round-trip. The signature chosen at sign time wins; otherwise
+    // active preferred, falling back to most recent.
     let signatureDataUrl: string | null = null;
-    const sigRow = await prisma.signature.findFirst({
-      where: { userId: params.userId },
-      orderBy: [{ active: "desc" }, { timestamp: "desc" }],
-      select: { signature: true },
-    });
+    let sigRow: { signature: Uint8Array | null } | null = null;
+    if (arrangement?.signatureId) {
+      sigRow = await prisma.signature.findFirst({
+        where: { id: arrangement.signatureId, userId: params.userId },
+        select: { signature: true },
+      });
+    }
+    if (!sigRow) {
+      sigRow = await prisma.signature.findFirst({
+        where: { userId: params.userId },
+        orderBy: [{ active: "desc" }, { timestamp: "desc" }],
+        select: { signature: true },
+      });
+    }
     if (sigRow?.signature) {
       const buf = Buffer.from(sigRow.signature as Uint8Array);
       const text = buf.toString("utf8").trim();

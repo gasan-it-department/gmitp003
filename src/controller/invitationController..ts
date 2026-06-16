@@ -376,18 +376,20 @@ export const submitToInvitationLink = async (
       }
     }
 
-    const jobPost = await prisma.jobPost.findUnique({
-      where: {
-        id: formData.jobPostId,
-      },
+    // Invitation-link registration is LINE-level (no specific job post /
+    // position). Validate the invitation and use its line.
+    const invitation = await prisma.invitationLink.findUnique({
+      where: { id: formData.invitationId },
       select: {
         id: true,
-        unitPositionId: true,
+        lineId: true,
+        status: true,
+        line: { select: { id: true, name: true } },
       },
     });
 
-    if (!jobPost) {
-      throw new NotFoundError("JOB POST NOT FOUND");
+    if (!invitation) {
+      throw new NotFoundError("INVITATION NOT FOUND");
     }
 
     const tmpDir = path.join(process.cwd(), "tmp_uploads");
@@ -563,8 +565,20 @@ export const submitToInvitationLink = async (
         experience: parseArrayField("experience", []),
         tags: parseArrayField("tags", []),
 
+        // CS Form 212 sections VI–VIII + references + disclosures.
+        voluntaryWork: parseArrayField("voluntaryWork", []),
+        learningDev: parseArrayField("learningDev", []),
+        otherInfo: parseArrayField("otherInfo", []),
+        references: parseArrayField("references", []),
+        disclosures: parseObjectField("disclosures", {}),
+
         // gov ID - use object parser
-        govId: parseObjectField("govId", { type: "", number: "" }),
+        govId: parseObjectField("govId", {
+          type: "",
+          number: "",
+          dateIssuance: "",
+          placeIssuance: "",
+        }),
 
         // job
         municipalId: formData.municipalId,
@@ -631,18 +645,12 @@ export const submitToInvitationLink = async (
     await Promise.all(encPromises);
 
     const result = await prisma.$transaction(async (tx) => {
-      const municipal = await tx.municipal.findUnique({
-        where: { id: formData.municipalId },
-      });
-
-      const position = await tx.position.findUnique({
-        where: { id: formData.positionId },
-        include: { line: true },
-      });
-
-      if (!municipal || !position) {
-        throw new ValidationError("INVALID REQUIRED DATA");
-      }
+      // Municipal is only used for the confirmation email greeting — it's
+      // optional. A line-level invitation only needs the invitation's line.
+      const municipal = formData.municipalId
+        ? await tx.municipal.findUnique({ where: { id: formData.municipalId } })
+        : null;
+      const orgName = municipal?.name ?? invitation.line?.name ?? "the LGU";
 
       // Handle missing parent age fields safely
       const fatherAge = parseInt(formData["father[age]"] ?? "0") || 0;
@@ -671,8 +679,10 @@ export const submitToInvitationLink = async (
         gender: formData.gender || "male",
         filipino: clean.citizenship === "filipino",
         dualCitizen: clean.citizenship === "dual",
-        byBirth: false,
-        byNatural: false,
+        byBirth: String(clean.dualCitizen || "").toLowerCase().includes("birth"),
+        byNatural: String(clean.dualCitizen || "")
+          .toLowerCase()
+          .includes("atural"),
 
         // REQUIRED → NO ENCRYPTION
         dualCitizenHalf: clean.country || "N/A",
@@ -734,6 +744,13 @@ export const submitToInvitationLink = async (
         civilService: clean.civiService,
         experience: clean.experience,
 
+        // CS Form 212 sections VI–VIII + references + disclosures (Json/Json[])
+        voluntaryWork: clean.voluntaryWork,
+        learningDev: clean.learningDev,
+        otherInfo: clean.otherInfo,
+        references: clean.references,
+        disclosures: clean.disclosures,
+
         // GOV ID - This is a Json field (pass object directly)
         govId: clean.govId,
         umidNo: encrypted.umidNo?.encryptedData || "N/A",
@@ -749,10 +766,10 @@ export const submitToInvitationLink = async (
         agencyNo: encrypted.agencyNo?.encryptedData || "N/A",
         agencyNoIv: encrypted.agencyNo?.iv || null,
 
-        // job linking
-        lineId: position.line?.id as string,
-        positionId: formData.positionId,
-        unitPositionId: jobPost.unitPositionId,
+        // job linking — invitation registration is line-level (no position)
+        lineId: invitation.lineId,
+        positionId: null,
+        unitPositionId: null,
         // REQUIRED Date
         batch: new Date(),
       };
@@ -801,17 +818,17 @@ export const submitToInvitationLink = async (
           `
 Dear ${formData.firstName} ${formData.lastName},
           
-          This is to confirm that we have successfully received your application for the position of ${position.name} at ${municipal.name}.
-          
+          This is to confirm that we have successfully received your application at ${invitation.line?.name ?? orgName}.
+
           We will inform you of any further instructions regarding the next steps in the hiring process once your application has been reviewed.
           
-          You can check the status of your application by clicking this link: ${officialUrl}public/application/${application.id}
+          You can check the status of your application by clicking this link: ${officialUrl}/public/application/${application.id}
           
           Sincerely,
           The HR Team
-          ${municipal.name}
+          ${orgName}
           `,
-          `${municipal.name} HR Team <no-reply@${municipal.name}.gov.ph>`,
+          `${orgName} HR Team <no-reply@lgu.gov.ph>`,
         );
 
         // console.log({ sebtEmail });
@@ -825,13 +842,13 @@ Dear ${formData.firstName} ${formData.lastName},
             number: contact,
             message: `Dear ${formData.firstName} ${formData.lastName},
 
-This is to confirm that we have successfully received your application for the position of ${position.name} at ${municipal.name}.
+This is to confirm that we have successfully received your application at ${invitation.line?.name ?? orgName}.
 
 We will inform you of any further instructions regarding the next steps in the hiring process once your application has been reviewed.
 
 Sincerely,
 The HR Team
-${municipal.name}`,
+${orgName}`,
             apikey: semaphoreKey,
           },
           {

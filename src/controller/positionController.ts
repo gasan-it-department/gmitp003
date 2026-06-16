@@ -773,7 +773,7 @@ for the position of ${result.position.position.name}.
 Please click the link below to proceed with your registration. This
 invitation expires on ${result.link.expiresAt?.toLocaleString()}.
 
-${frontEnd}position/register/${result.link.id}
+${frontEnd}/position/register/${result.link.id}
 ${personalMsg}
 Best regards,
 Human Resource Management Office (HRMO)
@@ -1020,7 +1020,7 @@ ${result.position.position.name}.
 Please click the link below to proceed with your registration. This
 invitation expires on ${result.link.expiresAt?.toLocaleString()}.
 
-${frontEnd}position/register/${result.link.id}
+${frontEnd}/position/register/${result.link.id}
 ${personalMsg}
 Best regards,
 Human Resource Management Office (HRMO)

@@ -63,6 +63,7 @@ import {
   selfSignUpload,
   selfSignSavePlacements,
   selfSignAll,
+  selfSignUnsign,
   selfSignList,
   selfSignDetail,
   selfSignArchive,
@@ -320,6 +321,11 @@ export const document = (fastify: FastifyInstance) => {
     "/document/self-sign/sign",
     { preHandler: authenticated },
     selfSignAll,
+  );
+  fastify.post(
+    "/document/self-sign/unsign",
+    { preHandler: authenticated },
+    selfSignUnsign,
   );
   fastify.get(
     "/document/self-sign/list",

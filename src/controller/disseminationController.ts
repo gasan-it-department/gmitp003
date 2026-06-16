@@ -1935,6 +1935,7 @@ export const downloadSignedDocument = async (
                     signedAt: true,
                     userId: true,
                     index: true,
+                    signatureId: true,
                   },
                 },
               },
@@ -1957,6 +1958,8 @@ export const downloadSignedDocument = async (
       signedAt: Date | null;
       slot: number;
       arrangementId: string;
+      // Explicit signature picked at sign time; null = signer's active.
+      signatureId: string | null;
     };
     const stamps: StampPlacement[] = [];
     for (const p of doc.pages) {
@@ -1973,6 +1976,7 @@ export const downloadSignedDocument = async (
           signedAt: arr.signedAt,
           slot: arr.index + 1,
           arrangementId: arr.id,
+          signatureId: arr.signatureId ?? null,
         });
       }
     }
@@ -1994,31 +1998,52 @@ export const downloadSignedDocument = async (
           },
         })
       : [];
+    // Raw signature bytes may be a data URL, bare base64, or binary —
+    // normalize to image bytes for pdf-lib.
+    const decodeSigBytes = (input: Uint8Array): Buffer => {
+      const raw = Buffer.from(input);
+      const text = raw.toString("utf8").trim();
+      if (text.startsWith("data:image/")) {
+        const comma = text.indexOf(",");
+        return comma > 0 ? Buffer.from(text.slice(comma + 1), "base64") : raw;
+      }
+      if (
+        /^[A-Za-z0-9+/=\r\n]+$/.test(text.slice(0, 200)) &&
+        !looksLikeBinary(raw)
+      ) {
+        return Buffer.from(text.replace(/\s+/g, ""), "base64");
+      }
+      return raw;
+    };
+
     const sigByUser = new Map<string, Buffer>();
     const sigQrByUser = new Map<string, boolean>();
     const sigIdByUser = new Map<string, string>(); // for logging
     for (const r of sigRows) {
       if (!r.userId || !r.signature) continue;
       if (sigByUser.has(r.userId)) continue;
-      const raw = Buffer.from(r.signature as Uint8Array);
-      const text = raw.toString("utf8").trim();
-      if (text.startsWith("data:image/")) {
-        const comma = text.indexOf(",");
-        if (comma > 0) {
-          sigByUser.set(r.userId, Buffer.from(text.slice(comma + 1), "base64"));
-        } else {
-          sigByUser.set(r.userId, raw);
-        }
-      } else if (
-        /^[A-Za-z0-9+/=\r\n]+$/.test(text.slice(0, 200)) &&
-        !looksLikeBinary(raw)
-      ) {
-        sigByUser.set(r.userId, Buffer.from(text.replace(/\s+/g, ""), "base64"));
-      } else {
-        sigByUser.set(r.userId, raw);
-      }
+      sigByUser.set(r.userId, decodeSigBytes(r.signature as Uint8Array));
       sigQrByUser.set(r.userId, !!r.qrEnabled);
       sigIdByUser.set(r.userId, r.id);
+    }
+
+    // Signatures explicitly chosen at sign time (self-sign dropdown).
+    // These override the per-user active pick for their arrangement.
+    const chosenIds = Array.from(
+      new Set(stamps.map((s) => s.signatureId).filter((x): x is string => !!x)),
+    );
+    const sigById = new Map<string, Buffer>();
+    const sigQrById = new Map<string, boolean>();
+    if (chosenIds.length > 0) {
+      const chosenRows = await prisma.signature.findMany({
+        where: { id: { in: chosenIds } },
+        select: { id: true, signature: true, qrEnabled: true },
+      });
+      for (const r of chosenRows) {
+        if (!r.signature) continue;
+        sigById.set(r.id, decodeSigBytes(r.signature as Uint8Array));
+        sigQrById.set(r.id, !!r.qrEnabled);
+      }
     }
     console.log(
       "[signedDoc] picked sig per user:",
@@ -2035,9 +2060,15 @@ export const downloadSignedDocument = async (
     const dateFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
     const embeddedByUser = new Map<string, any>();
-    const embedSig = async (userId: string) => {
-      if (embeddedByUser.has(userId)) return embeddedByUser.get(userId);
-      const buf = sigByUser.get(userId);
+    // Key the embed cache by the actual source: explicit signature id when
+    // chosen (and found), otherwise the signer's user id (active pick).
+    const embedSig = async (s: StampPlacement) => {
+      const useChosen = !!(s.signatureId && sigById.has(s.signatureId));
+      const cacheKey = useChosen ? `sig:${s.signatureId}` : `user:${s.userId}`;
+      if (embeddedByUser.has(cacheKey)) return embeddedByUser.get(cacheKey);
+      const buf = useChosen
+        ? sigById.get(s.signatureId!)
+        : sigByUser.get(s.userId);
       if (!buf || buf.length === 0) return null;
       let img: any = null;
       try {
@@ -2058,9 +2089,9 @@ export const downloadSignedDocument = async (
           }
         }
       } catch (e) {
-        console.warn("[signedDoc] failed to embed signature for", userId, e);
+        console.warn("[signedDoc] failed to embed signature for", cacheKey, e);
       }
-      embeddedByUser.set(userId, img);
+      embeddedByUser.set(cacheKey, img);
       return img;
     };
 
@@ -2093,7 +2124,7 @@ export const downloadSignedDocument = async (
       const boxYTop = (s.yBp / 10000) * ph;
       const boxY = ph - boxYTop - boxH;
 
-      const sig = await embedSig(s.userId);
+      const sig = await embedSig(s);
       if (sig) {
         const ar = sig.width / sig.height;
         let drawW = boxW;
@@ -2137,7 +2168,11 @@ export const downloadSignedDocument = async (
       // Verification QR — opt-in per signature. Encodes a URL pointing
       // at the readable HTML verify page on this API. Scanning opens the
       // page directly in the user's browser; no app needed.
-      const qrOn = sigQrByUser.get(s.userId);
+      // QR flag follows the signature that was actually stamped.
+      const qrOn =
+        s.signatureId && sigQrById.has(s.signatureId)
+          ? sigQrById.get(s.signatureId)
+          : sigQrByUser.get(s.userId);
       console.log("[signedDoc] stamp", {
         userId: s.userId,
         page: s.page,
@@ -2164,12 +2199,17 @@ export const downloadSignedDocument = async (
           const qrImg = await embedQr(verifyUrl);
           // Smaller QR — caps at 28pt, scales down with tiny boxes.
           const qrSize = Math.max(18, Math.min(boxH, 28));
+          // The signature image is drawn vertically centered in its box,
+          // so center the QR on the same axis for the side placements —
+          // bottom-aligning it (y: boxY) made it sit visibly lower than
+          // the signature.
+          const qrCenteredY = boxY + (boxH - qrSize) / 2;
           // Place the QR FLUSH against the signature box (1pt gap).
           // Try right → below → left → above → page corner as fallbacks.
           const candidates = [
-            { x: boxX + boxW + 1, y: boxY },
+            { x: boxX + boxW + 1, y: qrCenteredY },
             { x: boxX, y: Math.max(2, boxY - qrSize - 1) },
-            { x: Math.max(2, boxX - qrSize - 1), y: boxY },
+            { x: Math.max(2, boxX - qrSize - 1), y: qrCenteredY },
             { x: boxX, y: Math.min(ph - qrSize - 2, boxY + boxH + 1) },
             { x: pw - qrSize - 4, y: ph - qrSize - 4 },
           ];
