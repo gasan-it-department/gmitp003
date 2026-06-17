@@ -983,6 +983,13 @@ export const userDataRegister = async (
         // gov ID - use object parser
         govId: parseObjectField("govId", { type: "", number: "" }),
 
+        // CS Form 212 sections VI–VIII, references, disclosures
+        voluntaryWork: parseArrayField("voluntaryWork", []),
+        learningDev: parseArrayField("learningDev", []),
+        otherInfo: parseArrayField("otherInfo", []),
+        references: parseArrayField("references", []),
+        disclosures: parseObjectField("disclosures", {}),
+
         // job
         municipalId: formData.municipalId,
         positionId: formData.positionId,
@@ -1142,6 +1149,13 @@ export const userDataRegister = async (
 
         // GOV ID - This is a Json field (pass object directly)
         govId: clean.govId,
+
+        // CS Form 212 sections VI–VIII, references, disclosures (Json/Json[])
+        voluntaryWork: clean.voluntaryWork,
+        learningDev: clean.learningDev,
+        otherInfo: clean.otherInfo,
+        references: clean.references,
+        disclosures: clean.disclosures,
         umidNo: encrypted.umidNo?.encryptedData || "N/A",
         umidNoIv: encrypted.umidNo?.iv || null,
         pagIbigNo: encrypted.pagIbigNo?.encryptedData || "N/A",

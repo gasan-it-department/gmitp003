@@ -2181,7 +2181,10 @@ export const sendPublicApplicationMessage = async (
         data: {
           message: encryptedMessage.encryptedData,
           messageIv: encryptedMessage.iv,
-          lineId: application.forPosition?.lineId as string,
+          // SubmittedApplication.lineId is always set (required); forPosition is
+          // null for public/job-post applicants, so don't depend on it.
+          lineId: (application.lineId ??
+            application.forPosition?.lineId) as string,
           title: "",
           fromHr: false,
           submittedApplicationId: body.applicationId,
