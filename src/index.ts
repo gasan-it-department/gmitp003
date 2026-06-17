@@ -80,6 +80,7 @@ const io = new Server(app.server, {
       "https://gasanmarinduque.xyz",
       "https://g671jwjj-5173.asse.devtunnels.ms",
       "https://lgu-portal.xyz",
+      "https://www.lgu-portal.xyz",
       "https://fastify-service-production.up.railway.app",
     ],
     methods: ["GET", "POST"],
@@ -112,6 +113,7 @@ app.register(cors, {
     "https://gasanmarinduque.xyz",
     "https://ckv55gfl-5173.asse.devtunnels.ms",
     "https://lgu-portal.xyz",
+    "https://www.lgu-portal.xyz",
     "https://fastify-service-production.up.railway.app",
   ], // Allow all origins
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH"], // Allowed HTTP methods
