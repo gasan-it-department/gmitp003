@@ -1788,9 +1788,12 @@ export const contactApplicant = async (
     }
 
     if (sendTo === "phoneNumber" || sendTo === "both") {
-      // Add SMS sending logic here if available
-      // communicationPromises.push(sendSMS(phoneNumber, message));
-      await semaphoreService.sendSingleSMS(phoneNumber, "TEst", "Gasan");
+      const formatted = phNumberFormat(phoneNumber ?? "");
+      if (formatted) {
+        communicationPromises.push(
+          semaphoreService.sendSingleSMS(formatted, message, "Gasan"),
+        );
+      }
     }
 
     await Promise.all(communicationPromises);
@@ -1903,46 +1906,63 @@ export const contactManyApplicants = async (
       }),
     );
 
-    const BATCH_SIZE = 10;
-    const communicationPromises: Promise<any>[] = [];
+    // ── Dispatch per the chosen channel(s), shaped to each sender ──────────
+    // Email: personalized per recipient, sent in small batches so we don't
+    //   overwhelm the SMTP relay; failures are tolerated (not all-or-nothing).
+    // SMS: Semaphore accepts a comma-joined list, so the whole transaction is
+    //   ONE bulk call (it can't personalize, so {{name}} is generic there).
+    const wantsEmail = sendTo === "email" || sendTo === "both";
+    const wantsSms = sendTo === "phoneNumber" || sendTo === "both";
 
-    for (let i = 0; i < applicantsWithDecryptedInfo.length; i += BATCH_SIZE) {
-      const batch = applicantsWithDecryptedInfo.slice(i, i + BATCH_SIZE);
-
-      const batchPromises = batch.map((applicant) => {
-        const individualPromises: Promise<any>[] = [];
-
-        if (sendTo === "email" || sendTo === "both") {
-          // Personalize message for each applicant
-          const personalizedMessage = message.replace(
-            /{{name}}/g,
-            applicant.name,
-          );
-          individualPromises.push(
-            sendEmail(subject, applicant.email, personalizedMessage, "HR Team"),
-          );
-        }
-
-        if (sendTo === "phoneNumber" || sendTo === "both") {
-          // Add SMS sending logic here if available
-          // individualPromises.push(sendSMS(applicant.phoneNumber, message));
-        }
-
-        // Log each contact attempt
-
-        return Promise.all(individualPromises);
-      });
-
-      communicationPromises.push(...batchPromises);
+    let emailSent = 0;
+    let emailFailed = 0;
+    if (wantsEmail) {
+      const targets = applicantsWithDecryptedInfo.filter((a) => a.email);
+      const EMAIL_BATCH = 20;
+      for (let i = 0; i < targets.length; i += EMAIL_BATCH) {
+        const results = await Promise.allSettled(
+          targets
+            .slice(i, i + EMAIL_BATCH)
+            .map((a) =>
+              sendEmail(
+                subject,
+                a.email,
+                message.replace(/{{name}}/g, a.name),
+                "HR Team",
+              ),
+            ),
+        );
+        emailSent += results.filter((r) => r.status === "fulfilled").length;
+        emailFailed += results.filter((r) => r.status === "rejected").length;
+      }
     }
 
-    await Promise.all(communicationPromises);
+    let smsSent = 0;
+    let smsOk = true;
+    if (wantsSms) {
+      const numbers = applicantsWithDecryptedInfo
+        .map((a) => phNumberFormat(a.phoneNumber ?? ""))
+        .filter((n) => n.length > 0);
+      if (numbers.length) {
+        const smsResult = await semaphoreService.sendBulkSMS(
+          numbers,
+          message.replace(/{{name}}/g, "Applicant"),
+          "Gasan",
+        );
+        smsOk = smsResult.success;
+        smsSent = smsOk ? numbers.length : 0;
+      }
+    }
 
     return res.code(200).send({
       success: true,
-      message: `Messages sent successfully to ${applicantsWithDecryptedInfo.length} applicants`,
+      message: `Contacted ${applicantsWithDecryptedInfo.length} applicant(s)`,
       recipients: applicantsWithDecryptedInfo.length,
       sentTo: sendTo,
+      emailSent,
+      emailFailed,
+      smsSent,
+      smsOk,
     });
   } catch (error) {
     if (error instanceof NotFoundError || error instanceof ValidationError) {
