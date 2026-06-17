@@ -819,6 +819,10 @@ model FillPositionInvitation {
   lineId                 String
   positionSlotId         String?
   step                   Int                   @default(0)
+  /// Provisional hiring: employment type (e.g. "Contract"|"Casual"|"Job Order"|
+  /// "Temporary") and contract end date. Null for regular (plantilla) invites.
+  empType                String?
+  term                   DateTime?
   submittedApplicationId String?               @unique
   line                   Line                  @relation(fields: [lineId], references: [id], onDelete: SetDefault)
   slot                   PositionSlot?         @relation(fields: [positionSlotId], references: [id], onDelete: SetDefault)

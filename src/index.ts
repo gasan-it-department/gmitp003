@@ -53,6 +53,7 @@ import { patient } from "./route/patient";
 import { leave } from "./route/leave";
 import { services } from "./route/services";
 import { peso } from "./route/peso";
+import { provisional } from "./route/provisional";
 
 import errorHandlerPlugin from "./plugin/errorHandlers";
 //
@@ -166,6 +167,7 @@ app.register(patient);
 app.register(leave);
 app.register(services);
 app.register(peso);
+app.register(provisional);
 io.on("connection", (socket) => {
   console.log("User connected: ", socket.id);
 

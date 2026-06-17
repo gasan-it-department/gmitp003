@@ -828,6 +828,9 @@ export const inviteFromApplication = async (
     userId: string;
     lineId: string;
     message?: string | null;
+    // Provisional hiring: optional employment type + contract end date.
+    empType?: string | null;
+    term?: string | null;
   };
 
   if (
@@ -980,6 +983,8 @@ export const inviteFromApplication = async (
           positionSlotId: body.slotId,
           submittedApplicationId: body.applicationId,
           expiresAt,
+          empType: body.empType?.trim() || null,
+          term: body.term ? new Date(body.term) : null,
         },
       });
 
@@ -1274,6 +1279,7 @@ export const positionRegister = async (
               id: true,
               departmentId: true,
               positionId: true,
+              plantilla: true,
               position: {
                 select: {
                   id: true,
@@ -1326,6 +1332,18 @@ export const positionRegister = async (
         );
       }
 
+      // Provisional hiring: take employment type + contract end date from the
+      // invitation; fall back to the designation's plantilla flag. Regular
+      // (plantilla) invites have no empType/term -> status "Regular".
+      const invite = await tx.fillPositionInvitation.findUnique({
+        where: { id: body.linkId },
+        select: { empType: true, term: true },
+      });
+      const empStatus =
+        invite?.empType?.trim() ||
+        (slot.unitPosition?.plantilla === false ? "Provisional" : "Regular");
+      const empTerm = invite?.term ?? null;
+
       const hashedPassword = await argon.hash(body.password);
 
       const account = await tx.account.create({
@@ -1347,6 +1365,8 @@ export const positionRegister = async (
           lineId: body.lineId,
           positionId: effectivePositionId,
           departmentId: effectiveDepartmentId,
+          status: empStatus,
+          ...(empTerm ? { term: empTerm } : {}),
           ...(effectiveSalaryGradeId
             ? { salaryGradeId: effectiveSalaryGradeId }
             : {}),
