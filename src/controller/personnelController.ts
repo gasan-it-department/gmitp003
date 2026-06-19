@@ -47,6 +47,10 @@ export const personnelList = async (
         middleName: true,
         email: true,
         username: true,
+        // `status` + `term` let the UI label provisional (non-plantilla) staff
+        // with their employment type / contract end instead of "No position".
+        status: true,
+        term: true,
         Position: { select: { id: true, name: true } },
       },
     });

@@ -1,5 +1,5 @@
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
-import { prisma } from "../barrel/prisma";
+import { Prisma, prisma } from "../barrel/prisma";
 import { NotFoundError, ValidationError } from "../errors/errors";
 import { PagingProps } from "../models/route";
 import argon from "argon2";
@@ -8,10 +8,10 @@ import { EncryptionService } from "../service/encryption";
 
 export const accountList = async (req: FastifyRequest, res: FastifyReply) => {
   try {
-    const params = req.query as PagingProps;
-    console.log({ params });
+    const params = req.query as PagingProps & { filter?: string };
 
     const filter: any = {};
+
     if (params.query) {
       const searchTerms = params.query.trim().split(/\s+/); // Split on any whitespace
 
@@ -42,13 +42,35 @@ export const accountList = async (req: FastifyRequest, res: FastifyReply) => {
       }
     }
 
+    // Account-level where. Search filters apply to the linked User; the "hrmo"
+    // role filter matches either the HR Management Officer position (created at
+    // line registration) OR an account username that looks like an HRMO login.
+    const where: any = { User: { ...filter } };
+    if (params.filter === "hrmo") {
+      where.OR = [
+        {
+          User: {
+            is: {
+              Position: {
+                is: {
+                  name: {
+                    contains: "Human Resources Management",
+                    mode: "insensitive",
+                  },
+                },
+              },
+            },
+          },
+        },
+        { username: { contains: "hrmo", mode: "insensitive" } },
+      ];
+    }
+
     const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
     const accounts = await prisma.account.findMany({
-      where: {
-        User: { ...filter },
-      },
+      where,
       cursor,
-      take: parseInt(params.limit, 10),
+      take: parseInt(params.limit, 10) || 20,
       select: {
         User: {
           select: {
@@ -56,23 +78,153 @@ export const accountList = async (req: FastifyRequest, res: FastifyReply) => {
             firstName: true,
             lastName: true,
             email: true,
+            emailIv: true,
           },
         },
         id: true,
         username: true,
+        status: true,
+        active: true,
       },
       skip: cursor ? 1 : 0,
     });
-    const nextLastCursorId =
-      accounts.length > 0 ? accounts[accounts.length - 1].id : null;
-    const hasMore = accounts.length === 20;
 
-    res
-      .code(200)
-      .send({ list: accounts, lastCursor: nextLastCursorId, hasMore });
+    // `User.email` is encrypted when `emailIv` is set — decrypt before sending
+    // and strip the IV from the payload.
+    const list = await Promise.all(
+      accounts.map(async (a) => {
+        let email = a.User?.email ?? null;
+        if (a.User?.email && a.User.emailIv) {
+          try {
+            email = await EncryptionService.decrypt(
+              a.User.email,
+              a.User.emailIv,
+            );
+          } catch {
+            email = null;
+          }
+        }
+        return {
+          id: a.id,
+          username: a.username,
+          status: a.status,
+          active: a.active,
+          User: a.User
+            ? {
+                id: a.User.id,
+                firstName: a.User.firstName,
+                lastName: a.User.lastName,
+                email,
+              }
+            : null,
+        };
+      }),
+    );
+
+    const nextLastCursorId = list.length > 0 ? list[list.length - 1].id : null;
+    const hasMore = accounts.length === (parseInt(params.limit, 10) || 20);
+
+    res.code(200).send({ list, lastCursor: nextLastCursorId, hasMore });
   } catch (error) {
     console.log(error);
     res.code(500).send({ message: "Internal Server Error" });
+  }
+};
+
+// PATCH /account/status { accountId, active }
+// Suspend (active=false → status 2) or reactivate (active=true → status 1).
+export const adminSetAccountStatus = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as { accountId?: string; active?: boolean };
+  if (!body.accountId || typeof body.active !== "boolean") {
+    throw new ValidationError("INVALID REQUIRED FIELDS");
+  }
+  try {
+    const updated = await prisma.account.update({
+      where: { id: body.accountId },
+      data: { active: body.active, status: body.active ? 1 : 2 },
+      select: { id: true, active: true, User: { select: { id: true } } },
+    });
+
+    // When suspending, kick the user out of any live sessions in real time.
+    if (!body.active && updated.User?.id) {
+      try {
+        const { notificationSocket } = await import("..");
+        notificationSocket.emitForceLogout(
+          updated.User.id,
+          "Your account has been suspended by an administrator.",
+        );
+      } catch (e) {
+        console.warn("[adminSetAccountStatus] force-logout emit failed", e);
+      }
+    }
+
+    return res.code(200).send({ message: "OK", active: body.active });
+  } catch (error) {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2025"
+    ) {
+      return res.code(404).send({ message: "Account not found" });
+    }
+    console.error("[adminSetAccountStatus]", error);
+    return res.code(500).send({ message: "Internal Server Error" });
+  }
+};
+
+// DELETE /account/delete { accountId }
+// Full delete: the account is removed and the linked User cascade-deletes
+// (User.account onDelete: Cascade). Reset links (Restrict) are cleared first.
+export const adminDeleteAccount = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as { accountId?: string };
+  if (!body.accountId) throw new ValidationError("INVALID REQUIRED FIELDS");
+  const accountId = body.accountId;
+  try {
+    // Capture the linked user before deleting so we can force-logout any live
+    // session afterwards (the row is gone by then, but the socket room is just
+    // an id string).
+    const acct = await prisma.account.findUnique({
+      where: { id: accountId },
+      select: { User: { select: { id: true } } },
+    });
+
+    await prisma.$transaction(async (tx) => {
+      await tx.accountResetLink.deleteMany({ where: { accountId } });
+      await tx.account.delete({ where: { id: accountId } });
+    });
+
+    if (acct?.User?.id) {
+      try {
+        const { notificationSocket } = await import("..");
+        notificationSocket.emitForceLogout(
+          acct.User.id,
+          "Your account has been removed by an administrator.",
+        );
+      } catch (e) {
+        console.warn("[adminDeleteAccount] force-logout emit failed", e);
+      }
+    }
+
+    return res.code(200).send({ message: "OK" });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      if (error.code === "P2025") {
+        return res.code(404).send({ message: "Account not found" });
+      }
+      if (error.code === "P2003" || error.code === "P2014") {
+        return res.code(409).send({
+          message:
+            "This account is linked to records that block deletion. Suspend it instead.",
+        });
+      }
+    }
+    console.error("[adminDeleteAccount]", error);
+    return res.code(500).send({ message: "Internal Server Error" });
   }
 };
 

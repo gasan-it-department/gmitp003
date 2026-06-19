@@ -8,23 +8,27 @@ export const adminAuth = async (req: FastifyRequest, res: FastifyReply) => {
   try {
     const params = req.body as AdminLoginProps;
 
-    if (!params.username || !params.password) {
+    const username = params.username?.trim();
+    const password = params.password;
+    if (!username || !password) {
       return res.code(400).send({ message: "Bad Request!" });
     }
+
+    // Exact (case-insensitive) match — a `contains` match would let a partial
+    // username sign in as a different admin.
     const admin = await prisma.admin.findFirst({
       where: {
-        username: { contains: params.username, mode: "insensitive" },
+        username: { equals: username, mode: "insensitive" },
       },
     });
 
     if (!admin) {
       return res.code(200).send({ error: 1, message: "Account not found!" });
     }
-    const verified = await argon.verify(admin.password, params.password);
+    const verified = await argon.verify(admin.password, password);
     if (!verified) {
       return res.code(200).send({ error: 2, message: "Incorrect Password!" });
     }
-    console.log({ admin });
 
     const token = await res.jwtSign({ id: admin.id, username: admin.username });
 
@@ -32,7 +36,10 @@ export const adminAuth = async (req: FastifyRequest, res: FastifyReply) => {
       .code(200)
       .send({ admin: { id: admin.id, username: admin.username, token } });
   } catch (error) {
-    console.log(error);
+    console.error("[adminAuth]", error);
+    // Always answer — the old code returned nothing on error, leaving the
+    // client hanging on an empty 200.
+    return res.code(500).send({ error: 9, message: "Internal Server Error" });
   }
 };
 

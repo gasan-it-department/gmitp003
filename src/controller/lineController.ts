@@ -362,6 +362,25 @@ export const lineUpdateStatus = async (
     if (!response) {
       throw new ValidationError("TRANSACTION FAILED");
     }
+
+    // Any non-active status (0 Inactive / 2 Suspended) kicks every user in the
+    // line out of their live sessions. status 1 (Active) re-enables sign-in.
+    if (body.status !== 1) {
+      try {
+        const users = await prisma.user.findMany({
+          where: { lineId: body.id },
+          select: { id: true },
+        });
+        const { notificationSocket } = await import("..");
+        notificationSocket.emitForceLogoutMany(
+          users.map((u) => u.id),
+          `This line has been ${lineStatus[body.status] ?? "deactivated"} by an administrator.`,
+        );
+      } catch (e) {
+        console.warn("[lineUpdateStatus] force-logout emit failed", e);
+      }
+    }
+
     return res.code(200).send({ message: "OK" });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {

@@ -1218,6 +1218,15 @@ export const positionCheckInvitation = async (
             },
           },
         },
+        provisionalPosition: {
+          select: {
+            id: true,
+            title: true,
+            empType: true,
+            termMonths: true,
+          },
+        },
+        department: { select: { id: true, name: true } },
       },
     });
 
@@ -1225,16 +1234,21 @@ export const positionCheckInvitation = async (
       throw new NotFoundError("LINK NOT FOUND");
     }
 
-    const invitationDate = new Date(response.timestamp);
     const currentDate = new Date();
 
-    // Calculate the difference in days
-    const timeDifference = currentDate.getTime() - invitationDate.getTime();
-    const daysDifference = timeDifference / (1000 * 3600 * 24);
-
-    // Check if 3 or more days have passed
-    if (daysDifference >= 3) {
-      throw new ValidationError("INVITATION LINK HAS EXPIRED");
+    // Provisional invites carry an explicit `expiresAt` (7 days). Fall back to
+    // the legacy 3-days-from-`timestamp` rule for older plantilla invites.
+    if (response.expiresAt) {
+      if (currentDate > new Date(response.expiresAt)) {
+        throw new ValidationError("INVITATION LINK HAS EXPIRED");
+      }
+    } else {
+      const invitationDate = new Date(response.timestamp);
+      const daysDifference =
+        (currentDate.getTime() - invitationDate.getTime()) / (1000 * 3600 * 24);
+      if (daysDifference >= 3) {
+        throw new ValidationError("INVITATION LINK HAS EXPIRED");
+      }
     }
 
     return res.code(200).send(response);
@@ -1257,7 +1271,6 @@ export const positionRegister = async (
     !body.lineId ||
     !body.password ||
     !body.username ||
-    !body.slotId ||
     !body.applicationId ||
     !body.linkId
   ) {
@@ -1266,6 +1279,96 @@ export const positionRegister = async (
 
   try {
     const response = await prisma.$transaction(async (tx) => {
+      // Load the invitation first: provisional (temp/contract) invites have no
+      // PositionSlot and take a different create path — status = empType, term
+      // computed from the ProvisionalPosition's termMonths, unit from the invite.
+      const invite = await tx.fillPositionInvitation.findUnique({
+        where: { id: body.linkId },
+        select: {
+          empType: true,
+          term: true,
+          provisionalPositionId: true,
+          departmentId: true,
+          provisionalPosition: { select: { empType: true, termMonths: true } },
+        },
+      });
+
+      const application = await tx.submittedApplication.findUnique({
+        where: {
+          id: body.applicationId,
+        },
+      });
+      if (!application) {
+        throw new ValidationError("APPLICATION NOT FOUND");
+      }
+
+      // ---- Provisional hire: no plantilla slot ----
+      if (invite?.provisionalPositionId) {
+        const empStatus =
+          invite.provisionalPosition?.empType ||
+          invite.empType?.trim() ||
+          "Provisional";
+        const months = invite.provisionalPosition?.termMonths ?? 0;
+        let empTerm = invite.term ?? null;
+        if (months > 0) {
+          empTerm = new Date();
+          empTerm.setMonth(empTerm.getMonth() + months);
+        }
+
+        const hashedPassword = await argon.hash(body.password);
+        const account = await tx.account.create({
+          data: {
+            username: body.username,
+            password: hashedPassword,
+            lineId: body.lineId,
+          },
+        });
+        const user = await tx.user.create({
+          data: {
+            firstName: application.firstname,
+            lastName: application.lastname,
+            username: account.username,
+            accountId: account.id,
+            email: application.email,
+            emailIv: application.emailIv,
+            lineId: body.lineId,
+            departmentId: invite.departmentId ?? null,
+            status: empStatus,
+            ...(empTerm ? { term: empTerm } : {}),
+            phoneNumber: application.mobileNo,
+            phoneNumberIv: application.ivMobileNo,
+          },
+        });
+        await tx.submittedApplication.update({
+          where: { id: body.applicationId },
+          data: { userId: user.id },
+        });
+        await tx.fillPositionInvitation.update({
+          where: { id: body.linkId },
+          data: {
+            concluded: true,
+            concludedAt: new Date(),
+            concludedReason: "accepted",
+            step: 1,
+          },
+        });
+        const provName = [application.firstname, application.lastname]
+          .filter(Boolean)
+          .join(" ")
+          .trim();
+        await createUserNotification(tx, {
+          recipientId: user.id,
+          title: "Welcome to the Portal!",
+          content: `Welcome ${provName || body.username}! You have been registered as ${empStatus}${empTerm ? ` (until ${empTerm.toLocaleDateString()})` : ""}. Your username is: ${body.username}.`,
+          senderId: null,
+        });
+        return true;
+      }
+
+      // ---- Plantilla hire: requires a PositionSlot ----
+      if (!body.slotId) {
+        throw new ValidationError("INVALID REQUIRED DATA");
+      }
       const slot = await tx.positionSlot.findUnique({
         where: {
           id: body.slotId,
@@ -1294,21 +1397,11 @@ export const positionRegister = async (
         },
       });
 
-      const application = await tx.submittedApplication.findUnique({
-        where: {
-          id: body.applicationId,
-        },
-      });
-
       if (!slot) {
         throw new ValidationError("SLOT NOT FOUND");
       }
       if (slot.userId) {
         throw new ValidationError("ALREADY OCCUPIED");
-      }
-
-      if (!application) {
-        throw new ValidationError("APPLICATION NOT FOUND");
       }
       // Resolve the *effective* position / department / SG from the slot
       // OR its parent UnitPosition. `PositionSlot.positionId` is
@@ -1332,16 +1425,11 @@ export const positionRegister = async (
         );
       }
 
-      // Provisional hiring: take employment type + contract end date from the
-      // invitation; fall back to the designation's plantilla flag. Regular
-      // (plantilla) invites have no empType/term -> status "Regular".
-      const invite = await tx.fillPositionInvitation.findUnique({
-        where: { id: body.linkId },
-        select: { empType: true, term: true },
-      });
+      // Plantilla designations are "Regular"; a non-plantilla slot (rare path)
+      // falls back to "Provisional". The `invite` was loaded at the top of the
+      // transaction.
       const empStatus =
-        invite?.empType?.trim() ||
-        (slot.unitPosition?.plantilla === false ? "Provisional" : "Regular");
+        slot.unitPosition?.plantilla === false ? "Provisional" : "Regular";
       const empTerm = invite?.term ?? null;
 
       const hashedPassword = await argon.hash(body.password);

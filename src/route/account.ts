@@ -5,6 +5,8 @@ import {
   accountList,
   sendResetPasswordLink,
   resetUserPassword,
+  adminSetAccountStatus,
+  adminDeleteAccount,
 } from "../controller/accountController";
 export const accounts = (fastify: FastifyInstance) => {
   fastify.get(
@@ -18,4 +20,7 @@ export const accounts = (fastify: FastifyInstance) => {
     sendResetPasswordLink,
   );
   fastify.patch("/account/user/reset-password", resetUserPassword);
+  // Admin-panel account management (open, like /accounts).
+  fastify.patch("/account/status", adminSetAccountStatus);
+  fastify.delete("/account/delete", adminDeleteAccount);
 };

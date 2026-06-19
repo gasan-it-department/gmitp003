@@ -36,6 +36,7 @@ model Line {
   documents               Document[]
   documentActivityLogs    DocumentActivityLogs[]
   fillPositionInvitations FillPositionInvitation[]
+  provisionalPositions    ProvisionalPosition[]
   Group                   Group[]
   HumanResourcesLogs      HumanResourcesLogs[]
   InventoryBox            InventoryBox[]
@@ -815,19 +816,40 @@ model FillPositionInvitation {
   /// `now()` to treat anything past as expired.
   expiresAt              DateTime?
   timestamp              DateTime              @default(now())
-  unitPositionId         String
+  unitPositionId         String?
   lineId                 String
   positionSlotId         String?
   step                   Int                   @default(0)
-  /// Provisional hiring: employment type (e.g. "Contract"|"Casual"|"Job Order"|
-  /// "Temporary") and contract end date. Null for regular (plantilla) invites.
+  /// Provisional hiring: the chosen unit (departmentId) + the ProvisionalPosition.
+  /// empType is denormalized from the position for invite lists; the contract
+  /// end date (User.term) is computed at register from position.termMonths.
   empType                String?
   term                   DateTime?
+  provisionalPositionId  String?
+  departmentId           String?
   submittedApplicationId String?               @unique
   line                   Line                  @relation(fields: [lineId], references: [id], onDelete: SetDefault)
   slot                   PositionSlot?         @relation(fields: [positionSlotId], references: [id], onDelete: SetDefault)
   applcation             SubmittedApplication? @relation(fields: [submittedApplicationId], references: [id])
-  unitPoistion           UnitPosition          @relation(fields: [unitPositionId], references: [id])
+  unitPoistion           UnitPosition?         @relation(fields: [unitPositionId], references: [id])
+  provisionalPosition    ProvisionalPosition?  @relation(fields: [provisionalPositionId], references: [id])
+  department             Department?           @relation("ProvisionalInvites", fields: [departmentId], references: [id])
+}
+
+/// A temporary/contract position (Job Order, Contract of Service, Casual, etc.)
+/// with a fixed term in months. NOT tied to a unit — HR picks the unit when
+/// hiring each applicant. `slots` is the number of openings.
+model ProvisionalPosition {
+  id          String                   @id @default(uuid())
+  title       String
+  empType     String
+  termMonths  Int                      @default(3)
+  slots       Int                      @default(1)
+  description String?
+  lineId      String
+  createdAt   DateTime                 @default(now())
+  line        Line                     @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  invitations FillPositionInvitation[]
 }
 
 model ApplicationSkillTags {
@@ -938,6 +960,7 @@ model Department {
   SupplyDispenseRecord SupplyDispenseRecord[]
   SupplyIncharge       SupplyIncharge[]
   unitPositions        UnitPosition[]
+  provisionalInvitations FillPositionInvitation[] @relation("ProvisionalInvites")
   users                User[]                 @relation("DepartmentMembers")
 }
 

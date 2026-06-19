@@ -6,7 +6,10 @@ import { PagingProps } from "../models/route";
 import { getYearRange } from "../utils/date";
 import { EncryptionService } from "../service/encryption";
 import { getAreaData } from "../middleware/handler";
-import { PROVISIONAL_STATUSES } from "./provisionalController";
+import {
+  PROVISIONAL_STATUSES,
+  PROVISIONAL_ENDED,
+} from "./provisionalController";
 
 export const getAllEmpoyees = async (
   req: FastifyRequest,
@@ -29,9 +32,10 @@ export const getAllEmpoyees = async (
     }
     const filter: any = {};
 
-    // Keep provisional (temporary/contract) staff out of the plantilla
-    // Employees list — they live in the Provisional > Personnel tab.
-    filter.status = { notIn: PROVISIONAL_STATUSES };
+    // Keep provisional (temporary/contract) staff — and ended provisional
+    // engagements — out of the plantilla Employees list. They live in the
+    // Provisional > Personnel tab.
+    filter.status = { notIn: [...PROVISIONAL_STATUSES, PROVISIONAL_ENDED] };
 
     if (office) {
       filter.departmentId = office;

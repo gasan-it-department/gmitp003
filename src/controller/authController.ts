@@ -48,12 +48,23 @@ export const authController = async (
       return res.code(200).send({ message: "Incorrect password", error: 2 });
     }
 
-    const token = await res.jwtSign({ id: user.id, username: user.username });
-    if (user.line && user.line.status === 0) {
-      console.log("Get");
-
+    // Suspended accounts (e.g. ended provisional engagements) cannot sign in.
+    if (user.active === false) {
       return res.code(200).send({
-        message: "Line Deactivated",
+        message: "This account has been disabled. Please contact HR.",
+        error: 4,
+      });
+    }
+
+    const token = await res.jwtSign({ id: user.id, username: user.username });
+    // Block sign-in on any non-active line (0 Inactive / 2 Suspended), not just
+    // status 0 — matches the real-time force-logout when a line is suspended.
+    if (user.line && user.line.status !== 1) {
+      return res.code(200).send({
+        message:
+          user.line.status === 2
+            ? "Line Suspended"
+            : "Line Deactivated",
         error: 4,
         data: {
           username: user.username,

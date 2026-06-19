@@ -172,6 +172,31 @@ export class NotificationSocket {
   }
 
   /**
+   * Force a user to sign out across every open tab/device — e.g. when an admin
+   * suspends or deletes their account. The client clears its session on receipt.
+   */
+  public emitForceLogout(userId: string, reason?: string) {
+    if (!userId) return;
+    this.io.to(`user-${userId}`).emit("auth:force-logout", {
+      reason: reason ?? "Your account has been suspended.",
+    });
+    console.log(`Force-logout emitted to user ${userId}`);
+  }
+
+  /**
+   * Force-logout many users at once — e.g. when a whole line is suspended,
+   * every user in it is kicked. Emits to each user's own room.
+   */
+  public emitForceLogoutMany(userIds: string[], reason?: string) {
+    const rooms = userIds.filter(Boolean).map((id) => `user-${id}`);
+    if (rooms.length === 0) return;
+    this.io.to(rooms).emit("auth:force-logout", {
+      reason: reason ?? "Your account has been suspended.",
+    });
+    console.log(`Force-logout emitted to ${rooms.length} user(s)`);
+  }
+
+  /**
    * Push a freshly-created MedicineNotification to every user listening
    * on this line. Scopes the broadcast so people in other municipalities /
    * lines don't see it. Each row of MedicineNotification has its own
