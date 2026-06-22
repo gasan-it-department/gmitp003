@@ -137,15 +137,18 @@ export const addModuleAccess = async (
 ) => {
   const body = req.body as {
     userId: string;
-    privilege: number;
+    privilege?: number;
     module: string;
     lineId: string;
     currUserId: string;
   };
 
-  console.log({ body });
+  // Privilege selection was removed from the grant UI — granting access now
+  // gives full module access by default. Stay tolerant of an old client that
+  // still sends a privilege.
+  const privilege = typeof body.privilege === "number" ? body.privilege : 1;
 
-  if (!body.userId || !body.privilege || !body.module || !body.currUserId)
+  if (!body.userId || !body.module || !body.currUserId)
     throw new ValidationError("INVALID REQUIRED");
 
   try {
@@ -202,7 +205,7 @@ export const addModuleAccess = async (
       const access = await tx.module.create({
         data: {
           userId: user.id,
-          privilege: body.privilege,
+          privilege,
           moduleName: body.module,
           moduleIndex: "1",
           lineId: user.lineId as string,
@@ -218,9 +221,7 @@ export const addModuleAccess = async (
           currentUser?.firstName || "A system administrator"
         } has granted you access to the ${
           body.module
-        } module with ${getPrivilegeLevel(
-          body.privilege,
-        )} privileges. You can now access this module from your dashboard.`,
+        } module. You can now access this module from your dashboard.`,
         path: `${body.module}`,
       });
 
@@ -233,7 +234,6 @@ You have been granted access to the ${body.module} module.
 
 Details:
 • Module: ${body.module}
-• Privilege Level: ${getPrivilegeLevel(body.privilege)}
 • Granted By: ${currentUser?.firstName || "System Administrator"} ${
         currentUser?.lastName || ""
       }

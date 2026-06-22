@@ -50,6 +50,7 @@ export const createProvisionalPosition = async (
     slots?: number | string;
     description?: string | null;
     lineId?: string;
+    salaryGradeId?: string | null;
     userId?: string;
   };
 
@@ -68,6 +69,7 @@ export const createProvisionalPosition = async (
         slots,
         description: body.description?.trim() || null,
         lineId: body.lineId,
+        salaryGradeId: body.salaryGradeId || null,
       },
     });
     return res.code(200).send({ message: "OK", id: created.id });
@@ -114,6 +116,7 @@ export const provisionalPositions = async (
         invitations: {
           select: { id: true, concluded: true, concludedReason: true },
         },
+        salaryGrade: { select: { id: true, grade: true, amount: true } },
       },
     });
 
@@ -373,6 +376,7 @@ const personnelSelect = {
   createdAt: true,
   accountId: true,
   department: { select: { id: true, name: true } },
+  SalaryGrade: { select: { id: true, grade: true, amount: true } },
   // Skills come from the applicant's PDS (ApplicationSkillTags) via the
   // application this provisional user was hired from.
   submittedApplications: {
@@ -889,5 +893,166 @@ LGU Gasan`,
       throw error;
     }
     throw new AppError("PROVISIONAL_RENEW_FAILED", 500, "DB_ERROR");
+  }
+};
+
+// PATCH /provisional/position { positionId, title?, empType?, termMonths?, slots?,
+//   description?, salaryGradeId?, lineId, userId? }
+// Edit a non-plantilla position. Slots can't drop below the filled count.
+export const updateProvisionalPosition = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as {
+    positionId?: string;
+    title?: string;
+    empType?: string;
+    termMonths?: number | string;
+    slots?: number | string;
+    description?: string | null;
+    salaryGradeId?: string | null;
+    lineId?: string;
+    userId?: string;
+  };
+  if (!body.positionId || !body.lineId) {
+    throw new ValidationError("INVALID REQUIRED FIELDS");
+  }
+  const lineId = body.lineId;
+  const actorId = body.userId;
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      const pos = await tx.provisionalPosition.findFirst({
+        where: { id: body.positionId, lineId },
+        include: {
+          invitations: { select: { concludedReason: true } },
+        },
+      });
+      if (!pos) throw new NotFoundError("Position not found");
+
+      const filled = pos.invitations.filter(
+        (i) => i.concludedReason === "accepted",
+      ).length;
+
+      const data: Prisma.ProvisionalPositionUpdateInput = {};
+      if (body.title?.trim()) data.title = body.title.trim();
+      if (body.empType?.trim()) data.empType = body.empType.trim();
+      if (body.termMonths != null) {
+        data.termMonths = Math.max(
+          1,
+          parseInt(String(body.termMonths), 10) || pos.termMonths,
+        );
+      }
+      if (body.slots != null) {
+        const slots = Math.max(
+          1,
+          parseInt(String(body.slots), 10) || pos.slots,
+        );
+        if (slots < filled) {
+          throw new ValidationError(
+            `Slots can't be fewer than the ${filled} already filled.`,
+          );
+        }
+        data.slots = slots;
+      }
+      if (body.description !== undefined) {
+        data.description = body.description?.trim() || null;
+      }
+      if (body.salaryGradeId !== undefined) {
+        data.salaryGrade = body.salaryGradeId
+          ? { connect: { id: body.salaryGradeId } }
+          : { disconnect: true };
+      }
+
+      const updated = await tx.provisionalPosition.update({
+        where: { id: pos.id },
+        data,
+      });
+
+      if (actorId) {
+        await tx.humanResourcesLogs.create({
+          data: {
+            action: "UPDATE",
+            desc: `PROVISIONAL position updated -> "${updated.title}"`,
+            lineId,
+            userId: actorId,
+          },
+        });
+      }
+    });
+
+    return res.code(200).send({ message: "OK" });
+  } catch (error) {
+    if (error instanceof NotFoundError || error instanceof ValidationError) {
+      throw error;
+    }
+    throw new AppError("PROVISIONAL_POSITION_UPDATE_FAILED", 500, "DB_ERROR");
+  }
+};
+
+// PATCH /provisional/personnel { userId, status?, salaryGradeId?, actorId, lineId }
+// Edit a provisional employee's employment type + salary grade.
+export const updateProvisionalPersonnel = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as {
+    userId?: string;
+    status?: string;
+    salaryGradeId?: string | null;
+    actorId?: string;
+    lineId?: string;
+  };
+  if (!body.userId || !body.lineId) {
+    throw new ValidationError("INVALID REQUIRED FIELDS");
+  }
+  if (body.status && !PROVISIONAL_STATUSES.includes(body.status)) {
+    throw new ValidationError("Invalid employment type");
+  }
+
+  try {
+    const user = await prisma.user.findFirst({
+      where: {
+        id: body.userId,
+        lineId: body.lineId,
+        status: { in: PROVISIONAL_STATUSES },
+      },
+      select: { id: true, firstName: true, lastName: true },
+    });
+    if (!user) throw new NotFoundError("Provisional personnel not found");
+
+    const data: Prisma.UserUncheckedUpdateInput = {};
+    if (body.status) data.status = body.status;
+    if (body.salaryGradeId !== undefined) {
+      data.salaryGradeId = body.salaryGradeId || null;
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.user.update({ where: { id: user.id }, data });
+      if (body.actorId) {
+        await tx.humanResourcesLogs.create({
+          data: {
+            action: "UPDATE",
+            desc: `PROVISIONAL personnel updated -> ${user.firstName} ${user.lastName}`,
+            lineId: body.lineId as string,
+            userId: body.actorId,
+          },
+        });
+      }
+      await createUserNotification(tx, {
+        recipientId: user.id,
+        title: "Employment details updated",
+        content:
+          "Your provisional employment details were updated by the HR office.",
+        senderId: null,
+      });
+    });
+
+    return res.code(200).send({ message: "OK" });
+  } catch (error) {
+    if (error instanceof NotFoundError || error instanceof ValidationError) {
+      throw error;
+    }
+    throw new AppError("PROVISIONAL_PERSONNEL_UPDATE_FAILED", 500, "DB_ERROR");
   }
 };

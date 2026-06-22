@@ -840,16 +840,18 @@ model FillPositionInvitation {
 /// with a fixed term in months. NOT tied to a unit — HR picks the unit when
 /// hiring each applicant. `slots` is the number of openings.
 model ProvisionalPosition {
-  id          String                   @id @default(uuid())
-  title       String
-  empType     String
-  termMonths  Int                      @default(3)
-  slots       Int                      @default(1)
-  description String?
-  lineId      String
-  createdAt   DateTime                 @default(now())
-  line        Line                     @relation(fields: [lineId], references: [id], onDelete: Cascade)
-  invitations FillPositionInvitation[]
+  id            String                   @id @default(uuid())
+  title         String
+  empType       String
+  termMonths    Int                      @default(3)
+  slots         Int                      @default(1)
+  description   String?
+  lineId        String
+  salaryGradeId String?
+  createdAt     DateTime                 @default(now())
+  line          Line                     @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  salaryGrade   SalaryGrade?             @relation(fields: [salaryGradeId], references: [id])
+  invitations   FillPositionInvitation[]
 }
 
 model ApplicationSkillTags {
@@ -1316,10 +1318,11 @@ model SalaryGrade {
   jobPosts           JobPost[]
   positions          Position[]
   PositionSlot       PositionSlot[]
-  line               Line?                @relation(fields: [lineId], references: [id])
-  SalaryGradeHistory SalaryGradeHistory[]
-  users              User[]
-  payslips           Payslip[]
+  line                 Line?                 @relation(fields: [lineId], references: [id])
+  SalaryGradeHistory   SalaryGradeHistory[]
+  users                User[]
+  payslips             Payslip[]
+  provisionalPositions ProvisionalPosition[]
 }
 
 model HumanResourcesLogs {

@@ -29,6 +29,7 @@ import {
   bulkAddMedicineStock,
   exportMedicineReport,
   medicineBulkUpload,
+  updateMedicineThreshold,
 } from "../controller/medicineController";
 
 export const medicine = (fastify: FastifyInstance) => {
@@ -38,6 +39,11 @@ export const medicine = (fastify: FastifyInstance) => {
     medicineStorage,
   );
   fastify.get("/medicine/logs", { preHandler: authenticated }, medicineLogList);
+  fastify.patch(
+    "/medicine/threshold",
+    { preHandler: authenticated },
+    updateMedicineThreshold,
+  );
   fastify.post(
     "/medicine/storage/add-storage-location",
     { preHandler: authenticated },

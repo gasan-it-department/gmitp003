@@ -170,6 +170,33 @@ export const createPrescriptions = async (
         console.warn("[prescription] medicine notif emit failed:", e);
       }
 
+      // Notify the line's pharmacy (medicine-module) users in their MAIN
+      // notification bell so they know a new prescription is waiting to be
+      // dispensed. The prescriber themselves is skipped.
+      const pharmacyUsers = await tx.module.findMany({
+        where: {
+          lineId: body.lineId,
+          OR: [
+            { moduleName: { equals: "medicine", mode: "insensitive" } },
+            { moduleName: { equals: "Pharmacy", mode: "insensitive" } },
+          ],
+        },
+        select: { userId: true },
+      });
+      const pharmacyIds = [
+        ...new Set(pharmacyUsers.map((m) => m.userId)),
+      ].filter((id) => id && id !== body.userId);
+
+      for (const recipientId of pharmacyIds) {
+        await createUserNotification(tx, {
+          recipientId,
+          title: "New Prescription",
+          content: `${user.lastName}, ${user.firstName} submitted prescription #${prescription.refNumber} for ${body.lastname}, ${body.firstname}.`,
+          path: `/${body.lineId}/medicine/prescription/${prescription.id}`,
+          senderId: body.userId,
+        });
+      }
+
       return prescription;
     });
 

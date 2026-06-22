@@ -2661,3 +2661,82 @@ export const medicineBulkUpload = async (
     throw error;
   }
 };
+
+// PATCH /medicine/threshold { medicineId, storageId, threshold, lineId, userId }
+// Update the low-stock threshold for every stock batch of a medicine within a
+// storage location (the "medicine's threshold").
+export const updateMedicineThreshold = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as {
+    medicineId?: string;
+    storageId?: string;
+    threshold?: number | string;
+    lineId?: string;
+    userId?: string;
+  };
+  if (!body.medicineId || !body.storageId || !body.lineId) {
+    throw new ValidationError("INVALID REQUIRED FIELDS");
+  }
+  const threshold = Math.max(0, parseInt(String(body.threshold ?? 0), 10) || 0);
+  const { medicineId, storageId, lineId, userId } = body;
+
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      // Grab the affected rows first so we can re-evaluate low-stock against
+      // the *new* threshold below.
+      const stocks = await tx.medicineStock.findMany({
+        where: { medicineId, medicineStorageId: storageId, lineId },
+        select: { id: true, actualStock: true },
+      });
+
+      const updated = await tx.medicineStock.updateMany({
+        where: {
+          medicineId,
+          medicineStorageId: storageId,
+          lineId,
+        },
+        data: { threshold },
+      });
+
+      // Changing the threshold can itself put a row "below threshold" — fire
+      // the alert now instead of waiting for the next dispense. Rows that are
+      // now above the new threshold get their alert cleared so a future dip
+      // notifies again.
+      for (const s of stocks) {
+        if (threshold > 0 && s.actualStock <= threshold) {
+          await checkAndNotifyLowStock(tx, s.id);
+        } else {
+          await clearLowStockAlerts(tx, s.id);
+        }
+      }
+
+      if (userId && updated.count > 0) {
+        const med = await tx.medicine.findUnique({
+          where: { id: medicineId },
+          select: { name: true },
+        });
+        await tx.medicineLogs.create({
+          data: {
+            action: 2,
+            userId,
+            lineId,
+            message: `Updated low-stock threshold to ${threshold} for "${med?.name ?? "medicine"}"`,
+          },
+        });
+      }
+
+      return updated;
+    });
+
+    return res
+      .code(200)
+      .send({ message: "OK", count: result.count, threshold });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};

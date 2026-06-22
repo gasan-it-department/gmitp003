@@ -1289,7 +1289,9 @@ export const positionRegister = async (
           term: true,
           provisionalPositionId: true,
           departmentId: true,
-          provisionalPosition: { select: { empType: true, termMonths: true } },
+          provisionalPosition: {
+            select: { empType: true, termMonths: true, salaryGradeId: true },
+          },
         },
       });
 
@@ -1335,6 +1337,9 @@ export const positionRegister = async (
             departmentId: invite.departmentId ?? null,
             status: empStatus,
             ...(empTerm ? { term: empTerm } : {}),
+            ...(invite.provisionalPosition?.salaryGradeId
+              ? { salaryGradeId: invite.provisionalPosition.salaryGradeId }
+              : {}),
             phoneNumber: application.mobileNo,
             phoneNumberIv: application.ivMobileNo,
           },

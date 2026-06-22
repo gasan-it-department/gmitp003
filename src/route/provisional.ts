@@ -9,6 +9,8 @@ import {
   provisionalTransfer,
   provisionalRemove,
   provisionalRenew,
+  updateProvisionalPosition,
+  updateProvisionalPersonnel,
 } from "../controller/provisionalController";
 
 // Provisional (temporary/contract) staff. A ProvisionalPosition carries the
@@ -56,5 +58,15 @@ export const provisional = (fastify: FastifyInstance) => {
     "/provisional/renew",
     { preHandler: authenticated },
     provisionalRenew,
+  );
+  fastify.patch(
+    "/provisional/position",
+    { preHandler: authenticated },
+    updateProvisionalPosition,
+  );
+  fastify.patch(
+    "/provisional/personnel",
+    { preHandler: authenticated },
+    updateProvisionalPersonnel,
   );
 };

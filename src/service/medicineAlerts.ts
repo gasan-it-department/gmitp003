@@ -55,13 +55,39 @@ export async function checkAndNotifyLowStock(
     },
   });
 
-  // Fan out to users with access to this storage.
-  const accessRows = await tx.medicineStorageAccess.findMany({
-    where: { medicineStorageId: stock.MedicineStorage.id },
-    select: { userId: true },
-  });
+  const lineId = stock.MedicineStorage.lineId;
 
-  if (accessRows.length === 0) return { notified: 0 };
+  // Recipients: anyone with explicit access to this storage, PLUS every user
+  // who has the Medicine module in this line (the pharmacy staff). Storage
+  // access is effectively never granted, so without the module-user fallback
+  // the alert reached nobody.
+  const [accessRows, moduleUsers] = await Promise.all([
+    tx.medicineStorageAccess.findMany({
+      where: { medicineStorageId: stock.MedicineStorage.id },
+      select: { userId: true },
+    }),
+    tx.module.findMany({
+      // The Pharmacy (medicine inventory) module — its slug is "medicine".
+      // Exact-match so we don't also alert the prescriber ("prescribe-medicine")
+      // module. "Pharmacy" covers any rows stored by the panel title.
+      where: {
+        lineId,
+        OR: [
+          { moduleName: { equals: "medicine", mode: "insensitive" } },
+          { moduleName: { equals: "Pharmacy", mode: "insensitive" } },
+        ],
+      },
+      select: { userId: true },
+    }),
+  ]);
+
+  const recipientIds = [
+    ...new Set([
+      ...accessRows.map((a) => a.userId),
+      ...moduleUsers.map((m) => m.userId),
+    ]),
+  ];
+  if (recipientIds.length === 0) return { notified: 0 };
 
   const isOut = stock.actualStock <= 0;
   const title = isOut ? "Out of stock" : "Low stock alert";
@@ -73,13 +99,12 @@ export async function checkAndNotifyLowStock(
 
   // `createMany` won't return rows; create one-by-one so we can emit
   // each over the socket with its real id and timestamp.
-  const lineId = stock.MedicineStorage!.lineId;
-  const path = `medicine/storage/${stock.MedicineStorage!.id}`;
+  const path = `medicine/storage/${stock.MedicineStorage.id}`;
   const created = await Promise.all(
-    accessRows.map((a) =>
+    recipientIds.map((userId) =>
       tx.medicineNotification.create({
         data: {
-          userId: a.userId,
+          userId,
           view: 0,
           title,
           message,
@@ -126,7 +151,7 @@ export async function checkAndNotifyLowStock(
     console.warn("[medicineAlerts] socket emit failed:", e);
   }
 
-  return { notified: accessRows.length };
+  return { notified: recipientIds.length };
 }
 
 /**
