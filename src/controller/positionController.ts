@@ -1234,6 +1234,16 @@ export const positionCheckInvitation = async (
       throw new NotFoundError("LINK NOT FOUND");
     }
 
+    // One-time link: once registration completed (concluded = accepted), the
+    // link is dead — surface that to the register page instead of loading it.
+    if (response.concluded) {
+      throw new ValidationError(
+        response.concludedReason === "accepted"
+          ? "This registration link has already been used."
+          : "This invitation link is no longer active.",
+      );
+    }
+
     const currentDate = new Date();
 
     // Provisional invites carry an explicit `expiresAt` (7 days). Fall back to
@@ -1285,6 +1295,8 @@ export const positionRegister = async (
       const invite = await tx.fillPositionInvitation.findUnique({
         where: { id: body.linkId },
         select: {
+          concluded: true,
+          concludedReason: true,
           empType: true,
           term: true,
           provisionalPositionId: true,
@@ -1294,6 +1306,12 @@ export const positionRegister = async (
           },
         },
       });
+
+      // One-time link: once a registration has completed, the invite is
+      // concluded — block any reuse (double-submit, shared link, etc.).
+      if (invite?.concluded) {
+        throw new ValidationError("This registration link has already been used.");
+      }
 
       const application = await tx.submittedApplication.findUnique({
         where: {
@@ -1507,6 +1525,17 @@ export const positionRegister = async (
         title: "Welcome to the Portal!",
         content: `Welcome ${fullName || body.username}! You have been successfully registered as ${positionName}. Your username is: ${body.username}. You now have full access to the Human Resources module.`,
         senderId: null,
+      });
+
+      // Burn the one-time link so it can't be reused after registration.
+      await tx.fillPositionInvitation.update({
+        where: { id: body.linkId },
+        data: {
+          concluded: true,
+          concludedAt: new Date(),
+          concludedReason: "accepted",
+          step: 1,
+        },
       });
       return true;
     });

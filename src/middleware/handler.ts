@@ -4,6 +4,18 @@ import { prisma } from "../barrel/prisma";
 import { AppError, ValidationError } from "../errors/errors";
 import nodemailer from "nodemailer";
 import axios from "axios";
+import { Resend } from "resend";
+
+// HR mailbox — used as the sender + reply-to for all outgoing mail.
+const HR_EMAIL = process.env.EMAIL_USER || "officeofthemayor.gasan@gmail.com";
+// Resend requires the sending domain to be VERIFIED. A gmail.com "from" won't
+// verify, so set RESEND_FROM to an address on your verified domain (e.g.
+// hr@lgu-portal.xyz); replies still route to the HR mailbox. Defaults to the
+// HR email so it's the sender out of the box once the domain is verified.
+const RESEND_FROM = process.env.RESEND_FROM || HR_EMAIL;
+const resend = process.env.RESEND_API_KEY
+  ? new Resend(process.env.RESEND_API_KEY)
+  : null;
 
 export const tempAuthenticated = async (
   request: FastifyRequest,
@@ -344,25 +356,47 @@ export const sendEmail = async (
   text: string,
   title: string,
 ) => {
-  try {
-    console.log({ sub, text, to, title });
+  const from = `${title} <${RESEND_FROM}>`;
 
+  // Primary: Resend (when RESEND_API_KEY is configured). Sender is the HR email
+  // (RESEND_FROM) with replies routed to the HR mailbox.
+  if (resend) {
+    try {
+      const { data, error } = await resend.emails.send({
+        from,
+        to: [to],
+        subject: sub,
+        text,
+        replyTo: HR_EMAIL,
+      });
+      if (error) throw error;
+      console.log("Email sent via Resend! id:", data?.id);
+      return "OK";
+    } catch (error) {
+      console.log("Resend email error:", error);
+      throw error;
+    }
+  }
+
+  // Fallback: nodemailer (Gmail) until RESEND_API_KEY is set, so mail keeps
+  // working during the switchover.
+  try {
     const transporter = nodemailer.createTransport({
-      service: "gmail", // ✅ Correct - just "gmail"
+      service: "gmail",
       auth: {
-        user: "officeofthemayor.gasan@gmail.com",
-        pass: "gkms netq czuf llew", // Make sure this is an App Password
+        user: HR_EMAIL,
+        pass: process.env.EMAIL_PASSWORD || "gkms netq czuf llew",
       },
     });
 
     const response = await transporter.sendMail({
       subject: sub,
-      from: `"${title}" <officeofthemayor.gasan@gmail.com>`,
-      to: to,
-      text: text,
+      from,
+      to,
+      text,
     });
 
-    console.log("Email sent successfully! Message ID:", response.messageId);
+    console.log("Email sent (nodemailer)! Message ID:", response.messageId);
     return "OK";
   } catch (error) {
     console.log("Email error:", error);
