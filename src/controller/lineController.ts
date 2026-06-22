@@ -214,34 +214,37 @@ export const createLine = async (req: FastifyRequest, res: FastifyReply) => {
       throw new ValidationError("TRANSACTION FAILED");
     }
 
-    //     const emailContent = `New Line Registration
+    const registerLink = `${fronURL}/line/register/user/${response.newLine.id}/${response.invitationId}/${response.unitPosId}/${response.sgId}`;
 
-    // Hello,
+    // Email the HRMO their registration link. Fire-and-forget: a mail failure
+    // (e.g. Resend misconfigured) must NOT roll back the already-created line —
+    // the admin also gets the copy-link in the response below.
+    sendEmail(
+      "New Line Registration — Complete Your HRMO Account",
+      body.email,
+      `Hello,
 
-    // Your new line "${body.name}" has been successfully registered in our system.
+Your new line "${body.name}" has been registered in the Gasan LGU Portal.
 
-    // Line Details:
-    // - Line Name: ${body.name}
-    // - Location: ${barangay.name}, ${municipal.name}, ${province.name}
+Line Details:
+- Line Name: ${body.name}
+- Location: ${barangay.name}, ${municipal.name}, ${province.name}
 
-    // Next Steps to Manage Your Line:
-    // 1. Click the link below to complete your account registration:
-    // ${fronURL}/line/register/user/${response.newLine.id}/${response.invitationId}/${response.unitPosId}/${response.sgId}
+Complete your HRMO account registration here:
+${registerLink}
 
-    // 2. Once registered, you can:
-    //    - Manage line operations
-    //    - View reports and analytics
-    //    - Access on Module: Human resources
+Once registered you'll have full access to the Human Resources module.
 
-    // If you have any questions, contact our support team.
+Best regards,
+Human Resources Office
+LGU Gasan`,
+      "Gasan LGU HR",
+    ).catch((e) => console.warn("[createLine] HRMO email failed:", e));
 
-    // Best regards,
-    // Your Organization Team`;
-    //     await sendEmail("New Line Registration", body.email, emailContent, "");
     return res.code(200).send({
       message: "Line created successfully",
       error: 0,
-      link: `${fronURL}/line/register/user/${response.newLine.id}/${response.invitationId}/${response.unitPosId}/${response.sgId}`,
+      link: registerLink,
     });
   } catch (error) {
     console.log(error);
