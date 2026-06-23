@@ -2237,7 +2237,7 @@ export const positionRecords = async (
             name: true,
             id: true,
             SalaryGrade: {
-              select: { grade: true, amount: true },
+              select: { id: true, grade: true, amount: true },
             },
           },
         },
@@ -2490,5 +2490,135 @@ export const removeUnitPosition = async (
       throw new AppError("Database operation failed", 500, "DB_ERROR");
     }
     throw error;
+  }
+};
+
+// PATCH /position/unit/update
+// Edit a unit position from PositionDetail: label/name, designation, item no.,
+// salary grade, plantilla + fix-to-unit flags, and the slot count (adds vacant
+// slots or removes vacant ones — never below the occupied count).
+export const updateUnitPosition = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as {
+    unitPositionId?: string;
+    title?: string;
+    designation?: string | null;
+    itemNumber?: string | null;
+    salaryGradeId?: string | null;
+    plantilla?: boolean;
+    fixToUnit?: boolean;
+    slots?: number | string;
+    lineId?: string;
+    userId?: string;
+  };
+  if (!body.unitPositionId || !body.lineId) {
+    throw new ValidationError("INVALID REQUIRED FIELDS");
+  }
+  const { unitPositionId, lineId, userId } = body;
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      const up = await tx.unitPosition.findFirst({
+        where: { id: unitPositionId, lineId },
+        include: {
+          position: { select: { id: true } },
+          slot: { select: { id: true, occupied: true, userId: true } },
+        },
+      });
+      if (!up) throw new NotFoundError("Position not found");
+
+      // Position-level fields (name, salary grade, plantilla).
+      if (up.positionId) {
+        await tx.position.update({
+          where: { id: up.positionId },
+          data: {
+            ...(body.title?.trim() ? { name: body.title.trim() } : {}),
+            ...(body.plantilla !== undefined
+              ? { plantilla: body.plantilla }
+              : {}),
+            ...(body.salaryGradeId !== undefined
+              ? body.salaryGradeId
+                ? { SalaryGrade: { connect: { id: body.salaryGradeId } } }
+                : { SalaryGrade: { disconnect: true } }
+              : {}),
+          },
+        });
+      }
+
+      // Unit-position-level fields.
+      await tx.unitPosition.update({
+        where: { id: up.id },
+        data: {
+          ...(body.designation !== undefined
+            ? { designation: body.designation?.trim() || null }
+            : {}),
+          ...(body.itemNumber !== undefined
+            ? { itemNumber: body.itemNumber?.trim() || null }
+            : {}),
+          ...(body.plantilla !== undefined ? { plantilla: body.plantilla } : {}),
+          ...(body.fixToUnit !== undefined ? { fixToUnit: body.fixToUnit } : {}),
+        },
+      });
+
+      // Apply the salary grade to the vacant slots too.
+      if (body.salaryGradeId !== undefined) {
+        await tx.positionSlot.updateMany({
+          where: { unitPositionId: up.id, occupied: false, userId: null },
+          data: { salaryGradeId: body.salaryGradeId || null },
+        });
+      }
+
+      // Slot count: add vacant slots or remove vacant ones (never below the
+      // occupied count).
+      if (body.slots != null) {
+        const target = Math.max(0, parseInt(String(body.slots), 10) || 0);
+        const current = up.slot.length;
+        const occupied = up.slot.filter((s) => s.occupied || !!s.userId).length;
+        if (target < occupied) {
+          throw new ValidationError(
+            `Can't reduce slots below the ${occupied} currently occupied.`,
+          );
+        }
+        if (target > current) {
+          await tx.positionSlot.createMany({
+            data: Array.from({ length: target - current }, () => ({
+              unitPositionId: up.id,
+              positionId: up.positionId,
+              salaryGradeId: body.salaryGradeId || null,
+              occupied: false,
+            })),
+          });
+        } else if (target < current) {
+          const vacantIds = up.slot
+            .filter((s) => !s.occupied && !s.userId)
+            .map((s) => s.id)
+            .slice(0, current - target);
+          if (vacantIds.length) {
+            await tx.positionSlot.deleteMany({ where: { id: { in: vacantIds } } });
+          }
+        }
+      }
+
+      if (userId) {
+        await tx.humanResourcesLogs.create({
+          data: {
+            tab: 7,
+            action: "Updated",
+            lineId,
+            userId,
+            desc: `Updated position "${body.title ?? "—"}" (unitPosition ${up.id})`,
+          },
+        });
+      }
+    });
+
+    return res.code(200).send({ message: "OK" });
+  } catch (error) {
+    if (error instanceof NotFoundError || error instanceof ValidationError) {
+      throw error;
+    }
+    throw new AppError("POSITION_UPDATE_FAILED", 500, "DB_ERROR");
   }
 };

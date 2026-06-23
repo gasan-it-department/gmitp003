@@ -20,10 +20,16 @@ import {
   cancelPositionInvitation,
   inviteFromApplication,
   vacantPosition,
+  updateUnitPosition,
 } from "../controller/positionController";
 import { positionListSchema, addPostionSchema } from "../models/request";
 export const position = (fastify: FastifyInstance) => {
   fastify.get("/position/list", { preHandler: authenticated }, positionList);
+  fastify.patch(
+    "/position/unit/update",
+    { preHandler: authenticated },
+    updateUnitPosition,
+  );
   fastify.post(
     "/add-position",
     { preHandler: authenticated, schema: addPostionSchema },

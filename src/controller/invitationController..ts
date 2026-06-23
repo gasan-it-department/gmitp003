@@ -811,30 +811,41 @@ export const submitToInvitationLink = async (
         });
       }
 
-      if (formData.email) {
-        const sebtEmail = await sendEmail(
+      return { applicationId: application.id, orgName };
+    });
+
+    // Confirmation email + SMS are NON-FATAL and run OUTSIDE the transaction:
+    // the application is already committed, so a mail/SMS failure must never
+    // roll it back or 500 the request.
+    const lineName = invitation.line?.name ?? result.orgName;
+    if (formData.email) {
+      try {
+        await sendEmail(
           "Application Received",
           formData.email,
-          `
-Dear ${formData.firstName} ${formData.lastName},
-          
-          This is to confirm that we have successfully received your application at ${invitation.line?.name ?? orgName}.
+          `Dear ${formData.firstName} ${formData.lastName},
 
-          We will inform you of any further instructions regarding the next steps in the hiring process once your application has been reviewed.
-          
-          You can check the status of your application by clicking this link: ${officialUrl}/public/application/${application.id}
-          
-          Sincerely,
-          The HR Team
-          ${orgName}
-          `,
-          `${orgName} HR Team <no-reply@lgu.gov.ph>`,
+This is to confirm that we have successfully received your application at ${lineName}.
+
+We will inform you of any further instructions regarding the next steps in the hiring process once your application has been reviewed.
+
+You can check the status of your application by clicking this link: ${officialUrl}/public/application/${result.applicationId}
+
+Sincerely,
+The HR Team
+${result.orgName}`,
+          `${result.orgName} HR Team`,
         );
-
-        // console.log({ sebtEmail });
+      } catch (mailErr) {
+        console.warn(
+          "[invitation submit] confirmation email failed:",
+          mailErr instanceof Error ? mailErr.message : mailErr,
+        );
       }
+    }
 
-      if (formData.mobileNo && semaphoreKey) {
+    if (formData.mobileNo && semaphoreKey) {
+      try {
         const contact = phNumberFormat(formData.mobileNo);
         await axios.post(
           `https://api.semaphore.co/api/v4/messages`,
@@ -842,29 +853,28 @@ Dear ${formData.firstName} ${formData.lastName},
             number: contact,
             message: `Dear ${formData.firstName} ${formData.lastName},
 
-This is to confirm that we have successfully received your application at ${invitation.line?.name ?? orgName}.
+This is to confirm that we have successfully received your application at ${lineName}.
 
 We will inform you of any further instructions regarding the next steps in the hiring process once your application has been reviewed.
 
 Sincerely,
 The HR Team
-${orgName}`,
+${result.orgName}`,
             apikey: semaphoreKey,
           },
-          {
-            headers: {
-              "Content-Type": "application/json",
-            },
-          },
+          { headers: { "Content-Type": "application/json" } },
+        );
+      } catch (smsErr) {
+        console.warn(
+          "[invitation submit] confirmation SMS failed:",
+          smsErr instanceof Error ? smsErr.message : smsErr,
         );
       }
-
-      return application.id;
-    });
+    }
 
     return res.send({
       success: true,
-      applicationId: result,
+      applicationId: result.applicationId,
       filesUploaded: uploaded.length,
       profilePictureUploaded: !!profilePicture,
     });

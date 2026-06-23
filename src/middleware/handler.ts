@@ -356,7 +356,13 @@ export const sendEmail = async (
   text: string,
   title: string,
 ) => {
-  const from = `${title} <${RESEND_FROM}>`;
+  // `title` is meant to be a display name only. Some callers historically pass
+  // a full "Name <email>" string — strip any embedded address so we never emit
+  // a doubly-bracketed, invalid `from` header (which Resend rejects → 500).
+  const displayName =
+    (title || "").replace(/<[^>]*>/g, "").replace(/[<>"]/g, "").trim() ||
+    "HR Team";
+  const from = `${displayName} <${RESEND_FROM}>`;
 
   // Primary: Resend (when RESEND_API_KEY is configured). Sender is the HR email
   // (RESEND_FROM) with replies routed to the HR mailbox.
