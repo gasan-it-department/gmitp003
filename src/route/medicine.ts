@@ -36,6 +36,7 @@ import {
   exportExpirationList,
   updateMedicineEntry,
   recordMedicineScan,
+  attachMedicineBarcode,
   medicineSync,
   bulkAddMedicineStock,
   exportMedicineReport,
@@ -140,6 +141,12 @@ export const medicine = (fastify: FastifyInstance) => {
     "/medicine/scan-log",
     { preHandler: [authenticated, pharmacyMobileAuth] },
     recordMedicineScan,
+  );
+  // Mobile "Barcode registration": attach a scanned barcode to a medicine.
+  fastify.patch(
+    "/medicine/attach-barcode",
+    { preHandler: [authenticated, pharmacyMobileAuth] },
+    attachMedicineBarcode,
   );
   // Mobile bulk-pull. Returns every Medicine + its MedicineStock rows in
   // the line, optionally only those newer than ?since=<unix-ms>. Mobile

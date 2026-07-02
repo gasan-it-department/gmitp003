@@ -238,6 +238,88 @@ export const updateMedicineEntry = async (
   }
 };
 
+/**
+ * PATCH /medicine/attach-barcode { medicineId, barcode, lineId?, userId? }
+ * Mobile "Barcode registration": attach a scanned barcode to an existing
+ * medicine. Barcode is globally unique — if it's already registered to a
+ * different medicine we return 409 plus that medicine's id/name so the app
+ * can jump straight to its restock page instead.
+ */
+export const attachMedicineBarcode = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as {
+    medicineId?: string;
+    barcode?: string;
+    lineId?: string;
+    userId?: string;
+  };
+  const barcode = body.barcode?.trim();
+  if (!body.medicineId || !barcode)
+    throw new ValidationError("medicineId and barcode are required");
+
+  try {
+    const holder = await prisma.medicine.findUnique({
+      where: { barcode },
+      select: { id: true, name: true, serialNumber: true },
+    });
+    if (holder && holder.id !== body.medicineId) {
+      return res.code(409).send({
+        message: `Barcode already registered to ${holder.name}`,
+        existingMedicineId: holder.id,
+        existingName: holder.name,
+      });
+    }
+
+    const med = await prisma.medicine.findUnique({
+      where: { id: body.medicineId },
+      select: { id: true, name: true, serialNumber: true, phase: true, barcode: true },
+    });
+    if (!med) throw new NotFoundError("Medicine not found");
+    if (med.phase === -1)
+      throw new ValidationError("This medicine has been removed.");
+
+    const updated = await prisma.medicine.update({
+      where: { id: body.medicineId },
+      // Touch timestamp so other devices' incremental /medicine/sync pulls
+      // (which filter on timestamp > since) pick up the new barcode.
+      data: { barcode, timestamp: new Date() },
+    });
+
+    if (body.userId) {
+      try {
+        await prisma.medicineLogs.create({
+          data: {
+            action: 2,
+            userId: body.userId,
+            lineId: body.lineId ?? null,
+            message:
+              `Registered barcode ${barcode} to "${med.name}" ` +
+              `(serial ${med.serialNumber})` +
+              (med.barcode && med.barcode !== barcode
+                ? ` — replaced ${med.barcode}`
+                : ""),
+          },
+        });
+      } catch {
+        /* audit is best-effort */
+      }
+    }
+
+    return res
+      .code(200)
+      .send({ message: "OK", id: updated.id, barcode: updated.barcode });
+  } catch (error) {
+    if (error instanceof NotFoundError) throw error;
+    if (error instanceof ValidationError) throw error;
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
 export const addMedFromExcel = async (
   req: FastifyRequest,
   res: FastifyReply,
