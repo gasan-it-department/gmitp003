@@ -54,6 +54,7 @@ import { leave } from "./route/leave";
 import { services } from "./route/services";
 import { peso } from "./route/peso";
 import { provisional } from "./route/provisional";
+import { sync } from "./route/sync";
 
 import errorHandlerPlugin from "./plugin/errorHandlers";
 //
@@ -168,6 +169,7 @@ app.register(leave);
 app.register(services);
 app.register(peso);
 app.register(provisional);
+app.register(sync);
 io.on("connection", (socket) => {
   console.log("User connected: ", socket.id);
 

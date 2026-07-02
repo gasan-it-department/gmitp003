@@ -1,5 +1,16 @@
 import { FastifyInstance } from "../barrel/fastify";
-import { authenticated, medicineAccessAuth } from "../middleware/handler";
+import {
+  authenticated,
+  medicineAccessAuth,
+  pharmacyMobileAuth,
+} from "../middleware/handler";
+import {
+  listMobileAccess,
+  mobileAccessCandidates,
+  grantMobileAccess,
+  revokeMobileAccess,
+  myMobileAccess,
+} from "../controller/mobileAccessController";
 
 import {
   medicineStorage,
@@ -127,7 +138,7 @@ export const medicine = (fastify: FastifyInstance) => {
   // (serialNumber, lineId), returning its id for client-side dedupe.
   fastify.post(
     "/medicine/scan-log",
-    { preHandler: authenticated },
+    { preHandler: [authenticated, pharmacyMobileAuth] },
     recordMedicineScan,
   );
   // Mobile bulk-pull. Returns every Medicine + its MedicineStock rows in
@@ -135,7 +146,7 @@ export const medicine = (fastify: FastifyInstance) => {
   // mirrors this into local SQLite for the offline scanner / detail.
   fastify.get(
     "/medicine/sync",
-    { preHandler: authenticated },
+    { preHandler: [authenticated, pharmacyMobileAuth] },
     medicineSync,
   );
   // Mobile bulk upload of queued Add Stock ops. Body: { ops: [...] } where
@@ -143,7 +154,7 @@ export const medicine = (fastify: FastifyInstance) => {
   // per-op outcome so the mobile can mark only successes as synced.
   fastify.post(
     "/medicine/add-stock/bulk",
-    { preHandler: authenticated },
+    { preHandler: [authenticated, pharmacyMobileAuth] },
     bulkAddMedicineStock,
   );
   fastify.get(
@@ -167,5 +178,33 @@ export const medicine = (fastify: FastifyInstance) => {
     "/medicine/bulk-upload",
     { preHandler: authenticated },
     medicineBulkUpload,
+  );
+
+  // ── Mobile Access management (web Medicine > Config > Mobile Access tab) ──
+  fastify.get(
+    "/medicine/mobile-access",
+    { preHandler: authenticated },
+    listMobileAccess,
+  );
+  fastify.get(
+    "/medicine/mobile-access/candidates",
+    { preHandler: authenticated },
+    mobileAccessCandidates,
+  );
+  fastify.post(
+    "/medicine/mobile-access",
+    { preHandler: authenticated },
+    grantMobileAccess,
+  );
+  fastify.delete(
+    "/medicine/mobile-access",
+    { preHandler: authenticated },
+    revokeMobileAccess,
+  );
+  // Mobile self-check: does the logged-in user have pharmacy mobile access?
+  fastify.get(
+    "/medicine/mobile-access/me",
+    { preHandler: authenticated },
+    myMobileAccess,
   );
 };

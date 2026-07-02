@@ -58,6 +58,7 @@ model Line {
   MedicineStock           MedicineStock[]
   MedicineStorage         MedicineStorage[]
   MedicineTransaction     MedicineTransaction[]
+  PharmacyMobileAccess    PharmacyMobileAccess[]
   MessageTemplate         MessageTemplate[]
   modules                 Module[]
   Position                Position[]
@@ -1053,6 +1054,9 @@ model User {
   privilegeId                      String?                          @unique
   groupId                          String?
   term                             DateTime?
+  archivedAt                       DateTime?
+  archiveReason                    String?
+  verifyCode                       String?                          @unique
   emailIv                          String?
   phoneNumber                      String?
   phoneNumberIv                    String?
@@ -1103,6 +1107,8 @@ model User {
   MedicineLogs                     MedicineLogs[]
   MedicineNotification             MedicineNotification[]
   MedicineStorageAccess            MedicineStorageAccess[]
+  PharmacyMobileAccess             PharmacyMobileAccess[]           @relation("PharmacyMobileAccessUser")
+  PharmacyMobileAccessGranted      PharmacyMobileAccess[]           @relation("PharmacyMobileAccessGrantedBy")
   MedicineTransaction              MedicineTransaction[]
   modules                          Module[]
   receivedNotifications            Notification[]                   @relation("ReceivedNotifications")
@@ -1179,6 +1185,8 @@ model UserProfilePicture {
   file_type      String?
   file_public_id String
   file_url       String
+  bytes          Bytes? // image stored directly in Postgres (bytea)
+  mime           String?
   timestamp      DateTime @default(now())
   userId         String?  @unique
   user           User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -2167,6 +2175,24 @@ model MedicineStorageAccess {
   user              User            @relation(fields: [userId], references: [id], onDelete: SetDefault)
 }
 
+/// Grants a user line-wide access to the Pharmacy features on the MOBILE app
+/// (scanner + add-stock + sync). Managed from the web Medicine > Config >
+/// "Mobile Access" tab. Without a row here, a logged-in mobile user is blocked
+/// from the pharmacy endpoints (403) — protects medicine data from unauthorized
+/// modification. One row per (line, user).
+model PharmacyMobileAccess {
+  id          String   @id @default(uuid())
+  lineId      String
+  userId      String
+  grantedById String?
+  timestamp   DateTime @default(now())
+  line        Line     @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  user        User     @relation("PharmacyMobileAccessUser", fields: [userId], references: [id], onDelete: Cascade)
+  grantedBy   User?    @relation("PharmacyMobileAccessGrantedBy", fields: [grantedById], references: [id], onDelete: SetNull)
+
+  @@unique([lineId, userId])
+}
+
 model MedicineLogs {
   id        String   @id @default(uuid())
   action    Int      @default(0) // 0 - remove, 1 - add, 2- update, 3 - dispense
@@ -2573,4 +2599,26 @@ model PatientRecord {
   medicineTransaction   MedicineTransaction? @relation(fields: [medicineTransactionId], references: [id], onDelete: SetNull)
   timestamp             DateTime             @default(now())
   medicineTransactionId String?              @unique
+}
+
+/// Generic offline-first sync store for the Gasan Pharmacy desktop app.
+/// One row per (tableName, recordId) where recordId is the client-generated
+/// UUID of the local row — so re-pushing the same record is an idempotent
+/// upsert (this is the duplication guard). `payload` holds the full local
+/// row as JSON; `updatedAt` is the client's domain timestamp (last-write-wins);
+/// `serverAt` is the server change time used as the pull cursor; `deletedAt`
+/// carries soft-delete tombstones. Scoped per line so each LGU only syncs
+/// its own pharmacy data.
+model SyncRecord {
+  id        String    @id @default(uuid())
+  tableName String
+  recordId  String
+  lineId    String?
+  payload   Json
+  updatedAt DateTime
+  deletedAt DateTime?
+  serverAt  DateTime  @default(now()) @updatedAt
+
+  @@unique([tableName, recordId])
+  @@index([tableName, lineId, serverAt])
 }

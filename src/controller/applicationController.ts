@@ -1444,6 +1444,25 @@ export const applicationList = async (
       },
     });
 
+    // "Has record" — does this applicant already have prior history in the
+    // line? True when they were previously hired (linked to a User), have an
+    // invitation (live or past), or applied more than once (same name). The
+    // repeat-name set is one grouped query over the line's plain-text names.
+    // Skipped for the eligible-only picker, which doesn't surface the badge.
+    let repeatNames = new Set<string>();
+    if (!eligibleOnly) {
+      const nameGroups = await prisma.submittedApplication.groupBy({
+        by: ["firstname", "lastname"],
+        where: { lineId: params.id as string },
+        _count: { _all: true },
+      });
+      repeatNames = new Set(
+        nameGroups
+          .filter((g) => (g._count?._all ?? 0) > 1)
+          .map((g) => `${g.firstname} ${g.lastname}`.toLowerCase()),
+      );
+    }
+
     // ── Eligibility annotation + optional drop ─────────────────────────
     // An application's invitation is "live" when it isn't concluded AND
     // either has no expiresAt or hasn't expired yet. Once that's true,
@@ -1466,7 +1485,13 @@ export const applicationList = async (
           : liveInvite
             ? "invited"
             : "eligible";
-      return { ...row, eligibility };
+      const hasRecord =
+        converted ||
+        !!inv ||
+        repeatNames.has(
+          `${row.firstname} ${row.lastname}`.toLowerCase(),
+        );
+      return { ...row, eligibility, hasRecord };
     });
 
     const filtered = eligibleOnly

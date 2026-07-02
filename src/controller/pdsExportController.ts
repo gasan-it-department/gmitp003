@@ -33,7 +33,24 @@ const obj = (v: unknown): any => (v && typeof v === "object" ? v : {});
 const S = (v: unknown) => {
   if (v === null || v === undefined) return "";
   const s = String(v).trim();
-  return s === "N/A" ? "" : s;
+  // Treat placeholder/garbage values as empty so they never render on the form.
+  // (Older submissions saved literal "undefined"/"null" strings for blank fields.)
+  const low = s.toLowerCase();
+  if (s === "N/A" || low === "undefined" || low === "null") return "";
+  return s;
+};
+
+// Format a full date string (ISO or yyyy-mm-dd) as dd/mm/yyyy — the format the
+// CS Form 212 expects. Year-only ("2010") or non-date strings pass through
+// unchanged, so it's safe to apply to any date-ish cell.
+const fmtDate = (v: unknown): string => {
+  const s = S(v);
+  if (!s || !/^\d{4}-\d{2}-\d{2}/.test(s)) return s;
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return s;
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  return `${dd}/${mm}/${d.getUTCFullYear()}`;
 };
 
 // ── PSGC code → place name resolution ─────────────────────────────────────
@@ -273,6 +290,9 @@ export const exportPdsExcel = async (
     philSys,
     tinNo,
     agencyNo,
+    spouseSurname,
+    spouseFirstname,
+    spouseMiddle,
   ] = await Promise.all([
     dec(app.email, app.emailIv),
     dec(app.cvilStatus, app.cvilStatusIv),
@@ -300,6 +320,9 @@ export const exportPdsExcel = async (
     dec(app.philSys, app.philSysIv),
     dec(app.tinNo, app.tinNoIv),
     dec(app.agencyNo, app.agencyNoIv),
+    dec(app.spouseSurname, app.spouseSurnameIv),
+    dec(app.spouseFirstname, app.spouseFirstnameIv),
+    dec(app.spouseMiddle, app.spouseMiddleIv),
   ]);
 
   // Resolve PSGC codes → place names (province / city-municipality / barangay).
@@ -337,7 +360,7 @@ export const exportPdsExcel = async (
     D11: app.firstname,
     D12: app.middleName,
     L12: app.suffix,
-    D13: birthDate,
+    D13: fmtDate(birthDate),
     // Citizenship (J13), Sex (D16) and Civil Status (D17) are NOT typed here —
     // they are official form-control checkboxes, ticked via tickCheckboxes().
     D22: app.height,
@@ -362,6 +385,10 @@ export const exportPdsExcel = async (
     I32: app.teleNo,
     I33: mobileNo,
     I34: email,
+    // Spouse (item 22) — value cells mirror the father/mother layout.
+    D36: spouseSurname,
+    D37: spouseFirstname,
+    D38: spouseMiddle,
     D43: fatherSurname,
     D44: fatherFirstname,
     D47: motherSurname,
@@ -369,7 +396,7 @@ export const exportPdsExcel = async (
   };
   children.slice(0, 11).forEach((ch, i) => {
     c1[`I${37 + i}`] = ch?.fullname;
-    c1[`M${37 + i}`] = ch?.dateOfBirth;
+    c1[`M${37 + i}`] = fmtDate(ch?.dateOfBirth);
   });
   const eduRow = (row: number, e: any) => {
     if (!e) return;
@@ -397,10 +424,10 @@ export const exportPdsExcel = async (
       const r = 5 + i;
       c2[`A${r}`] = el?.title;
       c2[`F${r}`] = el?.rating;
-      c2[`G${r}`] = el?.dateExami;
+      c2[`G${r}`] = fmtDate(el?.dateExami);
       c2[`I${r}`] = el?.placeOfExam;
       c2[`J${r}`] = el?.licenceNumber;
-      c2[`K${r}`] = el?.licenceValidity;
+      c2[`K${r}`] = fmtDate(el?.licenceValidity);
     });
   arr(app.experience)
     .slice(0, 28)

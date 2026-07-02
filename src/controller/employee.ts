@@ -10,6 +10,10 @@ import {
   PROVISIONAL_STATUSES,
   PROVISIONAL_ENDED,
 } from "./provisionalController";
+import QRCode from "qrcode";
+import { randomUUID } from "crypto";
+import { tempURL } from "../service/url";
+import { getCardExtras } from "./idCardController";
 
 export const getAllEmpoyees = async (
   req: FastifyRequest,
@@ -238,6 +242,8 @@ export const employees = async (req: FastifyRequest, res: FastifyReply) => {
     const response = await prisma.user.findMany({
       where: {
         lineId: params.id,
+        // Concluded/separated personnel live on the Archived page, not here.
+        archivedAt: null,
         ...filter,
       },
       skip: cursor ? 1 : 0,
@@ -382,6 +388,7 @@ export const decryptUserData = async (
             amount: true,
           },
         },
+        userProfilePictures: { select: { file_url: true } },
         email: true,
         emailIv: true,
         submittedApplications: {
@@ -557,6 +564,7 @@ export const decryptUserData = async (
       Position: targetUser.Position,
       position: targetUser.Position,
       SalaryGrade: targetUser.SalaryGrade,
+      userProfilePictures: targetUser.userProfilePictures,
     };
 
     // Decrypt submitted application if it exists
@@ -890,4 +898,442 @@ export const deleteUser = async (req: FastifyRequest, res: FastifyReply) => {
     }
     throw error;
   }
+};
+
+// GET /user/record?userId=&lineId=
+// Read-only platform history for one person, merged into a single timeline:
+//   • appointment — position/slot placements (UnitPositionHistory)
+//   • employment  — provisional hire/renew/transfer/end. HR logs are keyed by
+//                   the ACTOR, so we match the subject by their plain-text name
+//                   inside the log description (how those actions write it).
+//   • leave       — leave records (Leave)
+//   • activity    — account/system activity (ActivityLogs)
+export const userRecord = async (req: FastifyRequest, res: FastifyReply) => {
+  const q = req.query as { userId?: string; lineId?: string };
+  if (!q.userId) throw new ValidationError("INVALID REQUIRED USER ID");
+
+  const user = await prisma.user.findUnique({
+    where: { id: q.userId },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      status: true,
+      term: true,
+      lineId: true,
+    },
+  });
+  if (!user) throw new NotFoundError("USER NOT FOUND");
+
+  const lineId = q.lineId || user.lineId || undefined;
+  const TAKE = 100;
+
+  const [appointments, leaves, activity, hrLogs] = await Promise.all([
+    prisma.unitPositionHistory.findMany({
+      where: { userId: user.id },
+      orderBy: { timestamp: "desc" },
+      take: TAKE,
+      select: {
+        id: true,
+        timestamp: true,
+        unitPost: {
+          select: {
+            designation: true,
+            itemNumber: true,
+            position: { select: { name: true } },
+            unit: { select: { name: true } },
+          },
+        },
+      },
+    }),
+    prisma.leave.findMany({
+      where: { userId: user.id },
+      orderBy: { createdAt: "desc" },
+      take: TAKE,
+      select: {
+        id: true,
+        type: true,
+        days: true,
+        startDate: true,
+        endDate: true,
+        status: true,
+        createdAt: true,
+      },
+    }),
+    prisma.activityLogs.findMany({
+      where: { userId: user.id },
+      orderBy: { timestamp: "desc" },
+      take: TAKE,
+      select: { id: true, action: true, desc: true, timestamp: true },
+    }),
+    lineId
+      ? prisma.humanResourcesLogs.findMany({
+          where: {
+            lineId,
+            desc: {
+              contains: `${user.firstName} ${user.lastName}`,
+              mode: "insensitive",
+            },
+          },
+          orderBy: { timestamp: "desc" },
+          take: TAKE,
+          select: { id: true, action: true, desc: true, timestamp: true },
+        })
+      : Promise.resolve([] as { id: string; action: string; desc: string; timestamp: Date }[]),
+  ]);
+
+  type Item = {
+    id: string;
+    type: "appointment" | "employment" | "leave" | "activity";
+    title: string;
+    detail: string;
+    timestamp: Date;
+  };
+  const timeline: Item[] = [];
+
+  for (const a of appointments) {
+    const pos =
+      a.unitPost?.position?.name || a.unitPost?.designation || "a position";
+    const bits = [
+      a.unitPost?.unit?.name,
+      a.unitPost?.itemNumber && a.unitPost.itemNumber !== "N/A"
+        ? `Item ${a.unitPost.itemNumber}`
+        : null,
+    ].filter(Boolean);
+    timeline.push({
+      id: `appt-${a.id}`,
+      type: "appointment",
+      title: `Appointed to ${pos}`,
+      detail: bits.join(" · "),
+      timestamp: a.timestamp,
+    });
+  }
+  for (const l of leaves) {
+    timeline.push({
+      id: `leave-${l.id}`,
+      type: "leave",
+      title: `${l.type} leave — ${l.status}`,
+      detail: `${l.days} day(s) · ${new Date(l.startDate).toLocaleDateString()} – ${new Date(l.endDate).toLocaleDateString()}`,
+      timestamp: l.createdAt,
+    });
+  }
+  for (const h of hrLogs) {
+    timeline.push({
+      id: `hr-${h.id}`,
+      type: "employment",
+      title: h.desc,
+      detail: h.action,
+      timestamp: h.timestamp,
+    });
+  }
+  for (const ac of activity) {
+    timeline.push({
+      id: `act-${ac.id}`,
+      type: "activity",
+      title: ac.desc || `Activity #${ac.action}`,
+      detail: "",
+      timestamp: ac.timestamp,
+    });
+  }
+
+  timeline.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+
+  return res.code(200).send({
+    user: {
+      id: user.id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      status: user.status,
+      term: user.term,
+    },
+    counts: {
+      appointment: appointments.length,
+      employment: hrLogs.length,
+      leave: leaves.length,
+      activity: activity.length,
+    },
+    timeline,
+  });
+};
+
+// GET /archived-personnel?id=lineId&query&lastCursor&limit
+// Concluded/separated personnel (plantilla + non-plantilla) — anyone with an
+// archivedAt set. Mirrors the Employees select plus status/term/archive info.
+export const archivedPersonnel = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as PagingProps;
+  if (!params.id) throw new ValidationError("BAD_REQUEST");
+
+  try {
+    const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
+    const limit = params.limit ? parseInt(params.limit, 10) : 20;
+    const filter: any = {};
+
+    if (params.query) {
+      const q = params.query.trim();
+      filter.OR = [
+        { lastName: { contains: q, mode: "insensitive" } },
+        { firstName: { contains: q, mode: "insensitive" } },
+        { middleName: { contains: q, mode: "insensitive" } },
+        { username: { contains: q, mode: "insensitive" } },
+      ];
+    }
+
+    const response = await prisma.user.findMany({
+      where: {
+        lineId: params.id,
+        // "archived" = archivedAt is set. Prisma 7 rejects { not: null }, so
+        // express it as NOT { archivedAt: null }.
+        NOT: { archivedAt: null },
+        ...filter,
+      },
+      skip: cursor ? 1 : 0,
+      take: limit,
+      cursor,
+      orderBy: [{ archivedAt: "desc" }, { id: "desc" }],
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        middleName: true,
+        username: true,
+        status: true,
+        term: true,
+        archivedAt: true,
+        archiveReason: true,
+        userProfilePictures: { select: { file_url: true } },
+        PositionSlot: { select: { pos: { select: { name: true } } } },
+        Position: { select: { name: true } },
+        department: { select: { name: true, id: true } },
+      },
+    });
+
+    const newLastCursorId =
+      response.length > 0 ? response[response.length - 1].id : null;
+    const hasMore = response.length === limit;
+
+    return res
+      .code(200)
+      .send({ list: response, lastCursor: newLastCursorId, hasMore });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DATABASE_CONNECTION_ERROR", 500, "DB_FAILED");
+    }
+    throw error;
+  }
+};
+
+// POST /archived-personnel/restore  { userId, lineId, actorId }
+// Un-archive a person and re-enable their account login.
+export const restorePersonnel = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as {
+    userId?: string;
+    lineId?: string;
+    actorId?: string;
+  };
+  if (!body.userId || !body.lineId) {
+    throw new ValidationError("INVALID REQUIRED FIELDS");
+  }
+  const lineId = body.lineId;
+  const actorId = body.actorId;
+
+  const user = await prisma.user.findFirst({
+    where: { id: body.userId, lineId },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      accountId: true,
+    },
+  });
+  if (!user) throw new NotFoundError("USER NOT FOUND");
+
+  await prisma.$transaction(async (tx) => {
+    await tx.user.update({
+      where: { id: user.id },
+      data: { archivedAt: null, archiveReason: null },
+    });
+    if (user.accountId) {
+      await tx.account.update({
+        where: { id: user.accountId },
+        data: { active: true, status: 1 },
+      });
+    }
+    if (actorId) {
+      await tx.humanResourcesLogs.create({
+        data: {
+          action: "UPDATE",
+          desc: `RESTORED -> ${user.firstName} ${user.lastName} un-archived and account re-enabled`,
+          lineId,
+          userId: actorId,
+        },
+      });
+    }
+  });
+
+  return res.code(200).send({ message: "OK" });
+};
+
+// GET /user/verify-info?userId=   (authenticated)
+// Returns the employee's verification QR (data URL) + the verify link. The code
+// is a stable per-user token (generated once); the QR encodes the public
+// /verify-id page so anyone can confirm the ID against the live record.
+export const userVerifyInfo = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const q = req.query as { userId?: string };
+  if (!q.userId) throw new ValidationError("INVALID REQUIRED USER ID");
+  const user = await prisma.user.findUnique({
+    where: { id: q.userId },
+    select: { id: true, verifyCode: true },
+  });
+  if (!user) throw new NotFoundError("USER NOT FOUND");
+
+  let code = user.verifyCode;
+  if (!code) {
+    code = randomUUID().replace(/-/g, "");
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { verifyCode: code },
+    });
+  }
+
+  const base = (tempURL() || "").replace(/\/+$/, "");
+  const verifyUrl = `${base}/verify-id?code=${code}`;
+  const qr = await QRCode.toDataURL(verifyUrl, { margin: 1, width: 1024 });
+  // optional ID-card fields (PII) — safe here since this route is authenticated
+  const extras = await getCardExtras(user.id);
+  return res.code(200).send({ code, verifyUrl, qr, extras });
+};
+
+// GET /id/verify?code=   (PUBLIC — scanned from the ID's QR)
+// Confirms whether the code maps to a real, currently-active employee.
+export const verifyId = async (req: FastifyRequest, res: FastifyReply) => {
+  const q = req.query as { code?: string };
+  if (!q.code) throw new ValidationError("INVALID CODE");
+  const user = await prisma.user.findUnique({
+    where: { verifyCode: q.code },
+    select: {
+      firstName: true,
+      lastName: true,
+      middleName: true,
+      suffix: true,
+      status: true,
+      archivedAt: true,
+      userProfilePictures: { select: { file_url: true } },
+      account: { select: { active: true } },
+      department: { select: { name: true } },
+      Position: { select: { name: true } },
+      PositionSlot: { select: { pos: { select: { name: true } } } },
+      line: { select: { name: true } },
+    },
+  });
+  if (!user) return res.code(200).send({ found: false, valid: false });
+
+  const active = user.account?.active !== false && !user.archivedAt;
+  const position =
+    user.PositionSlot?.pos?.name || user.Position?.name || user.status || null;
+  return res.code(200).send({
+    found: true,
+    valid: active,
+    fullName: [user.firstName, user.middleName, user.lastName, user.suffix]
+      .filter(Boolean)
+      .join(" "),
+    position,
+    department: user.department?.name ?? null,
+    line: user.line?.name ?? null,
+    status: user.status,
+    photoUrl: user.userProfilePictures?.file_url ?? null,
+  });
+};
+
+// the API's own public base (so file_url resolves for <img> and the PDF fetch)
+const selfBase = (req: FastifyRequest): string => {
+  const env = process.env.API_PUBLIC_URL;
+  if (env) return env.replace(/\/+$/, "");
+  const proto = String(
+    req.headers["x-forwarded-proto"] || req.protocol || "http",
+  ).split(",")[0];
+  const host = (req.headers["x-forwarded-host"] as string) || req.headers.host;
+  return `${proto}://${host}`;
+};
+
+// POST /user/profile-picture   (authenticated, multipart)
+// Store the picture directly in Postgres (bytea). file_url points to the
+// serve endpoint below so every existing consumer keeps working.
+export const updateProfilePicture = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  if (!req.isMultipart()) throw new ValidationError("NOT_MULTIPART");
+
+  let userId = "";
+  let file: { filename: string; mimetype: string; buffer: Buffer } | null =
+    null;
+  for await (const part of req.parts()) {
+    if (part.type === "file") {
+      const chunks: Buffer[] = [];
+      for await (const chunk of part.file) chunks.push(chunk as Buffer);
+      file = {
+        filename: part.filename,
+        mimetype: part.mimetype,
+        buffer: Buffer.concat(chunks),
+      };
+    } else if (part.fieldname === "userId") {
+      userId = String(part.value);
+    }
+  }
+
+  if (!userId || !file) throw new ValidationError("MISSING_FILE_OR_USER");
+  if (!file.mimetype.startsWith("image/"))
+    throw new ValidationError("FILE_MUST_BE_AN_IMAGE");
+  if (file.buffer.length > 8 * 1024 * 1024)
+    throw new ValidationError("IMAGE_TOO_LARGE");
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true },
+  });
+  if (!user) throw new NotFoundError("USER NOT FOUND");
+
+  // cache-busting URL so the avatar refreshes after each re-upload
+  const fileUrl = `${selfBase(req)}/user/photo/${userId}?v=${Date.now()}`;
+  const data = {
+    file_name: file.filename || "avatar",
+    file_url: fileUrl,
+    file_public_id: "",
+    file_size: String(file.buffer.length),
+    file_type: "image",
+    mime: file.mimetype,
+    bytes: file.buffer,
+  };
+  const saved = await prisma.userProfilePicture.upsert({
+    where: { userId },
+    update: data,
+    create: { userId, ...data },
+  });
+
+  return res.code(200).send({ file_url: saved.file_url });
+};
+
+// GET /user/photo/:userId   (PUBLIC — used as an <img> src)
+// Streams the bytea image stored in Postgres.
+export const servePhoto = async (req: FastifyRequest, res: FastifyReply) => {
+  const { userId } = req.params as { userId?: string };
+  if (!userId) throw new ValidationError("BAD_REQUEST");
+  const pic = await prisma.userProfilePicture.findUnique({
+    where: { userId },
+    select: { bytes: true, mime: true },
+  });
+  if (!pic?.bytes) return res.code(404).send({ message: "No photo" });
+  return res
+    .header("Content-Type", pic.mime || "image/jpeg")
+    .header("Cache-Control", "public, max-age=300")
+    .send(Buffer.from(pic.bytes));
 };

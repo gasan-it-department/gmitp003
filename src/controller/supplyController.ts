@@ -2085,7 +2085,15 @@ export const timebaseReport = async (
 
     const processedData = response.map((item) => {
       const records = item.SupplyDispenseRecord;
-      const receiveHistory = item.supply?.SupplieRecieveHistory ?? [];
+      // Scope received qty to THIS batch (segmented by unit/quality + per-qty).
+      // Receive history is fetched per supply+list, but a supply can have
+      // several batches in one list — without this filter every batch row would
+      // show the supply's combined receive total.
+      const receiveHistory = (item.supply?.SupplieRecieveHistory ?? []).filter(
+        (r) =>
+          (r.quality ?? null) === (item.quality ?? null) &&
+          (r.perQuantity || 0) === (item.perQuantity || 0),
+      );
 
       // ── Initial QTY = Σ (receive.quantity × receive.perQuantity) ─────────
       const totalStock = receiveHistory.reduce(
@@ -2268,7 +2276,13 @@ export const timebaseReportExport = async (
 
     const items = rows.map((item) => {
       const records = item.SupplyDispenseRecord;
-      const receiveHistory = item.supply?.SupplieRecieveHistory ?? [];
+      // Scope received qty to THIS batch (unit/quality + per-qty), matching the
+      // on-screen report.
+      const receiveHistory = (item.supply?.SupplieRecieveHistory ?? []).filter(
+        (r) =>
+          (r.quality ?? null) === (item.quality ?? null) &&
+          (r.perQuantity || 0) === (item.perQuantity || 0),
+      );
 
       // Initial QTY = Σ (receive.quantity × receive.perQuantity)
       const totalStock = receiveHistory.reduce(
@@ -2675,4 +2689,270 @@ export const uploadBulkExcel = async (
     }
     throw new AppError("INTERNAL_ERROR", 500, "An unexpected error occurred");
   }
+};
+
+// POST /supply/restock
+// DIRECT re-stock: add stock to a supply inside a container/list WITHOUT going
+// through the order process (no SupplyOrder / purchase-request workflow). It
+// mirrors the stock-writing half of the order fulfillment (saveItemOrder) so
+// the order/transaction system stays fully intact for those who still need it.
+export const restockSupply = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as {
+    suppliesId?: string;
+    inventoryBoxId?: string;
+    listId?: string; // SupplyBatch id
+    quantity?: number | string;
+    perQuantity?: number | string;
+    quality?: string | null;
+    supplier?: string | null; // supplier id OR free-text name
+    price?: number | string | null;
+    expiration?: string | null;
+    brand?: string | null; // comma-separated
+    lineId?: string;
+    userId?: string;
+    // The container dataset the item belongs to (datasets are per-container, and
+    // a list isn't pinned to one). Required when creating a new item.
+    datasetId?: string;
+    // When creating a brand-new item, pass newItem to create the supply in the
+    // chosen dataset and stock it in one shot — still no order process.
+    newItem?: {
+      item?: string;
+      description?: string | null;
+      consumable?: boolean;
+    } | null;
+  };
+
+  if (
+    (!body.suppliesId && !body.newItem?.item?.trim()) ||
+    !body.inventoryBoxId ||
+    !body.listId ||
+    !body.quantity
+  ) {
+    throw new ValidationError(
+      "An existing item (suppliesId) or a new item name, plus inventoryBoxId, listId and quantity, are required",
+    );
+  }
+
+  const quantity = parseInt(String(body.quantity), 10);
+  if (Number.isNaN(quantity) || quantity < 1) {
+    throw new ValidationError("Quantity must be a positive number");
+  }
+  const perQuantity = body.perQuantity
+    ? parseInt(String(body.perQuantity), 10) || 1
+    : 1;
+  const priceValue = body.price ? Math.round(parseFloat(String(body.price))) || 0 : 0;
+  const addedStock = quantity * perQuantity;
+  const brands = body.brand
+    ? String(body.brand)
+        .split(",")
+        .map((b) => b.trim())
+        .filter((b) => b.length > 0)
+    : [];
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      // Resolve (or create) the supply item.
+      let supply;
+      let suppliesId: string;
+      if (body.suppliesId) {
+        supply = await tx.supplies.findUnique({
+          where: { id: body.suppliesId },
+        });
+        if (!supply) throw new NotFoundError("Supply not found");
+        suppliesId = supply.id;
+      } else {
+        // New item — create it in the chosen container dataset, then stock it.
+        if (!body.datasetId) {
+          throw new ValidationError(
+            "Pick a dataset for the new item before adding it.",
+          );
+        }
+        if (!body.lineId) {
+          throw new ValidationError("lineId is required to create a new item");
+        }
+        const code = await generatedItemCode();
+        supply = await tx.supplies.create({
+          data: {
+            item: body.newItem!.item!.trim(),
+            description: body.newItem?.description ?? null,
+            consumable: !!body.newItem?.consumable,
+            suppliesDataSetId: body.datasetId,
+            lineId: body.lineId,
+            code,
+          },
+        });
+        suppliesId = supply.id;
+        if (body.userId) {
+          await tx.inventoryAccessLogs.create({
+            data: {
+              userId: body.userId,
+              inventoryBoxId: body.inventoryBoxId,
+              action: `Added Supply (direct): ${supply.item}`,
+              timestamp: new Date(),
+            },
+          });
+        }
+      }
+
+      // Resolve supplier — accept an id, a known name, or create a new one.
+      // Supplier.name is GLOBALLY unique, so reuse any existing match by name
+      // (regardless of line) before creating, to avoid a unique violation.
+      let supplierId: string | undefined;
+      if (body.supplier && body.supplier.trim()) {
+        const raw = body.supplier.trim();
+        const byId = await tx.supplier.findUnique({ where: { id: raw } });
+        if (byId) {
+          supplierId = byId.id;
+        } else {
+          const byName = await tx.supplier.findFirst({
+            where: { name: { equals: raw, mode: "insensitive" } },
+          });
+          if (byName) supplierId = byName.id;
+          else if (body.lineId) {
+            const created = await tx.supplier.create({
+              data: { name: raw, lineId: body.lineId },
+            });
+            supplierId = created.id;
+          }
+        }
+      }
+
+      const optional: any = {};
+      if (body.expiration)
+        optional.expiration = new Date(body.expiration).toISOString();
+      if (supplierId) optional.supplierId = supplierId;
+
+      const brandCreates = brands.map((brand) => ({ brand, suppliesId }));
+
+      // Stock is segmented per (item, batch, container, supplier, unit,
+      // perQuantity) — same key the order flow uses, so direct restocks merge
+      // cleanly into existing batches instead of fragmenting them.
+      const stock = await tx.supplyStockTrack.findFirst({
+        where: {
+          suppliesId,
+          supplyBatchId: body.listId,
+          inventoryBoxId: body.inventoryBoxId,
+          supplierId: supplierId ?? null,
+          quality: body.quality ?? null,
+          perQuantity,
+        },
+      });
+
+      if (stock) {
+        await tx.supplyStockTrack.update({
+          where: { id: stock.id },
+          data: {
+            stock: stock.stock + addedStock,
+            quantity: stock.quantity + quantity,
+            ...(body.quality ? { quality: body.quality } : {}),
+            ...optional,
+            ...(brandCreates.length > 0
+              ? { brand: { createMany: { data: brandCreates } } }
+              : {}),
+            price: { create: { value: priceValue, suppliesId } },
+          },
+        });
+      } else {
+        await tx.supplyStockTrack.create({
+          data: {
+            suppliesId,
+            stock: addedStock,
+            quantity,
+            quality: body.quality ?? null,
+            perQuantity,
+            inventoryBoxId: body.inventoryBoxId,
+            supplyBatchId: body.listId,
+            ...optional,
+            price: { create: { value: priceValue, suppliesId } },
+            ...(brandCreates.length > 0
+              ? { brand: { createMany: { data: brandCreates } } }
+              : {}),
+          },
+        });
+      }
+
+      // Receive history — the Time-Based / Issuance report derives received QTY
+      // (and Balance On Stock) from SupplieRecieveHistory, NOT from
+      // SupplyStockTrack. An order fulfillment writes this row, so a direct
+      // restock must too, or the report shows QTY 0 and a negative balance.
+      await tx.supplieRecieveHistory.create({
+        data: {
+          suppliesId,
+          quality: body.quality ?? null,
+          quantity, // received units of measure (× perQuantity in the report)
+          perQuantity,
+          pricePerItem: body.price ? parseFloat(String(body.price)) || 0 : 0,
+          condition: "New",
+          supplyBatchId: body.listId,
+          inventoryBoxId: body.inventoryBoxId,
+          ...(supplierId ? { supplierId } : {}),
+        },
+      });
+
+      // Audit trail (system requirement) — the stock-in is still recorded even
+      // though it skipped the order process.
+      if (body.userId && body.lineId) {
+        await tx.inventoryLogs.create({
+          data: {
+            lineId: body.lineId,
+            userId: body.userId,
+            action: 1,
+            desc: `DIRECT RESTOCK: +${addedStock} unit(s) of "${supply.item}" (qty ${quantity} x ${perQuantity})`,
+          },
+        });
+      }
+    });
+
+    return res.code(200).send({ message: "OK" });
+  } catch (error) {
+    if (error instanceof NotFoundError || error instanceof ValidationError) {
+      throw error;
+    }
+    console.error("[restock] failed:", error);
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      const meta = (error.meta ?? {}) as Record<string, unknown>;
+      const target = meta.target ?? meta.field_name ?? meta.modelName;
+      throw new AppError(
+        `Restock DB error ${error.code}${target ? ` (${Array.isArray(target) ? target.join(", ") : target})` : ""}`,
+        500,
+        "DB_ERROR",
+      );
+    }
+    throw new AppError(
+      `Restock failed: ${error instanceof Error ? error.message : "unknown"}`,
+      500,
+      "DB_ERROR",
+    );
+  }
+};
+
+// GET /supply/container-datasets?id=<inventoryBoxId>
+// Datasets belong to a CONTAINER (a container can have several), and lists
+// aren't pinned to one — so the direct "Add item" form searches/creates within
+// the container's datasets. Returns them with their supply counts.
+export const containerDatasets = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as { id?: string };
+  if (!params.id) throw new ValidationError("INVALID REQUIRED ID");
+  const datasets = await prisma.suppliesDataSet.findMany({
+    where: { inventoryBoxId: params.id },
+    orderBy: { timestamp: "asc" },
+    select: {
+      id: true,
+      title: true,
+      _count: { select: { supplies: true } },
+    },
+  });
+  return res.code(200).send({
+    list: datasets.map((d) => ({
+      id: d.id,
+      title: d.title,
+      count: d._count.supplies,
+    })),
+  });
 };

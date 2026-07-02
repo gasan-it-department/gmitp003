@@ -234,26 +234,74 @@ export const provisionalInvite = async (
         },
       });
 
-      // Eligible = not yet registered AND no live (non-concluded, unexpired)
-      // invite. Ineligible / not-found ones are skipped, not failed.
       const now = new Date();
-      const eligible = applications.filter((a) => {
-        if (a.userId) return false;
-        const prev = a.fillPositionInvitations;
-        const live =
-          !!prev && !prev.concluded && (!prev.expiresAt || prev.expiresAt > now);
-        return !live;
-      });
-      const skipped = appIds.length - eligible.length;
 
-      if (eligible.length === 0) {
+      // Split the selections:
+      //  • NEW applicants (no user yet) → send a registration invite + email.
+      //  • ALREADY-REGISTERED users who are ended/archived (e.g. a removed
+      //    person who was restored) → RE-ASSIGN them directly into the slot,
+      //    no re-registration. Anyone actively placed or with a live invite is
+      //    skipped (not failed).
+      const registeredIds = applications
+        .filter((a) => a.userId)
+        .map((a) => a.userId as string);
+      const userById = new Map<
+        string,
+        {
+          id: string;
+          status: string;
+          accountId: string | null;
+          archivedAt: Date | null;
+          firstName: string;
+          lastName: string;
+        }
+      >();
+      if (registeredIds.length) {
+        const us = await tx.user.findMany({
+          where: { id: { in: registeredIds } },
+          select: {
+            id: true,
+            status: true,
+            accountId: true,
+            archivedAt: true,
+            firstName: true,
+            lastName: true,
+          },
+        });
+        us.forEach((u) => userById.set(u.id, u));
+      }
+
+      const toInvite: typeof applications = [];
+      const toReassign: {
+        app: (typeof applications)[number];
+        user: NonNullable<ReturnType<typeof userById.get>>;
+      }[] = [];
+      for (const a of applications) {
+        if (a.userId) {
+          const u = userById.get(a.userId);
+          if (u && (u.status === PROVISIONAL_ENDED || u.archivedAt)) {
+            toReassign.push({ app: a, user: u });
+          }
+          // else: actively placed / regular employee → skip
+        } else {
+          const prev = a.fillPositionInvitations;
+          const live =
+            !!prev && !prev.concluded && (!prev.expiresAt || prev.expiresAt > now);
+          if (!live) toInvite.push(a);
+          // else: live invite already → skip
+        }
+      }
+
+      const totalToFill = toInvite.length + toReassign.length;
+      const skipped = appIds.length - totalToFill;
+      if (totalToFill === 0) {
         throw new ValidationError(
-          "None of the selected applicants are eligible (already registered or have a live invite).",
+          "None of the selected applicants are eligible (already placed, or have a live invite).",
         );
       }
-      if (eligible.length > available) {
+      if (totalToFill > available) {
         throw new ValidationError(
-          `Only ${available} slot(s) open for "${position.title}", but ${eligible.length} eligible applicant(s) were selected.`,
+          `Only ${available} slot(s) open for "${position.title}", but ${totalToFill} selection(s) were made.`,
         );
       }
 
@@ -265,7 +313,8 @@ export const provisionalInvite = async (
         firstname: string;
       }[] = [];
 
-      for (const application of eligible) {
+      // 1) NEW applicants → registration invite + email.
+      for (const application of toInvite) {
         // submittedApplicationId is @unique, so detach any stale prior invite.
         const prev = application.fillPositionInvitations;
         if (prev) {
@@ -295,9 +344,6 @@ export const provisionalInvite = async (
           },
         });
 
-        // Move the application out of "Pending" — it's been acted on (selected
-        // + invited to a position). applicationStatus: 0 Pending / 1 Viewed /
-        // 2 Concluded.
         await tx.submittedApplication.update({
           where: { id: application.id },
           data: { status: 2 },
@@ -320,7 +366,75 @@ export const provisionalInvite = async (
         });
       }
 
-      return { created, skipped, position, unit, expiresAt };
+      // 2) ALREADY-REGISTERED (restored/ended) users → re-assign directly.
+      const term = new Date(now);
+      term.setMonth(term.getMonth() + (position.termMonths || 0));
+      let reassigned = 0;
+      for (const { app, user } of toReassign) {
+        const prev = app.fillPositionInvitations;
+        if (prev) {
+          await tx.fillPositionInvitation.update({
+            where: { id: prev.id },
+            data: { submittedApplicationId: null },
+          });
+        }
+        // An ACCEPTED invitation occupies the slot (that's what "filled" counts).
+        await tx.fillPositionInvitation.create({
+          data: {
+            email: "",
+            message,
+            lineId,
+            provisionalPositionId: position.id,
+            departmentId: unit.id,
+            empType: position.empType,
+            submittedApplicationId: app.id,
+            expiresAt,
+            concluded: true,
+            concludedAt: now,
+            concludedReason: "accepted",
+          },
+        });
+        await tx.user.update({
+          where: { id: user.id },
+          data: {
+            status: position.empType,
+            departmentId: unit.id,
+            term,
+            ...(position.salaryGradeId
+              ? { salaryGradeId: position.salaryGradeId }
+              : {}),
+            archivedAt: null,
+            archiveReason: null,
+          },
+        });
+        if (user.accountId) {
+          await tx.account.update({
+            where: { id: user.accountId },
+            data: { active: true, status: 1 },
+          });
+        }
+        await createUserNotification(tx, {
+          recipientId: user.id,
+          title: "Assigned to a provisional position",
+          content: `You have been assigned as "${position.title}" (${position.empType}) in ${unit.name ?? "your unit"}.`,
+          senderId: null,
+        });
+        await tx.humanResourcesLogs.create({
+          data: {
+            action: "UPDATE",
+            desc: `PROVISIONAL reassign -> ${user.firstName} ${user.lastName} to "${position.title}" in ${unit.name ?? "unit"}`,
+            lineId,
+            userId: actorId,
+          },
+        });
+        await tx.submittedApplication.update({
+          where: { id: app.id },
+          data: { status: 2 },
+        });
+        reassigned++;
+      }
+
+      return { created, skipped, reassigned, position, unit, expiresAt };
     });
 
     // Each link goes straight to the account step (applicants already submitted
@@ -348,6 +462,7 @@ HR Team`,
     return res.code(200).send({
       message: "OK",
       invited: result.created.length,
+      reassigned: result.reassigned,
       skipped: result.skipped,
       position: result.position.title,
     });
@@ -729,6 +844,10 @@ export const provisionalRemove = async (
             status: PROVISIONAL_ENDED,
             term: new Date(),
             departmentId: null,
+            // Archive: drops out of the active Employees/Non-Plantilla lists
+            // and into the dedicated Archived page.
+            archivedAt: new Date(),
+            archiveReason: note || "Provisional engagement ended",
           },
         });
         if (user.accountId) {
@@ -752,6 +871,28 @@ export const provisionalRemove = async (
             userId: actorId,
           },
         });
+      }
+
+      // Free the provisional slot(s). A position's "filled" count is derived
+      // from FillPositionInvitation rows with concludedReason "accepted" — so
+      // ending the user alone doesn't free the slot. Re-tag their accepted
+      // invitation as "ended" so the slot opens back up (and can be re-hired).
+      const removedIds = users.map((u) => u.id);
+      if (removedIds.length) {
+        const invites = await tx.fillPositionInvitation.findMany({
+          where: {
+            concludedReason: "accepted",
+            NOT: { provisionalPositionId: null },
+            applcation: { userId: { in: removedIds } },
+          },
+          select: { id: true },
+        });
+        if (invites.length) {
+          await tx.fillPositionInvitation.updateMany({
+            where: { id: { in: invites.map((i) => i.id) } },
+            data: { concludedReason: "ended" },
+          });
+        }
       }
 
       return users;

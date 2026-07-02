@@ -144,6 +144,54 @@ export const authenticated = async (
   }
 };
 
+/**
+ * Gate the MOBILE-only pharmacy endpoints (scan-log, add-stock/bulk, sync).
+ * Runs AFTER `authenticated` (which set request.user = { id: <accountId> }).
+ * The caller must have a PharmacyMobileAccess row for their (line, user), else
+ * 403 — this is what stops an ungranted mobile user from modifying medicine
+ * data. Web endpoints are NOT gated with this (they share some routes).
+ */
+export const pharmacyMobileAuth = async (
+  request: FastifyRequest,
+  reply: FastifyReply,
+) => {
+  try {
+    const accountId = (request.user as { id?: string } | undefined)?.id;
+    if (!accountId) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+    const account = await prisma.account.findUnique({
+      where: { id: accountId },
+      select: { lineId: true, User: { select: { id: true } } },
+    });
+    const lineId = account?.lineId ?? null;
+    const userId = account?.User?.id ?? null;
+    if (!lineId || !userId) {
+      return reply.code(403).send({
+        error: "NO_PHARMACY_ACCESS",
+        message: "You don't have mobile pharmacy access.",
+      });
+    }
+    const access = await prisma.pharmacyMobileAccess.findUnique({
+      where: { lineId_userId: { lineId, userId } },
+      select: { id: true },
+    });
+    if (!access) {
+      return reply.code(403).send({
+        error: "NO_PHARMACY_ACCESS",
+        message:
+          "You don't have mobile pharmacy access. Ask your pharmacy admin to grant it in Medicine > Config > Mobile Access.",
+      });
+    }
+    return;
+  } catch (error) {
+    return reply.code(403).send({
+      error: "NO_PHARMACY_ACCESS",
+      message: "Pharmacy access check failed.",
+    });
+  }
+};
+
 export const medicineAccessAuth = async (
   request: FastifyRequest,
   reply: FastifyReply,

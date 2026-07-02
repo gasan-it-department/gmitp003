@@ -1644,13 +1644,21 @@ export const vacantPosition = async (
         data: { occupied: false, userId: null },
       });
 
-      // 2. Unassign the occupant from their position/department/SG.
+      // 2. Unassign the occupant from their position/department/SG. When the
+      //    account is also being disabled (action 1 = separation), archive them
+      //    so they leave the active Employees list for the Archived page.
       await tx.user.update({
         where: { id: occupant.id },
         data: {
           departmentId: null,
           positionId: null,
           salaryGradeId: null,
+          ...(action === 1
+            ? {
+                archivedAt: new Date(),
+                archiveReason: `Vacated from ${positionName} and access disabled`,
+              }
+            : {}),
         },
       });
 
@@ -2510,6 +2518,7 @@ export const updateUnitPosition = async (
     plantilla?: boolean;
     fixToUnit?: boolean;
     slots?: number | string;
+    occupied?: number | string;
     lineId?: string;
     userId?: string;
   };
@@ -2570,34 +2579,76 @@ export const updateUnitPosition = async (
         });
       }
 
-      // Slot count: add vacant slots or remove vacant ones (never below the
-      // occupied count).
+      // Slot-count + occupied-status reconciliation. Slots filled by an
+      // ASSIGNED USER (userId set) are managed via the invite/Vacate flow and
+      // are never created/deleted/freed here — they're the lower bound for both
+      // the total count and the occupied count. Everything else ("free" slots)
+      // is HR-editable: count via `slots`, occupied flag via `occupied`.
+      const userSlots = up.slot.filter((s) => !!s.userId);
+
+      // (1) Total count — add/remove only FREE slots, keeping user slots intact.
       if (body.slots != null) {
-        const target = Math.max(0, parseInt(String(body.slots), 10) || 0);
-        const current = up.slot.length;
-        const occupied = up.slot.filter((s) => s.occupied || !!s.userId).length;
-        if (target < occupied) {
+        const want = Math.max(0, parseInt(String(body.slots), 10) || 0);
+        if (want < userSlots.length) {
           throw new ValidationError(
-            `Can't reduce slots below the ${occupied} currently occupied.`,
+            `Can't set fewer than ${userSlots.length} slot(s) — that many are filled by assigned users.`,
           );
         }
-        if (target > current) {
+        const free = up.slot.filter((s) => !s.userId);
+        const targetFree = want - userSlots.length;
+        if (targetFree > free.length) {
           await tx.positionSlot.createMany({
-            data: Array.from({ length: target - current }, () => ({
+            data: Array.from({ length: targetFree - free.length }, () => ({
               unitPositionId: up.id,
               positionId: up.positionId,
               salaryGradeId: body.salaryGradeId || null,
               occupied: false,
             })),
           });
-        } else if (target < current) {
-          const vacantIds = up.slot
-            .filter((s) => !s.occupied && !s.userId)
-            .map((s) => s.id)
-            .slice(0, current - target);
-          if (vacantIds.length) {
-            await tx.positionSlot.deleteMany({ where: { id: { in: vacantIds } } });
+        } else if (targetFree < free.length) {
+          // Remove free slots, vacant ones first so manual occupancy survives.
+          const removable = [...free]
+            .sort((a, b) => Number(a.occupied) - Number(b.occupied))
+            .slice(0, free.length - targetFree)
+            .map((s) => s.id);
+          if (removable.length) {
+            await tx.positionSlot.deleteMany({ where: { id: { in: removable } } });
           }
+        }
+      }
+
+      // (2) Occupied status — flag how many FREE slots are occupied. User slots
+      // always count as occupied and act as the floor.
+      if (body.occupied != null) {
+        const slots = await tx.positionSlot.findMany({
+          where: { unitPositionId: up.id },
+          select: { id: true, userId: true },
+        });
+        const userCount = slots.filter((s) => !!s.userId).length;
+        const free = slots.filter((s) => !s.userId);
+        const target = Math.max(
+          0,
+          Math.min(slots.length, parseInt(String(body.occupied), 10) || 0),
+        );
+        if (target < userCount) {
+          throw new ValidationError(
+            `${userCount} slot(s) are filled by assigned users — vacate them first to lower the occupied count.`,
+          );
+        }
+        const toMark = target - userCount; // free slots to flag occupied
+        const occupyIds = free.slice(0, toMark).map((s) => s.id);
+        const vacateIds = free.slice(toMark).map((s) => s.id);
+        if (occupyIds.length) {
+          await tx.positionSlot.updateMany({
+            where: { id: { in: occupyIds } },
+            data: { occupied: true },
+          });
+        }
+        if (vacateIds.length) {
+          await tx.positionSlot.updateMany({
+            where: { id: { in: vacateIds } },
+            data: { occupied: false },
+          });
         }
       }
 

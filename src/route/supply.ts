@@ -19,6 +19,8 @@ import {
   timebaseReport,
   timebaseReportExport,
   uploadBulkExcel,
+  restockSupply,
+  containerDatasets,
 } from "../controller/supplyController";
 
 export const supply = (fastify: FastifyInstance) => {
@@ -39,6 +41,17 @@ export const supply = (fastify: FastifyInstance) => {
     "/supply/dispense",
     { preHandler: authenticated },
     dispenseSupply,
+  );
+  // Direct re-stock (no order process); the order flow stays intact.
+  fastify.post(
+    "/supply/restock",
+    { preHandler: authenticated },
+    restockSupply,
+  );
+  fastify.get(
+    "/supply/container-datasets",
+    { preHandler: authenticated },
+    containerDatasets,
   );
   fastify.get("/supply/category", { preHandler: authenticated }, categories);
   fastify.get(

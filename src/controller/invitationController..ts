@@ -511,6 +511,11 @@ export const submitToInvitationLink = async (
         motherFirstname: formData["mother[firstname]"] || "N/A",
         motherAge: parseInt(formData["mother[age]"] ?? "0"),
 
+        // spouse (top-level form fields)
+        spouseSurname: formData.spouseSurname,
+        spouseFirstname: formData.spouseFirstname,
+        spouseMiddle: formData.spouseMiddle,
+
         //education - ensure all fields have proper fallbacks
         elementary: {
           to: formData["elementary[to]"] || "N/A",
@@ -617,6 +622,10 @@ export const submitToInvitationLink = async (
       fatherFirstname: clean.fatherFirstname,
       motherSurname: clean.motherSurname,
       motherFirstname: clean.motherFirstname,
+
+      spouseSurname: clean.spouseSurname,
+      spouseFirstname: clean.spouseFirstname,
+      spouseMiddle: clean.spouseMiddle,
 
       birthDate: clean.birthDate,
 
@@ -729,6 +738,14 @@ export const submitToInvitationLink = async (
         motherFirstname: encrypted.motherFirstname?.encryptedData || "N/A",
         motherFirstnameIv: encrypted.motherFirstname?.iv || null,
         motherAge: motherAge,
+
+        // SPOUSE
+        spouseSurname: encrypted.spouseSurname?.encryptedData || "N/A",
+        spouseSurnameIv: encrypted.spouseSurname?.iv || null,
+        spouseFirstname: encrypted.spouseFirstname?.encryptedData || "N/A",
+        spouseFirstnameIv: encrypted.spouseFirstname?.iv || null,
+        spouseMiddle: encrypted.spouseMiddle?.encryptedData || "N/A",
+        spouseMiddleIv: encrypted.spouseMiddle?.iv || null,
 
         // EDUCATION - These are Json fields (pass objects directly)
         elementary: clean.elementary,
