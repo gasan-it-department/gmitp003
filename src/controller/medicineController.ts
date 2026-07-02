@@ -254,12 +254,31 @@ export const attachMedicineBarcode = async (
     barcode?: string;
     lineId?: string;
     userId?: string;
+    /** Mobile queue-row UUID: replays of the same op short-circuit. */
+    clientOpId?: string;
   };
   const barcode = body.barcode?.trim();
   if (!body.medicineId || !barcode)
     throw new ValidationError("medicineId and barcode are required");
 
   try {
+    // Idempotency: the mobile queue retries with the same clientOpId when a
+    // response is lost — if we've already applied this op, say OK again.
+    if (body.clientOpId) {
+      const prior = await prisma.mobileUploadLog.findUnique({
+        where: { clientOpId: body.clientOpId },
+        select: { resultId: true },
+      });
+      if (prior) {
+        return res.code(200).send({
+          message: "OK (already applied)",
+          id: prior.resultId ?? body.medicineId,
+          barcode,
+          duplicate: true,
+        });
+      }
+    }
+
     const holder = await prisma.medicine.findUnique({
       where: { barcode },
       select: { id: true, name: true, serialNumber: true },
@@ -286,6 +305,23 @@ export const attachMedicineBarcode = async (
       // (which filter on timestamp > since) pick up the new barcode.
       data: { barcode, timestamp: new Date() },
     });
+
+    if (body.clientOpId) {
+      try {
+        await prisma.mobileUploadLog.create({
+          data: {
+            clientOpId: body.clientOpId,
+            kind: "attach-barcode",
+            userId: body.userId ?? null,
+            lineId: body.lineId ?? null,
+            resultId: updated.id,
+            message: `barcode ${barcode}`,
+          },
+        });
+      } catch {
+        /* dedupe log is best-effort */
+      }
+    }
 
     if (body.userId) {
       try {

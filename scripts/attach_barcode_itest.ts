@@ -94,9 +94,29 @@ async function main() {
     const a2 = await prisma.medicine.findUnique({ where: { id: medA }, select: { barcode: true } });
     ok("replacement stored", a2?.barcode === BARCODE2, a2?.barcode);
 
+    // offline-queue idempotency: same clientOpId replayed → short-circuit
+    const opId = randomUUID();
+    const BARCODE3 = "ITEST-BAR3-" + Date.now();
+    r = await fetch(BASE + "/medicine/attach-barcode", {
+      method: "PATCH", headers: H,
+      body: JSON.stringify({ medicineId: medB, barcode: BARCODE3, lineId, userId, clientOpId: opId }),
+    });
+    j = await r.json();
+    ok("attach with clientOpId → 200 (first apply)", r.status === 200 && !j.duplicate, j);
+    const logRow = await prisma.mobileUploadLog.findUnique({ where: { clientOpId: opId } });
+    ok("MobileUploadLog recorded (kind attach-barcode)", logRow?.kind === "attach-barcode", logRow?.kind);
+    r = await fetch(BASE + "/medicine/attach-barcode", {
+      method: "PATCH", headers: H,
+      body: JSON.stringify({ medicineId: medB, barcode: BARCODE3, lineId, userId, clientOpId: opId }),
+    });
+    j = await r.json();
+    ok("replaying the same clientOpId → duplicate:true (no double-apply)",
+      r.status === 200 && j.duplicate === true, j);
+
     console.log("\nATTACH BARCODE ITEST OK");
   } finally {
     await prisma.medicineLogs.deleteMany({ where: { message: { contains: "ITEST BarMed" } } });
+    await prisma.mobileUploadLog.deleteMany({ where: { resultId: { in: [medA, medB] }, kind: "attach-barcode" } });
     await prisma.medicine.deleteMany({ where: { id: { in: [medA, medB] } } });
     await prisma.pharmacyMobileAccess.deleteMany({ where: { lineId, userId } });
     await prisma.$disconnect();
