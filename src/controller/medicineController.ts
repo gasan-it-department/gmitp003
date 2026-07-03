@@ -2137,6 +2137,11 @@ export const recordMedicineScan = async (
     scannedAt?: number | string | null;
     scannedByUserId?: string | null;
     lineId?: string | null;
+    /** Client-generated UUID for offline-first creation: the mobile app
+     *  registers the medicine locally under this id, then uploads. Using
+     *  the same id server-side keeps queued stock-adds (which reference
+     *  the local id) resolvable. Ignored when a barcode match exists. */
+    id?: string | null;
   };
 
   if (!body?.barcode || !body?.name) {
@@ -2178,6 +2183,7 @@ export const recordMedicineScan = async (
       const serialNumber = await generateMedRef();
       saved = await prisma.medicine.create({
         data: {
+          ...(body.id ? { id: body.id } : {}),
           serialNumber,
           barcode,
           name,
@@ -2186,6 +2192,21 @@ export const recordMedicineScan = async (
         },
         select: { id: true, serialNumber: true, barcode: true, name: true },
       });
+      // Same audit entry the web's Add Medicine writes.
+      if (body.scannedByUserId) {
+        try {
+          await prisma.medicineLogs.create({
+            data: {
+              action: 1,
+              userId: body.scannedByUserId,
+              lineId: body.lineId,
+              message: `Added new medicine in the list; Med. Serial Ref.: ${saved.serialNumber} - Label: ${saved.name}`,
+            },
+          });
+        } catch {
+          /* audit is best-effort */
+        }
+      }
     }
 
     return res.code(200).send({
