@@ -21,7 +21,11 @@ import {
   updateProfilePicture,
   servePhoto,
 } from "../controller/employee";
-import { idIssueList, idExportBatch } from "../controller/idCardController";
+import {
+  idIssueList,
+  idExportBatch,
+  myVerifyQr,
+} from "../controller/idCardController";
 
 //models, interface
 import { employeeSchema } from "../models/request";
@@ -41,6 +45,8 @@ export const employee = (fastify: FastifyInstance) => {
     { preHandler: authenticated },
     userModuleAccess,
   );
+  // The logged-in employee's ID-card verify QR (mobile profile screen).
+  fastify.get("/user/my-verify-qr", { preHandler: authenticated }, myVerifyQr);
   fastify.patch("/user/suspend", { preHandler: authenticated }, supsendAccount);
   fastify.delete("/user/delete", { preHandler: authenticated }, deleteUser);
   fastify.get("/user/record", { preHandler: authenticated }, userRecord);

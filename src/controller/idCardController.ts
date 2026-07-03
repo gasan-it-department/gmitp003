@@ -681,3 +681,34 @@ export const idExportBatch = async (req: FastifyRequest, res: FastifyReply) => {
     },
   });
 };
+
+/**
+ * GET /user/my-verify-qr — the logged-in employee's identity-QR payload for
+ * the mobile app's profile screen. Returns the SAME verify URL the printed
+ * ID cards encode (`{base}/verify-id?code=<verifyCode>`), generating and
+ * persisting the user's verifyCode on first use. The mobile caches the URL
+ * locally and renders the QR fully offline afterwards.
+ */
+export const myVerifyQr = async (req: FastifyRequest, res: FastifyReply) => {
+  const accountId = (req.user as { id?: string } | undefined)?.id;
+  if (!accountId) return res.code(401).send({ error: "Unauthorized" });
+
+  const account = await prisma.account.findUnique({
+    where: { id: accountId },
+    select: { User: { select: { id: true, verifyCode: true } } },
+  });
+  const user = account?.User;
+  if (!user) throw new ValidationError("NO_USER_FOR_ACCOUNT");
+
+  let code = user.verifyCode;
+  if (!code) {
+    code = randomUUID().replace(/-/g, "");
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { verifyCode: code },
+    });
+  }
+
+  const base = (tempURL() || "").replace(/\/+$/, "");
+  return res.code(200).send({ code, url: `${base}/verify-id?code=${code}` });
+};
