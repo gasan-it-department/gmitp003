@@ -10,6 +10,8 @@ import {
   chatReact,
   chatEdit,
   chatDelete,
+  chatReport,
+  chatPresence,
   chatUploadImage,
   chatServeImage,
   chatUploadFile,
@@ -26,6 +28,8 @@ export const chat = (fastify: FastifyInstance) => {
   fastify.post("/chat/mute", { preHandler: authenticated }, chatMute);
   fastify.get("/chat/reads", { preHandler: authenticated }, chatReads);
   fastify.post("/chat/react", { preHandler: authenticated }, chatReact);
+  fastify.post("/chat/report", { preHandler: authenticated }, chatReport);
+  fastify.get("/chat/presence", { preHandler: authenticated }, chatPresence);
   fastify.post("/chat/image", { preHandler: authenticated }, chatUploadImage);
   fastify.post("/chat/file", { preHandler: authenticated }, chatUploadFile);
   // PUBLIC — image/file loaded directly by URL, so no auth header is sent.

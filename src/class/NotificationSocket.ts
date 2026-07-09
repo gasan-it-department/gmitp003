@@ -1,5 +1,6 @@
 // socket/notificationSocket.ts
 import { DefaultEventsMap, Server } from "socket.io";
+import { prisma } from "../barrel/prisma";
 
 // Define types for better TypeScript support
 interface NotificationData {
@@ -14,6 +15,9 @@ interface NotificationData {
 export class NotificationSocket {
   public io: Server;
   private connectedUsers = new Map<string, string>();
+  // Chat presence: lineId → (userId → number of live sockets). A user is
+  // "online" for a line while they have ≥1 socket joined to it.
+  private linePresence = new Map<string, Map<string, number>>();
 
   constructor(
     io: Server<DefaultEventsMap, DefaultEventsMap, DefaultEventsMap, any>,
@@ -31,6 +35,8 @@ export class NotificationSocket {
       socket.on("user:join", (userId: string) => {
         this.connectedUsers.set(socket.id, userId);
         socket.join(`user-${userId}`);
+        socket.data.userId = userId;
+        this.registerPresence(socket);
         console.log(`User ${userId} joined notification room`);
 
         // Send confirmation back to client
@@ -40,6 +46,8 @@ export class NotificationSocket {
       // Join specific rooms (e.g., for line notifications)
       socket.on("join-line", (lineId: string) => {
         socket.join(`line-${lineId}`);
+        socket.data.lineId = lineId;
+        this.registerPresence(socket);
         console.log(`Socket ${socket.id} joined line-${lineId}`);
         socket.emit("line:joined", { lineId });
       });
@@ -86,6 +94,7 @@ export class NotificationSocket {
 
       // Handle disconnection
       socket.on("disconnect", (reason) => {
+        this.unregisterPresence(socket);
         const userId = this.connectedUsers.get(socket.id);
         if (userId) {
           console.log(
@@ -102,6 +111,61 @@ export class NotificationSocket {
         console.error("Connection error:", error);
       });
     });
+  }
+
+  // ── Chat presence ──────────────────────────────────────────────────
+  /** Mark a socket's user online for its line once both ids are known. */
+  private registerPresence(socket: any) {
+    const userId: string | undefined = socket.data?.userId;
+    const lineId: string | undefined = socket.data?.lineId;
+    if (!userId || !lineId || socket.data.presenceOn) return;
+    socket.data.presenceOn = true;
+    let members = this.linePresence.get(lineId);
+    if (!members) {
+      members = new Map<string, number>();
+      this.linePresence.set(lineId, members);
+    }
+    const count = (members.get(userId) ?? 0) + 1;
+    members.set(userId, count);
+    if (count === 1) {
+      this.io.to(`line-${lineId}`).emit("chat:presence", { lineId, userId, online: true });
+      void this.persistSeen(userId, lineId);
+    }
+  }
+
+  /** Drop a socket from presence; if it was the user's last one, go offline. */
+  private unregisterPresence(socket: any) {
+    const userId: string | undefined = socket.data?.userId;
+    const lineId: string | undefined = socket.data?.lineId;
+    if (!socket.data?.presenceOn || !userId || !lineId) return;
+    socket.data.presenceOn = false;
+    const members = this.linePresence.get(lineId);
+    if (!members) return;
+    const count = (members.get(userId) ?? 1) - 1;
+    if (count <= 0) {
+      members.delete(userId);
+      this.io.to(`line-${lineId}`).emit("chat:presence", { lineId, userId, online: false });
+      void this.persistSeen(userId, lineId);
+    } else {
+      members.set(userId, count);
+    }
+  }
+
+  private async persistSeen(userId: string, lineId: string) {
+    try {
+      await prisma.chatPresence.upsert({
+        where: { userId },
+        update: { lineId, lastSeenAt: new Date() },
+        create: { userId, lineId, lastSeenAt: new Date() },
+      });
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  /** User ids currently online for a line. */
+  public getOnlineUserIds(lineId: string): string[] {
+    return Array.from(this.linePresence.get(lineId)?.keys() ?? []);
   }
 
   // Method to send notification to specific user

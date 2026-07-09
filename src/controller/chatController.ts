@@ -75,6 +75,165 @@ function canPost(ctx: ChatCtx, room: Room): boolean {
   return false;
 }
 
+// ── Community safety: light rate limiting + profanity mask ──────────────
+// In-memory sliding window (per process). Community is the open, all-employee
+// room so it's the abuse surface; the two announcement rooms are already gated.
+const RATE_WINDOW_MS = 10_000;
+const RATE_MAX = 6; // messages per window per user
+const rateHits = new Map<string, number[]>();
+function rateLimited(userId: string): boolean {
+  const now = Date.now();
+  const arr = (rateHits.get(userId) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
+  arr.push(now);
+  rateHits.set(userId, arr);
+  return arr.length > RATE_MAX;
+}
+
+// Common English + Filipino profanity; matched words are masked (first letter
+// kept, rest → asterisks) so the message still posts but stays civil.
+const PROFANITY = [
+  "fuck", "fucking", "shit", "bitch", "asshole", "bastard", "dick", "pussy",
+  "cunt", "motherfucker", "slut", "whore", "nigger", "faggot", "retard",
+  "putangina", "putang ina", "tangina", "gago", "gaga", "ulol", "tarantado",
+  "punyeta", "pakyu", "leche", "hayop ka", "bwiset", "buwisit",
+];
+const profanityRe = new RegExp(
+  `\\b(${PROFANITY.map((w) => w.replace(/ /g, "\\s+")).join("|")})\\b`,
+  "gi",
+);
+function maskProfanity(text: string): string {
+  return text.replace(profanityRe, (w) => w[0] + "*".repeat(Math.max(1, w.length - 1)));
+}
+
+// ── Link previews (Open Graph) ──────────────────────────────────────────
+const URL_RE = /(https?:\/\/[^\s<>"']+)/i;
+function firstUrl(text?: string | null): string | null {
+  if (!text) return null;
+  const m = URL_RE.exec(text);
+  return m ? m[1] : null;
+}
+
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#0?39;/g, "'")
+    .replace(/&#x27;/gi, "'");
+}
+
+// Best-effort Open Graph fetch. SSRF-guarded: http/https only, no private
+// hosts, short timeout, size-capped, text/html only. Never throws.
+async function fetchLinkPreview(
+  url: string,
+): Promise<{ title?: string; desc?: string; image?: string } | null> {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    const host = u.hostname;
+    if (
+      host === "localhost" ||
+      host === "127.0.0.1" ||
+      host === "::1" ||
+      host.endsWith(".local") ||
+      /^10\./.test(host) ||
+      /^192\.168\./.test(host) ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(host)
+    )
+      return null;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 6000);
+    let resp: Response;
+    try {
+      resp = await fetch(url, {
+        signal: ctrl.signal,
+        redirect: "follow",
+        headers: { "user-agent": "gasan-lgu-linkbot/1.0", accept: "text/html" },
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!resp.ok) return null;
+    const ctype = resp.headers.get("content-type") ?? "";
+    if (!ctype.includes("text/html")) return null;
+    const html = (await resp.text()).slice(0, 200_000);
+    const pick = (prop: string): string | undefined => {
+      const a = new RegExp(
+        `<meta[^>]+(?:property|name)=["']${prop}["'][^>]*content=["']([^"']+)["']`,
+        "i",
+      ).exec(html);
+      const b = new RegExp(
+        `<meta[^>]+content=["']([^"']+)["'][^>]*(?:property|name)=["']${prop}["']`,
+        "i",
+      ).exec(html);
+      const hit = (a || b)?.[1];
+      return hit ? decodeEntities(hit) : undefined;
+    };
+    const titleTag = /<title[^>]*>([^<]+)<\/title>/i.exec(html)?.[1];
+    const title = pick("og:title") || (titleTag ? decodeEntities(titleTag) : undefined);
+    const desc = pick("og:description") || pick("description");
+    let image = pick("og:image") || pick("og:image:url");
+    if (image && image.startsWith("//")) image = `${u.protocol}${image}`;
+    else if (image && image.startsWith("/")) image = `${u.origin}${image}`;
+    if (!title && !desc && !image) return null;
+    return {
+      title: title?.slice(0, 160),
+      desc: desc?.slice(0, 240),
+      image: image?.slice(0, 500),
+    };
+  } catch {
+    return null;
+  }
+}
+
+// Fetch a preview asynchronously (after the message is already delivered) and,
+// if found, patch the message + push a live update so the card fills in.
+async function enrichLinkPreview(
+  req: FastifyRequest,
+  lineId: string,
+  messageId: string,
+  url: string,
+) {
+  try {
+    const p = await fetchLinkPreview(url);
+    if (!p || (!p.title && !p.desc && !p.image)) return;
+    const updated = await prisma.chatMessage
+      .update({
+        where: { id: messageId },
+        data: {
+          linkTitle: p.title ?? null,
+          linkDesc: p.desc ?? null,
+          linkImage: p.image ?? null,
+        },
+      })
+      .catch(() => null);
+    if (!updated || updated.deletedAt) return;
+    await emitMessageUpdate(lineId, shape(req, updated));
+  } catch (e) {
+    console.warn("[chat] link preview failed", e);
+  }
+}
+
+// HR/super members of a line (via the account's line) — used to notify admins
+// of a report and to authorise moderation.
+async function lineAdminUserIds(lineId: string): Promise<string[]> {
+  const accounts = await prisma.account.findMany({
+    where: { lineId },
+    select: {
+      User: {
+        select: {
+          id: true,
+          privilege: { select: { humanResources: true, super: true } },
+        },
+      },
+    },
+  });
+  return accounts
+    .filter((a) => a.User && (a.User.privilege?.humanResources || a.User.privilege?.super))
+    .map((a) => a.User!.id);
+}
+
 const imageUrl = (req: FastifyRequest, imageId: string | null) =>
   imageId ? `${selfBase(req)}/chat/image/${imageId}` : null;
 
@@ -100,8 +259,14 @@ function shape(req: FastifyRequest, m: any) {
     fileName: deleted ? null : m.fileName ?? null,
     fileSize: deleted ? null : m.fileSize ?? null,
     linkUrl: deleted ? null : m.linkUrl,
+    linkTitle: deleted ? null : m.linkTitle ?? null,
+    linkDesc: deleted ? null : m.linkDesc ?? null,
+    linkImage: deleted ? null : m.linkImage ?? null,
     mentionUserIds: deleted ? [] : m.mentionUserIds ?? [],
     mentionNames: deleted ? [] : m.mentionNames ?? [],
+    replyToId: deleted ? null : m.replyToId ?? null,
+    replyToName: deleted ? null : m.replyToName ?? null,
+    replyToPreview: deleted ? null : m.replyToPreview ?? null,
     clientOpId: m.clientOpId ?? null,
     deleted,
     editedAt: m.editedAt ?? null,
@@ -303,7 +468,9 @@ export const chatDelete = async (req: FastifyRequest, res: FastifyReply) => {
 
   const msg = await prisma.chatMessage.findUnique({ where: { id: messageId } });
   if (!msg || msg.lineId !== ctx.lineId) throw new ValidationError("MESSAGE_NOT_FOUND");
-  if (msg.senderId !== ctx.userId)
+  // Sender can always delete their own; HR/super can moderate anyone's message.
+  const isAdmin = ctx.isHr || ctx.isSuper;
+  if (msg.senderId !== ctx.userId && !isAdmin)
     return res.code(403).send({ message: "You can only delete your own messages." });
 
   const updated = await prisma.chatMessage.update({
@@ -316,6 +483,11 @@ export const chatDelete = async (req: FastifyRequest, res: FastifyReply) => {
       fileName: null,
       fileSize: null,
       linkUrl: null,
+      linkTitle: null,
+      linkDesc: null,
+      linkImage: null,
+      replyToName: null,
+      replyToPreview: null,
       mentionUserIds: [],
       mentionNames: [],
     },
@@ -342,6 +514,7 @@ export const chatSend = async (req: FastifyRequest, res: FastifyReply) => {
     linkUrl?: string;
     mentions?: string[];
     mentionNames?: string[];
+    replyToId?: string;
     clientOpId?: string;
   };
   if (!isRoom(body.room)) throw new ValidationError("BAD_ROOM");
@@ -351,7 +524,7 @@ export const chatSend = async (req: FastifyRequest, res: FastifyReply) => {
     return res.code(403).send({ message: "You can't post in this channel." });
   }
 
-  const text = (body.body ?? "").trim();
+  let text = (body.body ?? "").trim();
   if (!text && !body.imageId && !body.linkUrl && !body.fileId) {
     throw new ValidationError("EMPTY_MESSAGE");
   }
@@ -362,6 +535,50 @@ export const chatSend = async (req: FastifyRequest, res: FastifyReply) => {
       where: { clientOpId: body.clientOpId },
     });
     if (existing) return res.code(200).send({ message: shape(req, existing) });
+  }
+
+  // Community safety: rate-limit + mask profanity (open, all-employee room).
+  if (room === "community") {
+    if (rateLimited(ctx.userId)) {
+      return res
+        .code(429)
+        .send({ message: "You're sending messages too fast — wait a few seconds." });
+    }
+    if (text) text = maskProfanity(text);
+  }
+
+  // Reply/quote: resolve the parent (same line) and denormalise a preview.
+  let replyToId: string | null = null;
+  let replyToName: string | null = null;
+  let replyToPreview: string | null = null;
+  if (body.replyToId) {
+    const parent = await prisma.chatMessage.findUnique({
+      where: { id: body.replyToId },
+      select: {
+        id: true,
+        lineId: true,
+        senderName: true,
+        body: true,
+        deletedAt: true,
+        imageId: true,
+        fileName: true,
+        linkUrl: true,
+      },
+    });
+    if (parent && parent.lineId === ctx.lineId) {
+      replyToId = parent.id;
+      replyToName = parent.senderName ?? "Employee";
+      replyToPreview = parent.deletedAt
+        ? "Deleted message"
+        : parent.body?.slice(0, 120) ||
+          (parent.imageId
+            ? "📷 Photo"
+            : parent.fileName
+              ? `📎 ${parent.fileName}`
+              : parent.linkUrl
+                ? "🔗 Link"
+                : "Message");
+    }
   }
 
   const mentions = Array.isArray(body.mentions)
@@ -385,6 +602,9 @@ export const chatSend = async (req: FastifyRequest, res: FastifyReply) => {
       linkUrl: body.linkUrl || null,
       mentionUserIds: mentions,
       mentionNames,
+      replyToId,
+      replyToName,
+      replyToPreview,
       clientOpId: body.clientOpId || null,
     },
   });
@@ -410,6 +630,10 @@ export const chatSend = async (req: FastifyRequest, res: FastifyReply) => {
 
   // Push: work out who to notify, then fire (best-effort, non-blocking).
   void notifyRecipients(ctx, room, payload, mentions);
+
+  // Link preview (best-effort, async): fetch OG tags then patch + push update.
+  const previewUrl = body.linkUrl || firstUrl(text);
+  if (previewUrl) void enrichLinkPreview(req, ctx.lineId, created.id, previewUrl);
 
   return res.code(200).send({ message: payload });
 };
@@ -530,6 +754,77 @@ export const chatMute = async (req: FastifyRequest, res: FastifyReply) => {
     create: { userId: ctx.userId, lineId: ctx.lineId, room: b.room, muted },
   });
   return res.code(200).send({ room: b.room, muted });
+};
+
+// POST /chat/report  { messageId, reason? } — flag a message; notify admins.
+export const chatReport = async (req: FastifyRequest, res: FastifyReply) => {
+  const ctx = await resolveCtx(req);
+  if (!ctx) throw new ValidationError("NO_LINKED_USER");
+  const b = req.body as { messageId?: string; reason?: string };
+  if (!b.messageId) throw new ValidationError("BAD_REQUEST");
+
+  const msg = await prisma.chatMessage.findUnique({
+    where: { id: b.messageId },
+    select: { id: true, lineId: true, room: true },
+  });
+  if (!msg || msg.lineId !== ctx.lineId) throw new ValidationError("MESSAGE_NOT_FOUND");
+
+  await prisma.chatReport.create({
+    data: {
+      lineId: ctx.lineId,
+      room: msg.room,
+      messageId: msg.id,
+      reporterId: ctx.userId,
+      reporterName: ctx.name,
+      reason: (b.reason ?? "").slice(0, 300) || null,
+    },
+  });
+
+  // Tell the line's HR/super (best-effort, non-blocking).
+  void (async () => {
+    try {
+      const admins = await lineAdminUserIds(ctx.lineId);
+      const roomTitle = ROOM_TITLE[msg.room as Room] ?? msg.room;
+      await Promise.all(
+        admins
+          .filter((id) => id && id !== ctx.userId)
+          .map((id) =>
+            sendPushToUser(id, {
+              title: "Message reported",
+              body: `${ctx.name} reported a message in ${roomTitle}.`,
+              data: { path: `/chat/${msg.room}`, room: msg.room },
+            }),
+          ),
+      );
+    } catch (e) {
+      console.warn("[chat] report notify failed", e);
+    }
+  })();
+
+  return res.code(200).send({ ok: true });
+};
+
+// GET /chat/presence — who on the line is online now + everyone's last-seen.
+export const chatPresence = async (req: FastifyRequest, res: FastifyReply) => {
+  const ctx = await resolveCtx(req);
+  if (!ctx) throw new ValidationError("NO_LINKED_USER");
+
+  let online: string[] = [];
+  try {
+    const { notificationSocket } = await import("..");
+    online = notificationSocket.getOnlineUserIds(ctx.lineId);
+  } catch {
+    /* socket not ready — treat everyone as offline */
+  }
+
+  const rows = await prisma.chatPresence.findMany({
+    where: { lineId: ctx.lineId },
+    select: { userId: true, lastSeenAt: true },
+  });
+  const lastSeen: Record<string, string> = {};
+  for (const r of rows) lastSeen[r.userId] = r.lastSeenAt.toISOString();
+
+  return res.code(200).send({ online, lastSeen });
 };
 
 // GET /chat/reads?room=  — everyone's last-read time in this room (for "Seen by").

@@ -2645,6 +2645,12 @@ model ChatMessage {
   linkUrl        String?
   mentionUserIds String[] // mentioned User.ids
   mentionNames   String[] // matching display names (so clients can highlight exactly)
+  replyToId      String? // ChatMessage.id this message is replying to
+  replyToName    String? // denormalised sender name of the replied message
+  replyToPreview String? // denormalised short preview of the replied message
+  linkTitle      String? // OG title for the first link (preview card)
+  linkDesc       String? // OG description for the preview card
+  linkImage      String? // OG image URL for the preview card
   clientOpId     String?  @unique
   editedAt       DateTime? // set when the sender edits the body
   deletedAt      DateTime? // "delete for everyone" tombstone (content cleared)
@@ -2694,4 +2700,30 @@ model ChatReaction {
 
   @@unique([messageId, userId])
   @@index([messageId])
+}
+
+// A user-submitted report on a message (spam/abuse). HR/super see these.
+model ChatReport {
+  id           String   @id @default(uuid())
+  lineId       String
+  room         String
+  messageId    String
+  reporterId   String
+  reporterName String?
+  reason       String?
+  createdAt    DateTime @default(now())
+
+  @@index([lineId, createdAt])
+  @@index([messageId])
+}
+
+// Last-seen presence per user. Online/offline is tracked in-memory by the
+// socket; this table only persists the last time each user was connected so
+// offline members can show "last seen 5m ago".
+model ChatPresence {
+  userId     String   @id
+  lineId     String
+  lastSeenAt DateTime @default(now())
+
+  @@index([lineId])
 }
