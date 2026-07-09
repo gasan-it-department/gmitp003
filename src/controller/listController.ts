@@ -11,6 +11,7 @@ import {
 export const createList = async (req: FastifyRequest, res: FastifyReply) => {
   try {
     const body = req.body as {
+      id?: string; // optional client-supplied id (offline-first desktop)
       title: string;
       inventoryBoxId: string;
       lineId: string;
@@ -20,13 +21,25 @@ export const createList = async (req: FastifyRequest, res: FastifyReply) => {
     if (!body.inventoryBoxId || !body.lineId || !body.title) {
       return res.code(400).send({ message: "Bad Request" });
     }
-    await prisma.supplyBatch.create({
+
+    // Idempotent for the offline-first desktop: reuse an existing row when the
+    // client supplies its id, so retried pushes never duplicate and ids stay
+    // aligned web<->desktop.
+    if (body.id) {
+      const existing = await prisma.supplyBatch.findUnique({
+        where: { id: body.id },
+      });
+      if (existing) return res.code(200).send({ message: "Ok", data: existing });
+    }
+
+    const created = await prisma.supplyBatch.create({
       data: {
+        ...(body.id ? { id: body.id } : {}),
         title: body.title,
         inventoryBoxId: body.inventoryBoxId,
       },
     });
-    return res.code(200).send({ message: "Ok" });
+    return res.code(200).send({ message: "Ok", data: created });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       // Handle unique constraint violation

@@ -360,6 +360,113 @@ ${line.province.name}, Philippines
   }
 };
 
+/**
+ * POST /account/forgot-password  (PUBLIC — used by the logged-out login page).
+ *
+ * Keyed by `username` (Account.username is stored in plaintext; User.email is
+ * encrypted, so it can't be queried directly). Looks up the account, decrypts
+ * its registered email, mints a one-time reset link and emails it via Resend.
+ *
+ * SECURITY: always answers 200 with the same generic message so the endpoint
+ * can't be used to enumerate which usernames exist / have email on file.
+ */
+export const forgotPassword = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as { username?: string };
+  const username = (body.username ?? "").trim();
+  const generic = {
+    message:
+      "If that account exists, a password reset link has been sent to its registered email.",
+  };
+
+  if (!username) return res.code(200).send(generic);
+
+  try {
+    // Mirror the /auth login lookup (exact username match) so the reset
+    // targets the same account the user actually signs in with.
+    const account = await prisma.account.findFirst({
+      where: { username },
+      select: {
+        id: true,
+        username: true,
+        lineId: true,
+        User: { select: { email: true, emailIv: true } },
+        line: {
+          select: {
+            province: { select: { name: true } },
+            municipal: { select: { name: true } },
+          },
+        },
+      },
+    });
+
+    // Nothing to do — but still answer generically (no enumeration).
+    if (!account || !account.lineId || !account.User?.email) {
+      return res.code(200).send(generic);
+    }
+
+    let email: string | null = account.User.email;
+    if (account.User.emailIv) {
+      try {
+        email = await EncryptionService.decrypt(
+          account.User.email,
+          account.User.emailIv,
+        );
+      } catch {
+        email = null;
+      }
+    }
+    if (!email) return res.code(200).send(generic);
+
+    const frontEnd = (process.env.VITE_LOCAL_FRONTEND_URL || "").replace(
+      /\/+$/,
+      "",
+    );
+    const link = await prisma.accountResetLink.create({
+      data: { accountId: account.id },
+    });
+    const resetLink = `${frontEnd}/public/${account.lineId}/reset-password/${link.id}/${account.id}`;
+
+    const municipal = account.line?.municipal?.name || "Gasan";
+    const province = account.line?.province?.name || "Marinduque";
+    const emailSubject = "Password Reset Request - Gasan Municipal Portal";
+    const emailBody = `
+PASSWORD RESET REQUEST
+
+Dear ${account.username},
+
+You have requested to reset your password for your Gasan Municipal Portal account.
+
+To reset your password, please open the following link:
+${resetLink}
+
+
+If you did not request this password reset, please ignore this email. Your account security has not been compromised.
+
+Please note:
+- The link can only be used once
+- You will be prompted to create a new password
+- After resetting, log in with your new password
+
+For security reasons, never share your password or this reset link with anyone.
+
+HR Management
+Municipality of ${municipal}
+${province}, Philippines
+`;
+
+    await sendEmail(emailSubject, email, emailBody, "Gasan Municipal Portal");
+
+    return res.code(200).send(generic);
+  } catch (error) {
+    // Log server-side, but never leak the failure to the caller.
+    console.error("[forgotPassword]", error);
+    return res.code(200).send(generic);
+  }
+};
+
 export const resetUserPassword = async (
   req: FastifyRequest,
   res: FastifyReply,

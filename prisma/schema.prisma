@@ -541,6 +541,9 @@ model SupplyCategory {
 model SupplyDispenseRecord {
   id                 String            @id @default(uuid())
   refCode            String?           @unique
+  // Idempotency key for offline desktop dispenses: a retried push with the
+  // same clientOpId is detected and skipped so stock is never deducted twice.
+  clientOpId         String?           @unique
   userId             String?
   departmentId       String?
   quantity           String            @default("0")
@@ -2621,4 +2624,74 @@ model SyncRecord {
 
   @@unique([tableName, recordId])
   @@index([tableName, lineId, serverAt])
+}
+
+// ── Employee chat ─────────────────────────────────────────────────────────
+// Three fixed rooms per line: "community" (everyone posts), "hr" (HR-module
+// users post, everyone reads) and "mayor" (super-privilege users post, everyone
+// reads). Self-contained (ids are plain strings, sender name denormalised) so no
+// other model needs editing.
+model ChatMessage {
+  id             String   @id @default(uuid())
+  lineId         String
+  room           String // "community" | "hr" | "mayor"
+  senderId       String // User.id
+  senderName     String?
+  body           String?
+  imageId        String? // -> ChatImage.id
+  fileId         String? // -> ChatFile.id (any document)
+  fileName       String? // original filename (denormalised for display)
+  fileSize       Int? // bytes (denormalised for display)
+  linkUrl        String?
+  mentionUserIds String[] // mentioned User.ids
+  mentionNames   String[] // matching display names (so clients can highlight exactly)
+  clientOpId     String?  @unique
+  editedAt       DateTime? // set when the sender edits the body
+  deletedAt      DateTime? // "delete for everyone" tombstone (content cleared)
+  createdAt      DateTime @default(now())
+
+  @@index([lineId, room, createdAt])
+  @@index([senderId])
+}
+
+model ChatReadState {
+  id         String   @id @default(uuid())
+  userId     String
+  lineId     String
+  room       String
+  lastReadAt DateTime @default(now())
+  muted      Boolean  @default(false) // per-user: silence this room's push
+
+  @@unique([userId, lineId, room])
+}
+
+model ChatImage {
+  id        String   @id @default(uuid())
+  mime      String
+  bytes     Bytes
+  createdAt DateTime @default(now())
+}
+
+// Any attached document (PDF, Word, Excel, …). Keeps the original filename +
+// size so the bubble can show "📎 report.pdf (1.2 MB)".
+model ChatFile {
+  id        String   @id @default(uuid())
+  name      String
+  mime      String
+  size      Int
+  bytes     Bytes
+  createdAt DateTime @default(now())
+}
+
+// One reaction per user per message (picking a new emoji replaces it; picking
+// the same one again removes it — Messenger-style).
+model ChatReaction {
+  id        String   @id @default(uuid())
+  messageId String
+  userId    String
+  emoji     String
+  createdAt DateTime @default(now())
+
+  @@unique([messageId, userId])
+  @@index([messageId])
 }

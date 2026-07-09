@@ -155,7 +155,26 @@ export const dispenseSupply = async (
     throw new ValidationError("Item ID and positive quantity are required");
   }
 
+  // Offline desktop dispenses carry a stable clientOpId so a retried push is
+  // idempotent — if we've already recorded this op, return OK without
+  // deducting stock again.
+  const clientOpId = (req.body as any).clientOpId as string | undefined;
+
   try {
+    if (clientOpId) {
+      const existing = await prisma.supplyDispenseRecord.findUnique({
+        where: { clientOpId },
+        select: { id: true },
+      });
+      if (existing) {
+        return res.code(200).send({
+          success: true,
+          duplicate: true,
+          message: "Already dispensed (idempotent replay).",
+        });
+      }
+    }
+
     const stock = await prisma.supplyStockTrack.findUnique({
       where: {
         id: body.id,
@@ -256,6 +275,7 @@ export const dispenseSupply = async (
     // Prepare data for dispense record - Using ALL fields from your schema
     const dispenseRecordData: any = {
       refCode: await generateDispenseRef(),
+      clientOpId: clientOpId || undefined,
       quantity: toDispense.toString(),
       suppliesId: stock.suppliesId,
       supplyStockTrackId: stock.id,

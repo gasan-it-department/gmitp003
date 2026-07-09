@@ -72,6 +72,7 @@ export const createInventory = async (
 ) => {
   try {
     const body = req.body as {
+      id?: string; // optional client-supplied id (offline-first desktop)
       name: string;
       lineId: string;
       departmentId: string;
@@ -83,6 +84,17 @@ export const createInventory = async (
     if (!body.name) {
       return res.code(400).send({ message: "Bad Request 12" });
     }
+
+    // Idempotent for the offline-first desktop: if the client supplies an id,
+    // reuse any existing row with that id so retried pushes never duplicate and
+    // the id stays aligned across web + desktop (same principle as pharmacy sync).
+    if (body.id) {
+      const existing = await prisma.inventoryBox.findUnique({
+        where: { id: body.id },
+      });
+      if (existing) return res.code(200).send({ message: "OK", data: existing });
+    }
+
     const check = await prisma.inventoryBox.findFirst({
       where: {
         lineId: body.lineId,
@@ -99,6 +111,7 @@ export const createInventory = async (
 
     const response = await prisma.inventoryBox.create({
       data: {
+        ...(body.id ? { id: body.id } : {}),
         name: body.name,
         code: code,
         lineId: body.lineId,
