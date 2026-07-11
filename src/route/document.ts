@@ -1,5 +1,11 @@
 import { FastifyInstance } from "../barrel/fastify";
 import { authenticated } from "../middleware/handler";
+import {
+  documentReceiveSync,
+  documentReceiveFind,
+  documentReceiveCreate,
+  documentReceiveList,
+} from "../controller/documentReceiveController";
 
 import {
   addDocument,
@@ -346,5 +352,27 @@ export const document = (fastify: FastifyInstance) => {
     "/document/self-sign/remove",
     { preHandler: authenticated },
     selfSignRemove,
+  );
+
+  // ── Document Receiving (barcode-stickered physical documents) ──────────
+  fastify.get(
+    "/document/receive/sync",
+    { preHandler: authenticated },
+    documentReceiveSync,
+  );
+  fastify.get(
+    "/document/receive/find",
+    { preHandler: authenticated },
+    documentReceiveFind,
+  );
+  fastify.post(
+    "/document/receive",
+    { preHandler: authenticated },
+    documentReceiveCreate,
+  );
+  fastify.get(
+    "/document/receive/list",
+    { preHandler: authenticated },
+    documentReceiveList,
   );
 };

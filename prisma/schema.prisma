@@ -1897,6 +1897,29 @@ model DocumentPage {
   signCoor   SignatureCoor[]
 }
 
+// A physical document logged by receiving personnel: a barcode sticker is
+// attached to the paper, then scanned (mobile) or typed (web). The barcode is
+// the lookup key and is unique per line. Sender is either a unit (Department)
+// of the line or a free-text name for outside senders.
+model DocumentReceiveRecord {
+  id             String    @id @default(uuid())
+  lineId         String
+  barcode        String
+  title          String
+  senderUnitId   String? // Department.id when the sender is a unit in the line
+  senderUnitName String? // denormalised so mobile/offline can render without a join
+  senderName     String? // free-text sender (walk-in / external)
+  receivedById   String? // User.id of the receiving personnel
+  receivedByName String? // denormalised for display
+  clientOpId     String?   @unique // mobile offline-create idempotency key
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  deletedAt      DateTime?
+
+  @@unique([lineId, barcode])
+  @@index([lineId, updatedAt])
+}
+
 model DocumentAbstract {
   id               String            @id @default(uuid())
   title            String
