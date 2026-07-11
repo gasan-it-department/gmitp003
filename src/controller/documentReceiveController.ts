@@ -178,3 +178,163 @@ export const documentReceiveList = async (
     lastCursor: rows.length > 0 ? rows[rows.length - 1].id : null,
   });
 };
+
+// ═══════════════ Mobile Access (who may use the mobile doc scanner) ═══════
+
+const fullName = (u: {
+  firstName: string;
+  lastName: string;
+  middleName?: string | null;
+}) => `${u.lastName}, ${u.firstName}${u.middleName ? " " + u.middleName : ""}`;
+
+// GET /document/mobile-access?lineId — users granted mobile document access
+export const listDocMobileAccess = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const { lineId } = req.query as { lineId?: string };
+  if (!lineId) throw new ValidationError("lineId is required");
+  const rows = await prisma.documentMobileAccess.findMany({
+    where: { lineId },
+    orderBy: { timestamp: "desc" },
+    include: {
+      user: {
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          middleName: true,
+          username: true,
+          department: { select: { name: true } },
+        },
+      },
+      grantedBy: { select: { firstName: true, lastName: true } },
+    },
+  });
+  const list = rows.map((r) => ({
+    id: r.id,
+    userId: r.userId,
+    name: fullName(r.user),
+    username: r.user.username,
+    department: r.user.department?.name ?? null,
+    grantedAt: r.timestamp,
+    grantedBy: r.grantedBy
+      ? `${r.grantedBy.lastName}, ${r.grantedBy.firstName}`
+      : null,
+  }));
+  return res.code(200).send({ list });
+};
+
+// GET /document/mobile-access/candidates?lineId&query — line users not yet granted
+export const docMobileAccessCandidates = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const { lineId, query } = req.query as { lineId?: string; query?: string };
+  if (!lineId) throw new ValidationError("lineId is required");
+  const granted = await prisma.documentMobileAccess.findMany({
+    where: { lineId },
+    select: { userId: true },
+  });
+  const grantedIds = granted.map((g) => g.userId);
+  const term = (query ?? "").trim();
+  const users = await prisma.user.findMany({
+    where: {
+      lineId,
+      active: 1,
+      ...(grantedIds.length ? { id: { notIn: grantedIds } } : {}),
+      ...(term
+        ? {
+            OR: [
+              { firstName: { contains: term, mode: "insensitive" } },
+              { lastName: { contains: term, mode: "insensitive" } },
+              { username: { contains: term, mode: "insensitive" } },
+            ],
+          }
+        : {}),
+    },
+    take: 20,
+    orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      middleName: true,
+      username: true,
+      department: { select: { name: true } },
+    },
+  });
+  return res.code(200).send({
+    list: users.map((u) => ({
+      id: u.id,
+      name: fullName(u),
+      username: u.username,
+      department: u.department?.name ?? null,
+    })),
+  });
+};
+
+// POST /document/mobile-access { lineId, userId, grantedById } — grant (idempotent)
+export const grantDocMobileAccess = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as {
+    lineId?: string;
+    userId?: string;
+    grantedById?: string;
+  };
+  if (!body.lineId || !body.userId)
+    throw new ValidationError("lineId and userId are required");
+  const user = await prisma.user.findFirst({
+    where: { id: body.userId, lineId: body.lineId },
+    select: { id: true },
+  });
+  if (!user) throw new ValidationError("USER_NOT_IN_LINE");
+  await prisma.documentMobileAccess.upsert({
+    where: { lineId_userId: { lineId: body.lineId, userId: body.userId } },
+    create: {
+      lineId: body.lineId,
+      userId: body.userId,
+      grantedById: body.grantedById ?? null,
+    },
+    update: {},
+  });
+  return res.code(200).send({ message: "OK" });
+};
+
+// DELETE /document/mobile-access { lineId, userId } — revoke
+export const revokeDocMobileAccess = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as { lineId?: string; userId?: string };
+  if (!body.lineId || !body.userId)
+    throw new ValidationError("lineId and userId are required");
+  await prisma.documentMobileAccess.deleteMany({
+    where: { lineId: body.lineId, userId: body.userId },
+  });
+  return res.code(200).send({ message: "OK" });
+};
+
+// GET /document/mobile-access/me — the mobile app's self-check (uses the token)
+export const myDocMobileAccess = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const accountId = (req.user as { id?: string } | undefined)?.id;
+  if (!accountId) return res.code(200).send({ granted: false });
+  const account = await prisma.account.findUnique({
+    where: { id: accountId },
+    select: { lineId: true, User: { select: { id: true, lineId: true } } },
+  });
+  const lineId = account?.lineId ?? account?.User?.lineId ?? null;
+  const userId = account?.User?.id ?? null;
+  if (!lineId || !userId)
+    return res.code(200).send({ granted: false, reason: "no-user-or-line" });
+  const access = await prisma.documentMobileAccess.findUnique({
+    where: { lineId_userId: { lineId, userId } },
+    select: { id: true },
+  });
+  return res.code(200).send({ granted: !!access });
+};

@@ -192,6 +192,53 @@ export const pharmacyMobileAuth = async (
   }
 };
 
+/**
+ * Mobile document-scanner gate — mirror of `pharmacyMobileAuth`. The caller
+ * must have a DocumentMobileAccess row for their (line, user), else 403. This
+ * is what stops an ungranted mobile user from reading or writing the document
+ * receiving registry. Granted in the web under Documents → Mobile Access.
+ */
+export const documentMobileAuth = async (
+  request: FastifyRequest,
+  reply: FastifyReply,
+) => {
+  try {
+    const accountId = (request.user as { id?: string } | undefined)?.id;
+    if (!accountId) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+    const account = await prisma.account.findUnique({
+      where: { id: accountId },
+      select: { lineId: true, User: { select: { id: true, lineId: true } } },
+    });
+    const lineId = account?.lineId ?? account?.User?.lineId ?? null;
+    const userId = account?.User?.id ?? null;
+    if (!lineId || !userId) {
+      return reply.code(403).send({
+        error: "NO_DOCUMENT_ACCESS",
+        message: "You don't have mobile document-scanner access.",
+      });
+    }
+    const access = await prisma.documentMobileAccess.findUnique({
+      where: { lineId_userId: { lineId, userId } },
+      select: { id: true },
+    });
+    if (!access) {
+      return reply.code(403).send({
+        error: "NO_DOCUMENT_ACCESS",
+        message:
+          "You don't have mobile document-scanner access. Ask your admin to grant it in Documents > Mobile Access.",
+      });
+    }
+    return;
+  } catch (error) {
+    return reply.code(403).send({
+      error: "NO_DOCUMENT_ACCESS",
+      message: "Document access check failed.",
+    });
+  }
+};
+
 export const medicineAccessAuth = async (
   request: FastifyRequest,
   reply: FastifyReply,

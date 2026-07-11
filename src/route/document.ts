@@ -1,10 +1,15 @@
 import { FastifyInstance } from "../barrel/fastify";
-import { authenticated } from "../middleware/handler";
+import { authenticated, documentMobileAuth } from "../middleware/handler";
 import {
   documentReceiveSync,
   documentReceiveFind,
   documentReceiveCreate,
   documentReceiveList,
+  listDocMobileAccess,
+  docMobileAccessCandidates,
+  grantDocMobileAccess,
+  revokeDocMobileAccess,
+  myDocMobileAccess,
 } from "../controller/documentReceiveController";
 
 import {
@@ -355,24 +360,54 @@ export const document = (fastify: FastifyInstance) => {
   );
 
   // ── Document Receiving (barcode-stickered physical documents) ──────────
+  // sync/find/create are gated by the Mobile Access grant (documentMobileAuth),
+  // exactly like the pharmacy scanner: ungranted users get 403 on every read
+  // and write, so the registry can't be touched without a grant.
   fastify.get(
     "/document/receive/sync",
-    { preHandler: authenticated },
+    { preHandler: [authenticated, documentMobileAuth] },
     documentReceiveSync,
   );
   fastify.get(
     "/document/receive/find",
-    { preHandler: authenticated },
+    { preHandler: [authenticated, documentMobileAuth] },
     documentReceiveFind,
   );
   fastify.post(
     "/document/receive",
-    { preHandler: authenticated },
+    { preHandler: [authenticated, documentMobileAuth] },
     documentReceiveCreate,
   );
   fastify.get(
     "/document/receive/list",
     { preHandler: authenticated },
     documentReceiveList,
+  );
+
+  // ── Documents Mobile Access (grant/revoke who may use the scanner) ─────
+  fastify.get(
+    "/document/mobile-access",
+    { preHandler: authenticated },
+    listDocMobileAccess,
+  );
+  fastify.get(
+    "/document/mobile-access/candidates",
+    { preHandler: authenticated },
+    docMobileAccessCandidates,
+  );
+  fastify.post(
+    "/document/mobile-access",
+    { preHandler: authenticated },
+    grantDocMobileAccess,
+  );
+  fastify.delete(
+    "/document/mobile-access",
+    { preHandler: authenticated },
+    revokeDocMobileAccess,
+  );
+  fastify.get(
+    "/document/mobile-access/me",
+    { preHandler: authenticated },
+    myDocMobileAccess,
   );
 };

@@ -59,6 +59,7 @@ model Line {
   MedicineStorage         MedicineStorage[]
   MedicineTransaction     MedicineTransaction[]
   PharmacyMobileAccess    PharmacyMobileAccess[]
+  DocumentMobileAccess    DocumentMobileAccess[]
   MessageTemplate         MessageTemplate[]
   modules                 Module[]
   Position                Position[]
@@ -1112,6 +1113,8 @@ model User {
   MedicineStorageAccess            MedicineStorageAccess[]
   PharmacyMobileAccess             PharmacyMobileAccess[]           @relation("PharmacyMobileAccessUser")
   PharmacyMobileAccessGranted      PharmacyMobileAccess[]           @relation("PharmacyMobileAccessGrantedBy")
+  DocumentMobileAccess             DocumentMobileAccess[]           @relation("DocumentMobileAccessUser")
+  DocumentMobileAccessGranted     DocumentMobileAccess[]           @relation("DocumentMobileAccessGrantedBy")
   MedicineTransaction              MedicineTransaction[]
   modules                          Module[]
   receivedNotifications            Notification[]                   @relation("ReceivedNotifications")
@@ -2215,6 +2218,22 @@ model PharmacyMobileAccess {
   line        Line     @relation(fields: [lineId], references: [id], onDelete: Cascade)
   user        User     @relation("PharmacyMobileAccessUser", fields: [userId], references: [id], onDelete: Cascade)
   grantedBy   User?    @relation("PharmacyMobileAccessGrantedBy", fields: [grantedById], references: [id], onDelete: SetNull)
+
+  @@unique([lineId, userId])
+}
+
+// Grants a user line-wide access to the MOBILE document scanner (web
+// Documents > Mobile Access page). Enforced by `documentMobileAuth` on the
+// /document/receive/* endpoints — mirror of PharmacyMobileAccess.
+model DocumentMobileAccess {
+  id          String   @id @default(uuid())
+  lineId      String
+  userId      String
+  grantedById String?
+  timestamp   DateTime @default(now())
+  line        Line     @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  user        User     @relation("DocumentMobileAccessUser", fields: [userId], references: [id], onDelete: Cascade)
+  grantedBy   User?    @relation("DocumentMobileAccessGrantedBy", fields: [grantedById], references: [id], onDelete: SetNull)
 
   @@unique([lineId, userId])
 }
