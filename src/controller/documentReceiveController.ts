@@ -46,7 +46,11 @@ export const documentReceiveSync = async (
     orderBy: { updatedAt: "asc" },
     take: 2000,
   });
-  return res.code(200).send({ list: rows.map(shape), now: Date.now() });
+  const pageMap = await pagesFor(rows.map((r) => r.id));
+  return res.code(200).send({
+    list: rows.map((r) => ({ ...shape(r), pages: pageMap[r.id] ?? [] })),
+    now: Date.now(),
+  });
 };
 
 // GET /document/receive/find?lineId=&barcode=
@@ -59,9 +63,11 @@ export const documentReceiveFind = async (
   const row = await prisma.documentReceiveRecord.findUnique({
     where: { lineId_barcode: { lineId: q.lineId, barcode: q.barcode.trim() } },
   });
+  if (!row || row.deletedAt) return res.code(200).send({ record: null });
+  const pageMap = await pagesFor([row.id]);
   return res
     .code(200)
-    .send({ record: row && !row.deletedAt ? shape(row) : null });
+    .send({ record: { ...shape(row), pages: pageMap[row.id] ?? [] } });
 };
 
 // POST /document/receive
@@ -172,8 +178,9 @@ export const documentReceiveList = async (
     ...(q.cursor ? { cursor: { id: q.cursor } } : {}),
     orderBy: { createdAt: "desc" },
   });
+  const pageMap = await pagesFor(rows.map((r) => r.id));
   return res.code(200).send({
-    list: rows.map(shape),
+    list: rows.map((r) => ({ ...shape(r), pages: pageMap[r.id] ?? [] })),
     hasMore: rows.length === take,
     lastCursor: rows.length > 0 ? rows[rows.length - 1].id : null,
   });
@@ -337,4 +344,117 @@ export const myDocMobileAccess = async (
     select: { id: true },
   });
   return res.code(200).send({ granted: !!access });
+};
+
+// ═══════════════ Scanned pages (mobile document scanner) ══════════════════
+
+const pageUrl = (req: FastifyRequest, id: string) => {
+  const proto =
+    (req.headers["x-forwarded-proto"] as string) || req.protocol || "http";
+  const host = (req.headers["x-forwarded-host"] as string) || req.headers.host;
+  return `${proto}://${host}/document/receive/page/${id}`;
+};
+
+/** pages per record (id + page number), for list/find/sync responses. */
+const pagesFor = async (recordIds: string[]) => {
+  if (recordIds.length === 0)
+    return {} as Record<string, { id: string; page: number }[]>;
+  const rows = await prisma.documentReceivePage.findMany({
+    where: { recordId: { in: recordIds } },
+    select: { id: true, recordId: true, page: true },
+    orderBy: { page: "asc" },
+  });
+  const map: Record<string, { id: string; page: number }[]> = {};
+  for (const r of rows) {
+    if (!map[r.recordId]) map[r.recordId] = [];
+    map[r.recordId].push({ id: r.id, page: r.page });
+  }
+  return map;
+};
+
+// POST /document/receive/page — multipart: fields id, recordId, page + file.
+// Idempotent by client-supplied id (offline queue replays are no-ops).
+export const documentReceivePageUpload = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  if (!req.isMultipart()) throw new ValidationError("NOT_MULTIPART");
+
+  let file: { mimetype: string; buffer: Buffer } | null = null;
+  const fields: Record<string, string> = {};
+  for await (const part of req.parts()) {
+    if (part.type === "file") {
+      const chunks: Buffer[] = [];
+      for await (const chunk of part.file) chunks.push(chunk as Buffer);
+      file = { mimetype: part.mimetype, buffer: Buffer.concat(chunks) };
+    } else if (part.type === "field") {
+      fields[part.fieldname] = String(part.value ?? "");
+    }
+  }
+
+  const id = (fields.id ?? "").trim();
+  const recordId = (fields.recordId ?? "").trim();
+  const page = Math.max(1, parseInt(fields.page ?? "1", 10) || 1);
+  if (!recordId) throw new ValidationError("BAD_REQUEST: recordId required");
+
+  // Replay of the same offline op → succeed without duplicating.
+  if (id) {
+    const existing = await prisma.documentReceivePage.findUnique({
+      where: { id },
+      select: { id: true, page: true },
+    });
+    if (existing)
+      return res.code(200).send({
+        pageId: existing.id,
+        page: existing.page,
+        url: pageUrl(req, existing.id),
+        existing: true,
+      });
+  }
+
+  const record = await prisma.documentReceiveRecord.findUnique({
+    where: { id: recordId },
+    select: { id: true },
+  });
+  if (!record) throw new ValidationError("RECORD_NOT_FOUND");
+
+  if (!file) throw new ValidationError("MISSING_FILE");
+  if (!file.mimetype.startsWith("image/"))
+    throw new ValidationError("FILE_MUST_BE_AN_IMAGE");
+  if (file.buffer.length > 10 * 1024 * 1024)
+    throw new ValidationError("IMAGE_TOO_LARGE");
+
+  const saved = await prisma.documentReceivePage.create({
+    data: {
+      ...(id ? { id } : {}),
+      recordId,
+      page,
+      mime: file.mimetype,
+      bytes: file.buffer,
+    },
+    select: { id: true, page: true },
+  });
+  return res.code(200).send({
+    pageId: saved.id,
+    page: saved.page,
+    url: pageUrl(req, saved.id),
+    existing: false,
+  });
+};
+
+// GET /document/receive/page/:id — serve the image (uuid-obscured, like chat).
+export const documentReceivePageServe = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const { id } = req.params as { id?: string };
+  if (!id) throw new ValidationError("BAD_REQUEST");
+  const img = await prisma.documentReceivePage.findUnique({
+    where: { id },
+    select: { bytes: true, mime: true },
+  });
+  if (!img) return res.code(404).send({ message: "Not found" });
+  res.header("Content-Type", img.mime);
+  res.header("Cache-Control", "private, max-age=31536000, immutable");
+  return res.send(Buffer.from(img.bytes));
 };

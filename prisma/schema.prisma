@@ -1923,6 +1923,21 @@ model DocumentReceiveRecord {
   @@index([lineId, updatedAt])
 }
 
+// A scanned page image attached to a DocumentReceiveRecord — captured with
+// the mobile document scanner (VisionKit / ML Kit). Bytes live in the DB,
+// same storage pattern as ChatImage. `id` is client-suppliable so the
+// offline upload queue is idempotent.
+model DocumentReceivePage {
+  id        String   @id @default(uuid())
+  recordId  String
+  page      Int      @default(1)
+  mime      String
+  bytes     Bytes
+  createdAt DateTime @default(now())
+
+  @@index([recordId, page])
+}
+
 model DocumentAbstract {
   id               String            @id @default(uuid())
   title            String

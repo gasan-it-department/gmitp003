@@ -10,6 +10,8 @@ import {
   grantDocMobileAccess,
   revokeDocMobileAccess,
   myDocMobileAccess,
+  documentReceivePageUpload,
+  documentReceivePageServe,
 } from "../controller/documentReceiveController";
 
 import {
@@ -383,6 +385,13 @@ export const document = (fastify: FastifyInstance) => {
     { preHandler: authenticated },
     documentReceiveList,
   );
+  fastify.post(
+    "/document/receive/page",
+    { preHandler: [authenticated, documentMobileAuth] },
+    documentReceivePageUpload,
+  );
+  // PUBLIC — page images load directly by URL (uuid-obscured, like chat media).
+  fastify.get("/document/receive/page/:id", documentReceivePageServe);
 
   // ── Documents Mobile Access (grant/revoke who may use the scanner) ─────
   fastify.get(
