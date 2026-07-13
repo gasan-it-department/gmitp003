@@ -1914,6 +1914,7 @@ model DocumentReceiveRecord {
   senderName     String? // free-text sender (walk-in / external)
   receivedById   String? // User.id of the receiving personnel
   receivedByName String? // denormalised for display
+  direction      String    @default("in") // "in" (received) | "out" (released)
   clientOpId     String?   @unique // mobile offline-create idempotency key
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt

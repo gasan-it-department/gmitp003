@@ -23,6 +23,7 @@ const shape = (r: any) => ({
   senderName: r.senderName ?? null,
   receivedById: r.receivedById ?? null,
   receivedByName: r.receivedByName ?? null,
+  direction: r.direction === "out" ? "out" : "in",
   createdAt: r.createdAt,
   updatedAt: r.updatedAt,
   deletedAt: r.deletedAt ?? null,
@@ -84,6 +85,7 @@ export const documentReceiveCreate = async (
     senderUnitId?: string | null;
     senderUnitName?: string | null;
     senderName?: string | null;
+    direction?: string | null;
     userId?: string | null;
   };
   const lineId = (b.lineId ?? "").trim();
@@ -128,6 +130,7 @@ export const documentReceiveCreate = async (
         [u.firstName, u.lastName].filter(Boolean).join(" ").trim() || null;
   }
 
+  const direction = b.direction === "out" ? "out" : "in";
   const created = await prisma.documentReceiveRecord.create({
     data: {
       ...(b.id ? { id: b.id } : {}),
@@ -137,6 +140,7 @@ export const documentReceiveCreate = async (
       senderUnitId,
       senderUnitName,
       senderName: (b.senderName ?? "").trim() || null,
+      direction,
       receivedById,
       receivedByName,
       clientOpId: b.id ?? null,
@@ -155,11 +159,13 @@ export const documentReceiveList = async (
     cursor?: string;
     limit?: string;
     query?: string;
+    direction?: string;
   };
   if (!q.lineId) throw new ValidationError("BAD_REQUEST: lineId required");
   const take = Math.min(parseInt(q.limit ?? "20", 10) || 20, 100);
 
   const where: any = { lineId: q.lineId, deletedAt: null };
+  if (q.direction === "in" || q.direction === "out") where.direction = q.direction;
   if (q.query && q.query.trim()) {
     const s = q.query.trim();
     where.OR = [
