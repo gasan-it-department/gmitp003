@@ -179,6 +179,48 @@ async function notifyNewPrescription(
   }
 }
 
+/**
+ * Fire the "New Prescription" alert only once the prescription AND at least one
+ * prescribed medicine both exist on the server.
+ *
+ * The desktop pushes the prescription and its `prescription_item` rows as two
+ * SEPARATE sync requests (prescription first, for the FK). Notifying on the
+ * prescription push alone raced the items: a pharmacist who tapped the bell
+ * immediately opened `prescription/{id}` before the medicines had synced and
+ * saw "No Medicines Found". So both handlers call this; whichever lands last
+ * sends the alert, and the notification's `path` is the natural dedup key so it
+ * only ever fires once.
+ */
+async function maybeNotifyPrescription(
+  prescriptionId: string | null,
+  ctx: PushCtx,
+) {
+  if (!prescriptionId || !ctx.userId || !ctx.lineId) return;
+  // already alerted for this prescription?
+  const already = await prisma.medicineNotification.findFirst({
+    where: { path: `prescription/${prescriptionId}` },
+    select: { id: true },
+  });
+  if (already) return;
+  // items haven't landed yet — defer; the prescription_item push calls back
+  // here once at least one row exists
+  const item = await prisma.precribeMedicine.findFirst({
+    where: { prescriptionId },
+    select: { id: true },
+  });
+  if (!item) return;
+  const presc = await prisma.prescription.findUnique({
+    where: { id: prescriptionId },
+    select: { firstname: true, lastname: true },
+  });
+  if (!presc) return;
+  const patientLabel =
+    [presc.lastname, presc.firstname]
+      .filter((x) => x && String(x).trim())
+      .join(", ") || "a patient";
+  await notifyNewPrescription(prescriptionId, patientLabel, ctx);
+}
+
 async function medName(medicineId: string | null): Promise<string> {
   if (!medicineId) return "Unknown Medicine";
   const m = await prisma.medicine.findUnique({
@@ -502,13 +544,11 @@ export const REAL_PUSH: Record<
     // open->dispensed transition (with a type-2 "Medicine Dispensed" record)
     if (!existing) {
       await audit(1, `Submitted Prescription Ref. #: ${refNumber}.`, ctx);
-      // notify the line's pharmacy users, exactly like web createPrescriptions
-      const patientLabel =
-        [lastname, firstname].filter((x) => x && String(x).trim()).join(", ") ||
-        s(row.patient_name) ||
-        "a patient";
-      await notifyNewPrescription(id, patientLabel, ctx);
     }
+    // Notify the line's pharmacy users, but only once the prescribed medicines
+    // have also synced — they arrive in a separate, later push, so this call
+    // usually defers and the prescription_item handler fires the alert instead.
+    await maybeNotifyPrescription(id, ctx);
     if (status === 1 && (!existing || existing.status !== 1)) {
       await audit(4, `Dispensed Medicine: Ref. #: ${refNumber}`, ctx);
       if (linkPatientId) {
@@ -523,7 +563,7 @@ export const REAL_PUSH: Record<
     }
   },
 
-  async prescription_item(row, _ctx) {
+  async prescription_item(row, ctx) {
     const id = s(row.id);
     if (!id) return;
     if (s(row.deleted_at)) {
@@ -542,6 +582,9 @@ export const REAL_PUSH: Record<
       create: { id, ...data },
       update: data,
     });
+    // A prescribed medicine now exists — send the "New Prescription" alert if
+    // the prescription push deferred it (idempotent; dedups on the notif path).
+    await maybeNotifyPrescription(data.prescriptionId, ctx);
   },
 };
 

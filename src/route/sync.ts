@@ -5,6 +5,7 @@ import {
   syncPing,
   syncPush,
   syncPull,
+  pollNotifications,
 } from "../controller/syncController";
 
 /**
@@ -19,4 +20,10 @@ export const sync = (fastify: FastifyInstance) => {
   fastify.get("/sync/ping", { preHandler: authenticated }, syncPing);
   fastify.post("/sync/push", { preHandler: authenticated }, syncPush);
   fastify.get("/sync/pull", { preHandler: authenticated }, syncPull);
+  // authenticated: realtime notification long-poll (Pharmacy Desktop)
+  fastify.get(
+    "/sync/notify/poll",
+    { preHandler: authenticated },
+    pollNotifications,
+  );
 };

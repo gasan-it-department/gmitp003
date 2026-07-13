@@ -1,6 +1,7 @@
 // socket/notificationSocket.ts
 import { DefaultEventsMap, Server } from "socket.io";
 import { prisma } from "../barrel/prisma";
+import { signalLine } from "../service/notifyWaiters";
 
 // Define types for better TypeScript support
 interface NotificationData {
@@ -289,6 +290,8 @@ export class NotificationSocket {
         .to(`user-${notification.userId}`)
         .emit("medicine-notification:new", notification);
     }
+    // wake any HTTP long-poll clients on this line (Pharmacy Desktop) instantly
+    signalLine(lineId);
   }
 
   /**

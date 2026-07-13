@@ -1,6 +1,7 @@
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
 import { prisma } from "../barrel/prisma";
 import { REAL_PUSH, REAL_PULL, isRealTable } from "./realSync";
+import { waitForLine } from "../service/notifyWaiters";
 
 /**
  * Offline-first sync endpoints for the Gasan Pharmacy desktop app.
@@ -197,4 +198,80 @@ export const syncPull = async (req: FastifyRequest, reply: FastifyReply) => {
       : q?.since ?? null;
 
   return reply.code(200).send({ rows, cursor, count: rows.length });
+};
+
+/**
+ * Realtime notification long-poll for the Pharmacy Desktop.
+ *
+ * The desktop holds this request open; the handler returns as soon as a
+ * medicine notification newer than `since` exists for the caller's line, or
+ * after ~20s of no activity (empty list, so the client immediately re-polls).
+ * emitMedicineNotification() signals waiters the instant a notification is
+ * created, so delivery is effectively realtime — matching the web's socket —
+ * over plain HTTPS that works on Windows 7 / .NET 4.8 where a live WebSocket
+ * doesn't. The caller's own actions are excluded so you never toast yourself.
+ */
+export const pollNotifications = async (
+  req: FastifyRequest,
+  reply: FastifyReply,
+) => {
+  const q = req.query as { since?: string; wait?: string } | undefined;
+  const lineId = await callerLineId(req);
+  const meId = await callerUserId(req);
+  const now = new Date();
+  if (!lineId) {
+    return reply
+      .code(200)
+      .send({ notifications: [], serverTime: now.toISOString() });
+  }
+
+  // cursor: only notifications strictly after this instant. Default to "now" so
+  // a fresh client never replays history.
+  const parsed = q?.since ? new Date(q.since) : now;
+  const since = isNaN(parsed.getTime()) ? now : parsed;
+
+  // hold the request up to ~20s (safely under the desktop's 30s client timeout
+  // and any proxy idle limit), re-checking on every wake
+  const waitMs = Math.min(
+    25_000,
+    Math.max(0, (Number(q?.wait) || 20) * 1000),
+  );
+  const deadline = Date.now() + waitMs;
+
+  const fetchNew = () =>
+    prisma.medicineNotification.findMany({
+      where: {
+        lineId,
+        timestamp: { gt: since },
+        ...(meId ? { NOT: { userId: meId } } : {}),
+      },
+      orderBy: { timestamp: "asc" },
+      take: 50,
+      select: {
+        id: true,
+        userId: true,
+        lineId: true,
+        title: true,
+        message: true,
+        path: true,
+        type: true,
+        view: true,
+        timestamp: true,
+      },
+    });
+
+  let rows = await fetchNew();
+  while (rows.length === 0 && Date.now() < deadline) {
+    await waitForLine(lineId, Math.min(2_000, deadline - Date.now()));
+    rows = await fetchNew();
+  }
+
+  return reply.code(200).send({
+    notifications: rows.map((r) => ({
+      ...r,
+      timestamp:
+        r.timestamp instanceof Date ? r.timestamp.toISOString() : r.timestamp,
+    })),
+    serverTime: new Date().toISOString(),
+  });
 };
