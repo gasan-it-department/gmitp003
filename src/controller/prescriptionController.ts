@@ -714,6 +714,62 @@ export const prescriptionDispense = async (
         path: `prescribe-medicine/transaction/${prescription.id}`,
         senderId: body.userId,
       });
+
+      // Realtime "dispensed" alert on the medicine-notification channel — the
+      // same one the prescribe alert uses — so the whole line, INCLUDING the
+      // prescriber on the Pharmacy Desktop, is notified live (this is what wakes
+      // the desktop long-poll; the createUserNotification above only reaches the
+      // web bell). The dispenser is skipped by the per-user rule.
+      const dispenser = await tx.user.findUnique({
+        where: { id: body.userId },
+        select: { firstName: true, lastName: true },
+      });
+      const dispWho = dispenser
+        ? `${dispenser.lastName}, ${dispenser.firstName}`
+        : "Pharmacy";
+      const dispPatient = await tx.patient.findUnique({
+        where: { id: prescription.patientId },
+        select: { firstname: true, lastname: true },
+      });
+      const dispFor =
+        [dispPatient?.lastname, dispPatient?.firstname]
+          .filter((x) => x && String(x).trim())
+          .join(", ") || "a patient";
+      if (prescription.lineId) {
+        const dispNotif = await tx.medicineNotification.create({
+          data: {
+            userId: body.userId,
+            view: 0,
+            path: `prescription/${prescription.id}`,
+            message: `${dispWho} - dispensed prescription for ${dispFor}`,
+            title: "Prescription Dispensed",
+            lineId: prescription.lineId,
+          },
+          select: {
+            id: true, userId: true, title: true, message: true, lineId: true,
+            path: true, timestamp: true, type: true, view: true,
+          },
+        });
+        try {
+          const { notificationSocket } = await import("..");
+          notificationSocket.emitMedicineNotification(dispNotif.lineId, {
+            id: dispNotif.id,
+            userId: dispNotif.userId,
+            title: dispNotif.title,
+            message: dispNotif.message,
+            lineId: dispNotif.lineId,
+            path: dispNotif.path ?? undefined,
+            timestamp:
+              typeof dispNotif.timestamp === "string"
+                ? dispNotif.timestamp
+                : dispNotif.timestamp.toISOString(),
+            type: dispNotif.type,
+            view: dispNotif.view,
+          });
+        } catch (e) {
+          console.warn("[prescription] dispensed notif emit failed:", e);
+        }
+      }
     });
 
     return res.code(200).send({ message: "OK" });
