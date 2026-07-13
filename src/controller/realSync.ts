@@ -104,26 +104,41 @@ async function audit(action: number, message: string, ctx: PushCtx) {
  * a bell Notification for every pharmacy-module user on the line (except the
  * prescriber). Best-effort — never blocks the sync.
  */
-async function notifyNewPrescription(
-  prescriptionId: string,
-  patientLabel: string,
-  ctx: PushCtx,
-) {
+// "Lastname, Firstname" of whoever performed the action (the prescriber /
+// dispenser), or a sensible fallback.
+async function actorName(ctx: PushCtx): Promise<string> {
+  if (!ctx.userId) return "Pharmacy Desktop";
+  const user = await prisma.user.findUnique({
+    where: { id: ctx.userId },
+    select: { firstName: true, lastName: true },
+  });
+  return user ? `${user.lastName}, ${user.firstName}` : "Pharmacy Desktop";
+}
+
+/**
+ * Core notifier shared by the prescribe + dispense events. Creates the realtime
+ * MedicineNotification (→ socket + wakes desktop long-polls) and a per-user bell
+ * notification for every OTHER pharmacy user on the line (the actor is skipped,
+ * and the long-poll excludes `userId==caller` too — so nobody is notified about
+ * their own action, but their teammates are).
+ */
+async function sendPrescriptionNotification(opts: {
+  prescriptionId: string;
+  title: string;
+  medMessage: string;
+  bellContent: string;
+  ctx: PushCtx;
+}) {
+  const { prescriptionId, title, medMessage, bellContent, ctx } = opts;
   if (!ctx.userId || !ctx.lineId) return;
   try {
-    const user = await prisma.user.findUnique({
-      where: { id: ctx.userId },
-      select: { firstName: true, lastName: true },
-    });
-    const who = user ? `${user.lastName}, ${user.firstName}` : "Pharmacy Desktop";
-
     const medNotif = await prisma.medicineNotification.create({
       data: {
         userId: ctx.userId,
         view: 0,
         path: `prescription/${prescriptionId}`,
-        message: `${who} - submitted prescription for ${patientLabel}`,
-        title: "New Prescription",
+        message: medMessage,
+        title,
         lineId: ctx.lineId,
       },
       select: {
@@ -151,7 +166,7 @@ async function notifyNewPrescription(
       console.warn("[realSync] medicine notif emit failed:", e);
     }
 
-    // bell notification for the line's pharmacy users (skip the prescriber)
+    // bell notification for the line's pharmacy users (skip the actor)
     const pharmacyUsers = await prisma.module.findMany({
       where: {
         lineId: ctx.lineId,
@@ -168,8 +183,8 @@ async function notifyNewPrescription(
     for (const recipientId of ids) {
       await createUserNotification(prisma, {
         recipientId,
-        title: "New Prescription",
-        content: `${who} submitted a prescription for ${patientLabel}.`,
+        title,
+        content: bellContent,
         path: `/${ctx.lineId}/medicine/prescription/${prescriptionId}`,
         senderId: ctx.userId,
       });
@@ -177,6 +192,40 @@ async function notifyNewPrescription(
   } catch (e) {
     console.warn("[realSync] prescription notify failed:", e);
   }
+}
+
+async function notifyNewPrescription(
+  prescriptionId: string,
+  patientLabel: string,
+  ctx: PushCtx,
+) {
+  if (!ctx.userId || !ctx.lineId) return;
+  const who = await actorName(ctx);
+  await sendPrescriptionNotification({
+    prescriptionId,
+    title: "New Prescription",
+    medMessage: `${who} - submitted prescription for ${patientLabel}`,
+    bellContent: `${who} submitted a prescription for ${patientLabel}.`,
+    ctx,
+  });
+}
+
+// When a prescription is dispensed, tell the rest of the line (the prescriber
+// especially) — the dispenser themselves is skipped by the per-user rule.
+async function notifyPrescriptionDispensed(
+  prescriptionId: string,
+  patientLabel: string,
+  ctx: PushCtx,
+) {
+  if (!ctx.userId || !ctx.lineId) return;
+  const who = await actorName(ctx);
+  await sendPrescriptionNotification({
+    prescriptionId,
+    title: "Prescription Dispensed",
+    medMessage: `${who} - dispensed prescription for ${patientLabel}`,
+    bellContent: `${who} dispensed the prescription for ${patientLabel}.`,
+    ctx,
+  });
 }
 
 /**
@@ -560,6 +609,13 @@ export const REAL_PUSH: Record<
           update: {},
         });
       }
+      // notify the line (the prescriber especially) that it was dispensed —
+      // the dispenser themselves is skipped by the per-user rule
+      const dispensedFor =
+        [lastname, firstname].filter((x) => x && String(x).trim()).join(", ") ||
+        s(row.patient_name) ||
+        "a patient";
+      await notifyPrescriptionDispensed(id, dispensedFor, ctx);
     }
   },
 
