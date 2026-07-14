@@ -535,7 +535,10 @@ export const REAL_PUSH: Record<
     // don't let a not-yet-synced patient's FK block the insert; re-links on a
     // later push once the patient exists
     const linkPatientId = patientExists ? patientId : null;
-    const status = s(row.status) === "dispensed" ? 1 : 0;
+    // dispensed === 2 to match the web (prescriptionDispense sets status 2 and
+    // blocks re-dispense on status===2). Using 1 here let the web re-dispense a
+    // desktop-dispensed rx (double dispense).
+    const status = s(row.status) === "dispensed" ? 2 : 0;
     const timestamp = s(row.created_at) ? new Date(String(row.created_at)) : new Date();
 
     // refNumber is generated once and preserved on re-push (idempotent)
@@ -598,7 +601,7 @@ export const REAL_PUSH: Record<
     // have also synced — they arrive in a separate, later push, so this call
     // usually defers and the prescription_item handler fires the alert instead.
     await maybeNotifyPrescription(id, ctx);
-    if (status === 1 && (!existing || existing.status !== 1)) {
+    if (status === 2 && (!existing || existing.status !== 2)) {
       await audit(4, `Dispensed Medicine: Ref. #: ${refNumber}`, ctx);
       if (linkPatientId) {
         const dispRecId = "disprec_" + id;
@@ -805,7 +808,8 @@ export const REAL_PULL: Record<
       patient_name: [r.firstname, r.lastname].filter((x) => x && String(x).trim()).join(" ") || null,
       diagnosis_id: null,
       descr: r.condtion,
-      status: r.status === 1 ? "dispensed" : "open",
+      // dispensed = 2 (web) or legacy 1; anything else is still open
+      status: r.status === 2 || r.status === 1 ? "dispensed" : "open",
       created_by: null,
       created_at: iso(r.timestamp),
       updated_at: iso(r.timestamp),
