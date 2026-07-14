@@ -7,6 +7,7 @@ import {
 } from "../controller/adminBackupController";
 import { adminAuthenticated } from "../middleware/handler";
 import { adminLoginScehma } from "../models/request";
+import { openLineHrSession } from "../controller/adminLineHrController";
 export const admin = (fastify: FastifyInstance) => {
   fastify.post("/admin-login", { schema: adminLoginScehma }, adminAuth);
   fastify.post("/create-admin", { schema: adminLoginScehma }, creteAdmin);
@@ -26,5 +27,12 @@ export const admin = (fastify: FastifyInstance) => {
     "/admin/backup/import",
     { preHandler: adminAuthenticated, bodyLimit: 100 * 1024 * 1024 },
     adminBackupImport,
+  );
+  // Mint a real line session so the super-admin can manage that line's HR
+  // (the whole existing HR module, scoped to the line).
+  fastify.post(
+    "/admin/line/:lineId/hr-session",
+    { preHandler: adminAuthenticated },
+    openLineHrSession,
   );
 };

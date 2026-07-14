@@ -812,6 +812,20 @@ export const userModuleAccess = async (
   req: FastifyRequest,
   res: FastifyReply,
 ) => {
+  // Super-admin impersonation session (imp:true) → full access; skip the
+  // per-user module check so access never depends on the target line's setup.
+  try {
+    const authz = req.headers.authorization?.split(" ")[1];
+    const decoded = authz
+      ? (req.server.jwt.decode(authz) as { imp?: boolean } | null)
+      : null;
+    if (decoded?.imp === true) {
+      return res.code(200).send({ message: "OK" });
+    }
+  } catch {
+    /* fall through to the normal per-user check */
+  }
+
   const params = req.query as {
     moduleName: string;
     userId: string;
