@@ -424,7 +424,7 @@ export const REAL_PUSH: Record<
       return;
     }
     if (!lineId) throw new Error("This account is not assigned to a line; cannot sync.");
-    const isNew = !(await prisma.medicineStock.findUnique({ where: { id }, select: { id: true } }));
+    const existing = await prisma.medicineStock.findUnique({ where: { id } });
     const num = (v: unknown) => {
       const n = Number(v);
       return Number.isFinite(n) ? Math.trunc(n) : 0;
@@ -440,19 +440,6 @@ export const REAL_PUSH: Record<
       if (!st) storageId = null;
     }
 
-    // Storage access: a restricted desktop user may only write stock in their
-    // assigned storages — both the storage the row claims AND the storage the
-    // existing server row already sits in (so batches can't be pulled out of a
-    // storage the user isn't assigned to).
-    const current = await prisma.medicineStock.findUnique({
-      where: { id },
-      select: { medicineStorageId: true },
-    });
-    await assertStorageAccess(
-      ctx.userId,
-      [storageId, current?.medicineStorageId],
-      "modify stock",
-    );
     const data = {
       medicineId: s(row.medicine_id),
       medicineStorageId: storageId,
@@ -473,12 +460,46 @@ export const REAL_PUSH: Record<
       container: s(row.container),
       lineId,
     };
+
+    // Unchanged replay (e.g. the desktop's "force full re-sync" re-pushes
+    // every row) — nothing to write, so no storage-access check either.
+    // Without this, strict storage access would permanently reject other
+    // storages' untouched rows on a full resync.
+    if (existing) {
+      const t = (d: Date | null | undefined) => (d ? d.getTime() : null);
+      const same =
+        existing.medicineId === data.medicineId &&
+        existing.medicineStorageId === data.medicineStorageId &&
+        existing.quality === data.quality &&
+        existing.perQuantity === data.perQuantity &&
+        existing.quantity === data.quantity &&
+        existing.actualStock === data.actualStock &&
+        existing.threshold === data.threshold &&
+        t(existing.expiration) === t(data.expiration) &&
+        t(existing.manufacturingDate) === t(data.manufacturingDate) &&
+        (existing.addressRoom ?? null) === (data.addressRoom ?? null) &&
+        (existing.addressCol ?? null) === (data.addressCol ?? null) &&
+        (existing.addressRow ?? null) === (data.addressRow ?? null) &&
+        (existing.addressSec ?? null) === (data.addressSec ?? null) &&
+        (existing.container ?? null) === (data.container ?? null);
+      if (same) return;
+    }
+
+    // Storage access (LOCKED BY DEFAULT): the pusher needs a grant on the
+    // storage the row claims AND on the storage the existing server row sits
+    // in (so batches can't be pulled out of a storage they can't touch).
+    await assertStorageAccess(
+      ctx.userId,
+      [storageId, existing?.medicineStorageId],
+      "modify stock",
+    );
+
     await prisma.medicineStock.upsert({
       where: { id },
       create: { id, ...data },
       update: data,
     });
-    if (isNew) {
+    if (!existing) {
       const total = data.quantity * data.perQuantity;
       await audit(
         1,

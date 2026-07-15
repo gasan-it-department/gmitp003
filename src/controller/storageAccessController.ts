@@ -5,11 +5,11 @@ import { AppError, ValidationError } from "../errors/errors";
 /**
  * Per-storage "Dispense Access" (web Medicine > Storage > Dispense Access tab).
  *
- * Rule: a user with at least one MedicineStorageAccess grant may dispense and
- * restock ONLY in the storages they are granted. A user with no grants at all
- * is unrestricted (backward compatible — nothing changes until you assign
- * someone). Enforced server-side on dispense + every stock mutation, and
- * mirrored to the desktop app via the storage_access sync table.
+ * Rule — LOCKED BY DEFAULT: a user may dispense/restock in a storage ONLY
+ * when they hold a MedicineStorageAccess grant on that exact storage. No
+ * grant = blocked, for everyone. Enforced server-side on dispense + every
+ * stock mutation (web, mobile, and desktop sync pushes), and mirrored to the
+ * desktop app via the storage_access sync table.
  */
 
 const fullName = (u: {
@@ -20,23 +20,24 @@ const fullName = (u: {
   `${u.lastName}, ${u.firstName}${u.middleName ? " " + u.middleName : ""}`;
 
 /**
- * The storages this user may act on, or null when the user has no grants
- * anywhere (= unrestricted).
+ * The storages this user is granted on (possibly empty — empty means the
+ * user can't touch ANY storage's stock).
  */
 export async function allowedStorageIds(
   userId: string,
-): Promise<Set<string> | null> {
+): Promise<Set<string>> {
   const grants = await prisma.medicineStorageAccess.findMany({
     where: { userId },
     select: { medicineStorageId: true },
   });
-  if (grants.length === 0) return null;
   return new Set(grants.map((g) => g.medicineStorageId));
 }
 
 /**
- * Throw a ValidationError when `userId` is restricted and any of `storageIds`
- * falls outside their granted set. Call before mutating stock or dispensing.
+ * LOCKED BY DEFAULT: throw a ValidationError unless `userId` holds a grant on
+ * EVERY storage in `storageIds`. Call before mutating stock or dispensing.
+ * (Batches with no storage location fall outside the storage system and are
+ * not blocked; null/undefined entries are skipped.)
  */
 export async function assertStorageAccess(
   userId: string | null | undefined,
@@ -44,10 +45,14 @@ export async function assertStorageAccess(
   action: string,
 ): Promise<void> {
   if (!userId) return; // no identity on this call — token auth still applies
-  const allowed = await allowedStorageIds(userId);
-  if (!allowed) return; // no grants anywhere = unrestricted
   const wanted = [...new Set(storageIds.filter(Boolean) as string[])];
-  const blocked = wanted.filter((id) => !allowed.has(id));
+  if (wanted.length === 0) return;
+  const grants = await prisma.medicineStorageAccess.findMany({
+    where: { userId, medicineStorageId: { in: wanted } },
+    select: { medicineStorageId: true },
+  });
+  const have = new Set(grants.map((g) => g.medicineStorageId));
+  const blocked = wanted.filter((id) => !have.has(id));
   if (blocked.length === 0) return;
   const names = await prisma.medicineStorage.findMany({
     where: { id: { in: blocked } },
@@ -57,8 +62,9 @@ export async function assertStorageAccess(
     names.map((n) => `${n.name} (${n.refNumber})`).join(", ") ||
     "this storage";
   throw new ValidationError(
-    `No storage access: you can only ${action} in storages assigned to you. ` +
-      `Not assigned: ${label}. Ask your admin (Storage > Dispense Access).`,
+    `No storage access: only users granted Dispense Access on ${label} ` +
+      `can ${action} there. Ask your admin to add you ` +
+      `(Pharmacy > Storage > Dispense Access).`,
   );
 }
 
