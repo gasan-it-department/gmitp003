@@ -677,11 +677,15 @@ export const REAL_PUSH: Record<
       return;
     }
     const n = Number(row.quantity);
+    const rel = Number(row.release_quantity);
     const data = {
       prescriptionId: s(row.prescription_id),
       medicineId: s(row.medicine_id),
       quantity: Number.isFinite(n) ? Math.trunc(n) : 1,
       desc: s(row.comment), // the web stores the prescribe comment in `desc`
+      // how much the dispenser actually released (0 until dispensed). Older
+      // desktops don't send it — leave the server's value alone then.
+      ...(Number.isFinite(rel) ? { releaseQuantity: Math.trunc(rel) } : {}),
     };
     await prisma.precribeMedicine.upsert({
       where: { id },
@@ -885,6 +889,7 @@ export const REAL_PULL: Record<
       medicine_id: r.medicineId,
       comment: r.desc,
       quantity: r.quantity,
+      release_quantity: r.releaseQuantity,
       updated_at: iso(r.timestamp),
       deleted_at: null,
     }));
