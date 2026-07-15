@@ -540,24 +540,28 @@ export const prescriptionDispense = async (
         throw new ValidationError(
           "Cannot dispense: patient record no longer exists.",
         );
-      // Update each prescribeMedicine with its specific quantity
+      // Record, per prescribed medicine, how much of IT was released — the sum
+      // of the amounts typed against that medicine's own stock lots.
+      // (This used to store the grand total across every medicine on the
+      // prescription, so a 2-medicine order recorded both items with the
+      // combined figure.)
       console.log("Log 3.5 - Updating prescribeMedicine records");
-      const totalStocks = Array.from(stocks.values()).reduce(
-        (sum, value) => sum + parseInt(value, 10),
-        0,
-      );
       await Promise.all(
-        body.prescribeMed.map((item) =>
-          tx.precribeMedicine.update({
+        body.prescribeMed.map((item) => {
+          const released = item.stocks.reduce((sum, s) => {
+            const n = parseInt(String(s.toRelease), 10);
+            return sum + (Number.isFinite(n) ? n : 0);
+          }, 0);
+          return tx.precribeMedicine.update({
             where: {
               id: item.id,
             },
             data: {
-              releaseQuantity: totalStocks,
+              releaseQuantity: released,
               remark: item.remark,
             },
-          }),
-        ),
+          });
+        }),
       );
 
       const transaction = await tx.medicineTransaction.create({
