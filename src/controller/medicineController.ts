@@ -13,6 +13,7 @@ import { PagingProps } from "../models/route";
 //
 import { generateMedRef, generateStorageRef } from "../middleware/handler";
 import { getQuarter } from "../utils/date";
+import { assertStorageAccess } from "./storageAccessController";
 import {
   checkAndNotifyLowStock,
   clearLowStockAlerts,
@@ -739,6 +740,9 @@ export const addStorageMedInList = async (
 
   const price = Math.max(0, Number(body.price ?? 0));
 
+  // Storage access: restricted users may only add/restock in their storages.
+  await assertStorageAccess(body.userId, [body.storageId], "add or restock");
+
   try {
     // ── Idempotency short-circuit ─────────────────────────────────────
     // Mobile retries can hit us multiple times with the same op (e.g.
@@ -1101,6 +1105,18 @@ export const transferMedicine = async (
     throw new ValidationError("Transfer quantity must be greater than zero.");
   }
 
+  // Storage access: restricted users need BOTH sides of the transfer —
+  // taking stock out of the source and putting it into the destination.
+  const srcRow = await prisma.medicineStock.findUnique({
+    where: { id: body.stockId },
+    select: { medicineStorageId: true },
+  });
+  await assertStorageAccess(
+    body.userId,
+    [srcRow?.medicineStorageId, body.departId],
+    "transfer stock",
+  );
+
   try {
     const result = await prisma.$transaction(async (tx) => {
       const source = await tx.medicineStock.findUnique({
@@ -1242,6 +1258,18 @@ export const removeStock = async (req: FastifyRequest, res: FastifyReply) => {
   if (!body.id || !body.userId) {
     throw new ValidationError("INVALID REQUIRED ID");
   }
+
+  // Storage access: removing a batch counts as touching that storage's stock.
+  const target = await prisma.medicineStock.findUnique({
+    where: { id: body.id },
+    select: { medicineStorageId: true },
+  });
+  await assertStorageAccess(
+    body.userId,
+    [target?.medicineStorageId],
+    "remove stock",
+  );
+
   try {
     const response = await prisma.$transaction(async (tx) => {
       const stock = await tx.medicineStock.delete({
@@ -2420,6 +2448,9 @@ export const bulkAddMedicineStock = async (
     const price = Math.max(0, Number(op.price ?? 0));
 
     try {
+      // Storage access: same rule as the web add-stock endpoint.
+      await assertStorageAccess(op.userId, [op.storageId], "add or restock");
+
       const txResult = await prisma.$transaction(async (tx) => {
         const [medicine, storage] = await Promise.all([
           tx.medicine.findUnique({ where: { id: op.medicineId } }),
@@ -2820,6 +2851,9 @@ export const updateMedicineThreshold = async (
   }
   const threshold = Math.max(0, parseInt(String(body.threshold ?? 0), 10) || 0);
   const { medicineId, storageId, lineId, userId } = body;
+
+  // Storage access: thresholds are stock settings on that storage.
+  await assertStorageAccess(userId, [storageId], "update stock settings");
 
   try {
     const result = await prisma.$transaction(async (tx) => {

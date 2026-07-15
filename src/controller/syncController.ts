@@ -2,6 +2,7 @@ import { FastifyReply, FastifyRequest } from "../barrel/fastify";
 import { prisma } from "../barrel/prisma";
 import { REAL_PUSH, REAL_PULL, isRealTable } from "./realSync";
 import { waitForLine } from "../service/notifyWaiters";
+import { DESKTOP_RELEASE } from "../config/desktopRelease";
 
 /**
  * Offline-first sync endpoints for the Gasan Pharmacy desktop app.
@@ -32,6 +33,7 @@ const ALLOWED_TABLES = new Set([
   "diagnosis",
   "prescription",
   "prescription_item",
+  "storage_access", // pull-only: per-user dispense/restock grants
 ]);
 
 const PULL_LIMIT = 500;
@@ -76,6 +78,18 @@ export const syncHealth = async (_req: FastifyRequest, reply: FastifyReply) => {
 /** GET /sync/ping — authenticated check (confirms the token is still valid). */
 export const syncPing = async (_req: FastifyRequest, reply: FastifyReply) => {
   return reply.code(200).send({ ok: true, at: new Date().toISOString() });
+};
+
+/**
+ * GET /desktop/update — UNAUTHENTICATED release manifest for the desktop
+ * auto-updater (version metadata only; edit src/config/desktopRelease.ts to
+ * publish a release).
+ */
+export const desktopUpdate = async (
+  _req: FastifyRequest,
+  reply: FastifyReply,
+) => {
+  return reply.code(200).send(DESKTOP_RELEASE);
 };
 
 /**

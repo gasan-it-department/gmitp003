@@ -4,6 +4,7 @@ import { AppError, NotFoundError, ValidationError } from "../errors/errors";
 import { generatePrescriptionRef } from "../middleware/handler";
 import { checkAndNotifyLowStock } from "../service/medicineAlerts";
 import { createUserNotification } from "../service/notificationEvents";
+import { assertStorageAccess } from "./storageAccessController";
 import {
   PagingProps,
   PrescriptionDispenseProps,
@@ -483,6 +484,20 @@ export const prescriptionDispense = async (
       }
     }
     const stockIds = Array.from(stocks.keys());
+
+    // Per-storage dispense access: a user with storage assignments may only
+    // dispense stock held in the storages assigned to them (Storage >
+    // Dispense Access). Users with no assignments are unrestricted.
+    const stockStorages = await prisma.medicineStock.findMany({
+      where: { id: { in: stockIds } },
+      select: { medicineStorageId: true },
+    });
+    await assertStorageAccess(
+      body.userId,
+      stockStorages.map((s) => s.medicineStorageId),
+      "dispense",
+    );
+
     await prisma.$transaction(async (tx) => {
       const prescription = await tx.prescription.findUnique({
         where: {

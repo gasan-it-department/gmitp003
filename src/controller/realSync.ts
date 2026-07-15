@@ -4,6 +4,7 @@ import {
   generateStorageRef,
 } from "../middleware/handler";
 import { createUserNotification } from "../service/notificationEvents";
+import { assertStorageAccess } from "./storageAccessController";
 
 /**
  * Maps the desktop's local rows onto the REAL web tables (Patient, Medicine, …)
@@ -406,6 +407,17 @@ export const REAL_PUSH: Record<
     const id = s(row.id);
     if (!id) return;
     if (s(row.deleted_at)) {
+      // storage access: deleting a batch counts as touching that storage
+      const victim = await prisma.medicineStock.findUnique({
+        where: { id },
+        select: { medicineStorageId: true },
+      });
+      if (victim)
+        await assertStorageAccess(
+          ctx.userId,
+          [victim.medicineStorageId],
+          "remove stock",
+        );
       const med = await medName(s(row.medicine_id));
       await prisma.medicineStock.deleteMany({ where: { id } });
       await audit(0, `REMOVE: stock batch — ${med}`, ctx);
@@ -427,6 +439,20 @@ export const REAL_PUSH: Record<
       });
       if (!st) storageId = null;
     }
+
+    // Storage access: a restricted desktop user may only write stock in their
+    // assigned storages — both the storage the row claims AND the storage the
+    // existing server row already sits in (so batches can't be pulled out of a
+    // storage the user isn't assigned to).
+    const current = await prisma.medicineStock.findUnique({
+      where: { id },
+      select: { medicineStorageId: true },
+    });
+    await assertStorageAccess(
+      ctx.userId,
+      [storageId, current?.medicineStorageId],
+      "modify stock",
+    );
     const data = {
       medicineId: s(row.medicine_id),
       medicineStorageId: storageId,
@@ -645,6 +671,12 @@ export const REAL_PUSH: Record<
     // the prescription push deferred it (idempotent; dedups on the notif path).
     await maybeNotifyPrescription(data.prescriptionId, ctx);
   },
+
+  // Server-owned: grants are managed on the web only. The desktop never dirties
+  // these rows; if a client pushes anyway, silently ignore it.
+  async storage_access(_row, _ctx) {
+    return;
+  },
 };
 
 // ── PULL: real table -> desktop rows (cursor on `timestamp`) ─────────────────
@@ -837,6 +869,30 @@ export const REAL_PULL: Record<
     }));
     const cursor = recs.length > 0 ? iso(recs[recs.length - 1].timestamp) : null;
     return { rows, cursor };
+  },
+
+  // Per-user storage grants (Storage > Dispense Access). Tiny table — return
+  // the whole line's set each pull (no cursor); the desktop REPLACES its local
+  // copy so revocations propagate too.
+  async storage_access(lineId, _since) {
+    if (!lineId) return { rows: [], cursor: null };
+    const recs = await prisma.medicineStorageAccess.findMany({
+      where: { medicineStorage: { lineId } },
+      select: {
+        id: true,
+        medicineStorageId: true,
+        userId: true,
+        timestamp: true,
+      },
+    });
+    const rows: Row[] = recs.map((r) => ({
+      id: r.id,
+      medicine_storage_id: r.medicineStorageId,
+      user_id: r.userId,
+      updated_at: iso(r.timestamp),
+      deleted_at: null,
+    }));
+    return { rows, cursor: null };
   },
 };
 

@@ -11,6 +11,12 @@ import {
   revokeMobileAccess,
   myMobileAccess,
 } from "../controller/mobileAccessController";
+import {
+  listStorageAccess,
+  storageAccessCandidates,
+  grantStorageAccess,
+  revokeStorageAccess,
+} from "../controller/storageAccessController";
 
 import {
   medicineStorage,
@@ -213,5 +219,27 @@ export const medicine = (fastify: FastifyInstance) => {
     "/medicine/mobile-access/me",
     { preHandler: authenticated },
     myMobileAccess,
+  );
+
+  // ── Per-storage Dispense Access (web Medicine > Storage > Dispense Access) ──
+  fastify.get(
+    "/medicine/storage-access",
+    { preHandler: authenticated },
+    listStorageAccess,
+  );
+  fastify.get(
+    "/medicine/storage-access/candidates",
+    { preHandler: authenticated },
+    storageAccessCandidates,
+  );
+  fastify.post(
+    "/medicine/storage-access",
+    { preHandler: authenticated },
+    grantStorageAccess,
+  );
+  fastify.delete(
+    "/medicine/storage-access",
+    { preHandler: authenticated },
+    revokeStorageAccess,
   );
 };
