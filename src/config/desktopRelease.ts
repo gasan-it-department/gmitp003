@@ -3,9 +3,12 @@
  *
  * ── How to ship a desktop update ──────────────────────────────────────────
  * 1. In gmitp003-pharmacy-desktop: bump `AppUpdate.CurrentVersion`, then run
- *    installer\make_release.ps1  → produces Gasan_Pharmacy_App.zip.
- * 2. Upload that zip anywhere public (Cloudinary raw upload, Drive direct
- *    link, GitHub release asset…) and paste its URL below.
+ *    installer\make_release.ps1 → produces BOTH GasanPharmacySetup.exe
+ *    (preferred: wizard installer, upgrades in place) and
+ *    Gasan_Pharmacy_App.zip (script installer) on the Desktop.
+ * 2. Upload ONE of them anywhere public (Cloudinary raw upload, Drive direct
+ *    link, GitHub release asset…) and paste its URL below. A .exe URL runs
+ *    silently in place; a .zip URL runs its install script.
  * 3. Bump `version` here to match the app, describe the changes in `notes`,
  *    commit + push this repo → Railway redeploys.
  *
