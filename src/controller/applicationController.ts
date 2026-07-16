@@ -2285,6 +2285,315 @@ export const sendPublicApplicationMessage = async (
   }
 };
 
+/**
+ * PUBLIC applicant action: withdraw (cancel) a submitted application.
+ *
+ * Same trust model as the rest of the public applicant flow — the
+ * `applicationId` (a UUID emailed only to the applicant) is the credential, so
+ * no session gate. Sets status = 3 (Withdrawn). Refuses once the application is
+ * already concluded (status 2); idempotent if already withdrawn. Posts a system
+ * message into the existing HR conversation so the office sees it in real time.
+ */
+export const withdrawApplication = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as { applicationId?: string; reason?: string };
+  if (!body.applicationId) throw new ValidationError("INVALID REQUIRED ID");
+
+  try {
+    const app = await prisma.submittedApplication.findUnique({
+      where: { id: body.applicationId },
+      select: {
+        id: true,
+        status: true,
+        firstname: true,
+        lastname: true,
+        lineId: true,
+        forPosition: { select: { lineId: true } },
+      },
+    });
+    if (!app) throw new NotFoundError("APPLICATION NOT FOUND");
+    if (app.status === 2)
+      throw new ValidationError(
+        "This application has already been concluded and can no longer be withdrawn.",
+      );
+    if (app.status === 3)
+      return res.code(200).send({ message: "OK", alreadyWithdrawn: true });
+
+    await prisma.submittedApplication.update({
+      where: { id: app.id },
+      data: { status: 3 },
+    });
+
+    // Leave a trace in the HR chat so the office notices (best-effort).
+    try {
+      const note =
+        `${app.firstname ?? "The applicant"} ${app.lastname ?? ""}`.trim() +
+        " withdrew this application." +
+        (body.reason?.trim() ? ` Reason: ${body.reason.trim()}` : "");
+      const enc = await EncryptionService.encrypt(note);
+      const msg = await prisma.applicationConversation.create({
+        data: {
+          message: enc.encryptedData,
+          messageIv: enc.iv,
+          lineId: (app.lineId ?? app.forPosition?.lineId) as string,
+          title: "",
+          fromHr: false,
+          submittedApplicationId: app.id,
+        },
+        select: { id: true, timestamp: true, submittedApplicationId: true, fromHr: true },
+      });
+      notificationSocket.emitChatMessage(app.id, {
+        id: msg.id,
+        messageContent: note,
+        fromHr: false,
+        timestamp:
+          typeof msg.timestamp === "string"
+            ? msg.timestamp
+            : new Date(msg.timestamp).toISOString(),
+        submittedApplicationId: msg.submittedApplicationId,
+        hrAdmin: null,
+      });
+    } catch (e) {
+      console.warn("[withdraw] notice failed:", e);
+    }
+
+    return res.code(200).send({ message: "OK", status: 3 });
+  } catch (error) {
+    if (error instanceof NotFoundError || error instanceof ValidationError)
+      throw error;
+    if (error instanceof Prisma.PrismaClientKnownRequestError) throw dbError(error);
+    throw error;
+  }
+};
+
+/**
+ * PUBLIC applicant action: replace the profile photo, or add/replace an
+ * attached document, on a submitted application. Multipart:
+ *   fields: applicationId (required), target = "profile" | "document",
+ *           attachmentId (optional — replace that document)
+ *   file:   the new file (any field name)
+ * Same credential model as the rest of the public flow (applicationId is the
+ * secret). Blocks edits once concluded/withdrawn. Old Cloudinary assets are
+ * best-effort destroyed so they don't pile up.
+ */
+export const reuploadApplicationFile = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  if (!req.isMultipart()) throw new ValidationError("NOT_MULTIPART");
+  const tmpDir = path.join(process.cwd(), "tmp_uploads");
+  let tmpPath: string | null = null;
+  try {
+    const fields: Record<string, string> = {};
+    let file: { filename: string; buffer: Buffer } | null = null;
+    for await (const part of req.parts()) {
+      if (part.type === "file") {
+        const chunks: Buffer[] = [];
+        for await (const c of part.file) chunks.push(c as Buffer);
+        file = { filename: part.filename, buffer: Buffer.concat(chunks) };
+      } else {
+        fields[part.fieldname] = part.value as string;
+      }
+    }
+
+    const applicationId = fields.applicationId;
+    const target = (fields.target as "profile" | "document") || "profile";
+    if (!applicationId) throw new ValidationError("INVALID REQUIRED ID");
+    if (!file) throw new ValidationError("No file provided.");
+
+    const app = await prisma.submittedApplication.findUnique({
+      where: { id: applicationId },
+      select: { id: true, status: true, applicationProfilePicId: true },
+    });
+    if (!app) throw new NotFoundError("APPLICATION NOT FOUND");
+    if (app.status === 2 || app.status === 3)
+      throw new ValidationError(
+        "This application can no longer be changed (it was concluded or withdrawn).",
+      );
+
+    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+    const safe = file.filename.replace(/[^\w.-]/g, "_");
+    tmpPath = path.join(tmpDir, Date.now() + "_" + safe);
+    fs.writeFileSync(tmpPath, file.buffer);
+
+    const uploaded = await cloudinary.uploader.upload(tmpPath, {
+      folder: "job_requirements_assets",
+      resource_type: "auto",
+      use_filename: true,
+      unique_filename: true,
+    });
+    fs.unlinkSync(tmpPath);
+    tmpPath = null;
+
+    const destroyOld = async (publicId: string | null | undefined) => {
+      if (!publicId) return;
+      try {
+        await cloudinary.uploader.destroy(publicId);
+      } catch (e) {
+        console.warn("[reupload] old asset destroy failed:", e);
+      }
+    };
+
+    if (target === "profile") {
+      // link a fresh profile-pic record, drop the previous one + its asset
+      const prev = app.applicationProfilePicId
+        ? await prisma.applicationProfilePic.findUnique({
+            where: { id: app.applicationProfilePicId },
+            select: { id: true, file_url_Iv: true },
+          })
+        : null;
+      const pic = await prisma.applicationProfilePic.create({
+        data: {
+          file_name: file.filename,
+          file_url: uploaded.url,
+          file_url_Iv: uploaded.public_id,
+          file_size: uploaded.bytes.toString(),
+          file_type: 1,
+        },
+      });
+      await prisma.submittedApplication.update({
+        where: { id: app.id },
+        data: { applicationProfilePicId: pic.id },
+      });
+      if (prev) {
+        await destroyOld(prev.file_url_Iv);
+        await prisma.applicationProfilePic
+          .delete({ where: { id: prev.id } })
+          .catch(() => undefined);
+      }
+      return res
+        .code(200)
+        .send({ message: "OK", target: "profile", file_url: pic.file_url });
+    }
+
+    // document: replace an existing attachment when attachmentId is given,
+    // otherwise add a new one to this application
+    if (fields.attachmentId) {
+      const existing = await prisma.applicationAttachedFile.findFirst({
+        where: { id: fields.attachmentId, submittedApplicationId: app.id },
+        select: { id: true, file_url_Iv: true },
+      });
+      if (!existing) throw new NotFoundError("ATTACHMENT NOT FOUND");
+      await prisma.applicationAttachedFile.update({
+        where: { id: existing.id },
+        data: {
+          file_name: file.filename,
+          file_url: uploaded.url,
+          file_url_Iv: uploaded.public_id,
+          file_size: uploaded.bytes.toString(),
+        },
+      });
+      await destroyOld(existing.file_url_Iv);
+      return res
+        .code(200)
+        .send({ message: "OK", target: "document", id: existing.id });
+    }
+
+    const created = await prisma.applicationAttachedFile.create({
+      data: {
+        submittedApplicationId: app.id,
+        file_name: file.filename,
+        file_url: uploaded.url,
+        file_url_Iv: uploaded.public_id,
+        file_size: uploaded.bytes.toString(),
+        file_type: 0,
+      },
+      select: { id: true, file_url: true },
+    });
+    return res
+      .code(200)
+      .send({ message: "OK", target: "document", id: created.id });
+  } catch (error) {
+    if (tmpPath && fs.existsSync(tmpPath)) {
+      try {
+        fs.unlinkSync(tmpPath);
+      } catch {
+        /* temp cleanup best-effort */
+      }
+    }
+    if (error instanceof NotFoundError || error instanceof ValidationError)
+      throw error;
+    if (error instanceof Prisma.PrismaClientKnownRequestError) throw dbError(error);
+    throw error;
+  }
+};
+
+/**
+ * PUBLIC applicant action: edit the core contact / identity fields on a
+ * submitted application (name, email, mobile, telephone) — the details most
+ * often mistyped and the ones HR uses to reach the applicant. Encrypted fields
+ * (email, mobile) are re-encrypted on save, matching how they're read back.
+ *
+ * Scope is deliberately limited to these safe scalar fields. Editing the full
+ * PDS (work history, education, eligibility, addresses, IDs) means reopening
+ * the multi-step application form and is a separate, larger flow.
+ */
+export const editApplicationContact = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as {
+    applicationId?: string;
+    firstname?: string;
+    middleName?: string;
+    lastname?: string;
+    suffix?: string;
+    email?: string;
+    mobileNo?: string;
+    teleNo?: string;
+  };
+  if (!body.applicationId) throw new ValidationError("INVALID REQUIRED ID");
+
+  const firstname = body.firstname?.trim();
+  const lastname = body.lastname?.trim();
+  const email = body.email?.trim();
+  const mobileNo = body.mobileNo?.trim();
+  if (!firstname || !lastname) throw new ValidationError("Name is required.");
+  if (!email) throw new ValidationError("Email is required.");
+  if (!mobileNo) throw new ValidationError("Mobile number is required.");
+
+  try {
+    const app = await prisma.submittedApplication.findUnique({
+      where: { id: body.applicationId },
+      select: { id: true, status: true },
+    });
+    if (!app) throw new NotFoundError("APPLICATION NOT FOUND");
+    if (app.status === 2 || app.status === 3)
+      throw new ValidationError(
+        "This application can no longer be changed (it was concluded or withdrawn).",
+      );
+
+    const [encEmail, encMobile] = await Promise.all([
+      EncryptionService.encrypt(email),
+      EncryptionService.encrypt(mobileNo),
+    ]);
+
+    await prisma.submittedApplication.update({
+      where: { id: app.id },
+      data: {
+        firstname,
+        lastname,
+        middleName: body.middleName?.trim() || "N/A",
+        suffix: body.suffix?.trim() || null,
+        teleNo: body.teleNo?.trim() || "",
+        email: encEmail.encryptedData,
+        emailIv: encEmail.iv,
+        mobileNo: encMobile.encryptedData,
+        ivMobileNo: encMobile.iv,
+      },
+    });
+
+    return res.code(200).send({ message: "OK" });
+  } catch (error) {
+    if (error instanceof NotFoundError || error instanceof ValidationError)
+      throw error;
+    if (error instanceof Prisma.PrismaClientKnownRequestError) throw dbError(error);
+    throw error;
+  }
+};
+
 export const updateApplicationStatus = async (
   req: FastifyRequest,
   res: FastifyReply,

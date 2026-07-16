@@ -26,6 +26,9 @@ import {
   sendPublicApplicationMessage,
   deleteApplication,
   applicationDeleteMany,
+  withdrawApplication,
+  reuploadApplicationFile,
+  editApplicationContact,
 } from "../controller/applicationController";
 
 import { exportPdsExcel } from "../controller/pdsExportController";
@@ -120,6 +123,10 @@ export const application = (fastify: FastifyInstance) => {
     updateApplicationStatus,
   );
   fastify.get("/application/public/data", applicationData);
+  // PUBLIC applicant action — the applicationId UUID is the credential.
+  fastify.post("/application/public/withdraw", withdrawApplication);
+  fastify.post("/application/public/reupload", reuploadApplicationFile);
+  fastify.patch("/application/public/edit-contact", editApplicationContact);
   fastify.post("/application/user/registration", applicationRegisterUser);
 
   fastify.patch(
