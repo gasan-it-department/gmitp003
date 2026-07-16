@@ -678,6 +678,7 @@ export const REAL_PUSH: Record<
     }
     const n = Number(row.quantity);
     const rel = Number(row.release_quantity);
+    const remark = s(row.remark);
     const data = {
       prescriptionId: s(row.prescription_id),
       medicineId: s(row.medicine_id),
@@ -686,6 +687,9 @@ export const REAL_PUSH: Record<
       // how much the dispenser actually released (0 until dispensed). Older
       // desktops don't send it — leave the server's value alone then.
       ...(Number.isFinite(rel) ? { releaseQuantity: Math.trunc(rel) } : {}),
+      // dispense status: "OK" | "Pending" | "outofStock" (same values the web's
+      // dropdown writes). Omitted by older desktops -> server value untouched.
+      ...(remark ? { remark } : {}),
     };
     await prisma.precribeMedicine.upsert({
       where: { id },
@@ -890,6 +894,7 @@ export const REAL_PULL: Record<
       comment: r.desc,
       quantity: r.quantity,
       release_quantity: r.releaseQuantity,
+      remark: r.remark,
       updated_at: iso(r.timestamp),
       deleted_at: null,
     }));
