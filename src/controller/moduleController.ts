@@ -1,7 +1,7 @@
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
 import { prisma, Prisma } from "../barrel/prisma";
 import { PagingProps } from "../models/route";
-import { AppError, NotFoundError, ValidationError } from "../errors/errors";
+import { AppError, NotFoundError, ValidationError, dbError } from "../errors/errors";
 import { sendEmail } from "../middleware/handler";
 import { EncryptionService } from "../service/encryption";
 import { createUserNotification } from "../service/notificationEvents";
@@ -40,7 +40,7 @@ export const modules = async (req: FastifyRequest, res: FastifyReply) => {
     console.log(error);
 
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -125,7 +125,7 @@ export const moduleUsers = async (req: FastifyRequest, res: FastifyReply) => {
     console.log(error);
 
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_ERROR", 500, "D_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -268,7 +268,7 @@ System Administrator
     console.log(error);
 
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -300,7 +300,7 @@ export const userAccessModule = async (
     return res.code(200).send(response);
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -364,7 +364,7 @@ export const removeAccess = async (req: FastifyRequest, res: FastifyReply) => {
     return res.code(200).send({ message: "OK" });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -463,7 +463,7 @@ export const updateModuleAccess = async (
     return res.code(200).send({ message: "OK" });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }

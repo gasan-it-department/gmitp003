@@ -1,6 +1,6 @@
 import fastify, { FastifyRequest, FastifyReply } from "../barrel/fastify";
 import { Prisma, prisma } from "../barrel/prisma";
-import { AppError, NotFoundError, ValidationError } from "../errors/errors";
+import { AppError, NotFoundError, ValidationError, dbError } from "../errors/errors";
 import { EmployeesProps } from "../models/Employee";
 import { PagingProps } from "../models/route";
 import { getYearRange } from "../utils/date";
@@ -802,7 +802,7 @@ export const supsendAccount = async (
     return res.code(200).send({ message: "OK" });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_ERROR", 500, "DB_FAILED");
+      throw dbError(error);
     }
     throw error;
   }
@@ -862,7 +862,7 @@ export const userModuleAccess = async (
     return res.code(200).send({ message: "OK" });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -908,7 +908,7 @@ export const deleteUser = async (req: FastifyRequest, res: FastifyReply) => {
     console.log(error);
 
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }

@@ -1,6 +1,6 @@
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
 import { prisma, Prisma } from "../barrel/prisma";
-import { AppError, ValidationError } from "../errors/errors";
+import { AppError, ValidationError, dbError } from "../errors/errors";
 import { PagingProps } from "../models/route";
 
 export const addUnit = async () => {};
@@ -43,7 +43,7 @@ export const searchUnit = async (req: FastifyRequest, res: FastifyReply) => {
       .send({ list: response, hasMore, lastCursor: newLastCursorId });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }

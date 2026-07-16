@@ -11,7 +11,7 @@
 
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
 import { prisma, Prisma } from "../barrel/prisma";
-import { AppError, NotFoundError, ValidationError } from "../errors/errors";
+import { AppError, NotFoundError, ValidationError, dbError } from "../errors/errors";
 
 // ─── Catalogue ────────────────────────────────────────────────────────
 // Defaults follow CSC's mandatory minimums for regular gov employees.
@@ -146,7 +146,7 @@ export const applyLeave = async (req: FastifyRequest, res: FastifyReply) => {
     return res.code(200).send({ message: "OK", leave: created });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -204,7 +204,7 @@ export const listLeaves = async (req: FastifyRequest, res: FastifyReply) => {
     return res.code(200).send({ list: rows, lastCursor, hasMore });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -289,7 +289,7 @@ export const decideLeave = async (req: FastifyRequest, res: FastifyReply) => {
     if (error instanceof NotFoundError) throw error;
     if (error instanceof ValidationError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -323,7 +323,7 @@ export const cancelLeave = async (req: FastifyRequest, res: FastifyReply) => {
     if (error instanceof NotFoundError) throw error;
     if (error instanceof ValidationError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -366,7 +366,7 @@ export const listLeaveCredits = async (
     return res.code(200).send({ year, list: credits });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -435,7 +435,7 @@ export const adjustLeaveCredit = async (
   } catch (error) {
     if (error instanceof ValidationError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -462,7 +462,7 @@ export const listLeaveLedger = async (
     return res.code(200).send({ year, list: rows });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -501,7 +501,7 @@ export const listLineUsers = async (
     return res.code(200).send({ list: rows });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }

@@ -5,7 +5,7 @@ import {
   AddPositionProps,
   LineUserRegister,
 } from "../models/route";
-import { AppError, NotFoundError, ValidationError } from "../errors/errors";
+import { AppError, NotFoundError, ValidationError, dbError } from "../errors/errors";
 import argon from "argon2";
 import { getAreaData, sendEmail } from "../middleware/handler";
 import { createUserNotification } from "../service/notificationEvents";
@@ -75,7 +75,7 @@ export const positionList = async (req: FastifyRequest, res: FastifyReply) => {
       .send({ list: response, lastCursor: newLastCursor, hasMore });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -97,16 +97,36 @@ export const addPosition = async (req: FastifyRequest, res: FastifyReply) => {
       userId,
     } = body;
 
-    if (!slot) {
-      return;
+    if (!slot || slot.length === 0) {
+      throw new ValidationError("Add at least one position slot.");
     }
+
+    // Validate the salary grade on EVERY slot up front. The web form defaults a
+    // slot's salaryGrade to a placeholder ("1"), not a real id — if it isn't
+    // changed, that placeholder lands in the `salaryGradeId` foreign key and the
+    // whole create fails with an opaque 500. Catch it here with a clear message.
+    const gradeIds = slot.map((s) => s.salaryGrade).filter(Boolean);
+    if (gradeIds.length !== slot.length) {
+      throw new ValidationError("Choose a salary grade for every slot.");
+    }
+    const validGrades = await prisma.salaryGrade.findMany({
+      where: { id: { in: gradeIds } },
+      select: { id: true },
+    });
+    const validSet = new Set(validGrades.map((g) => g.id));
+    if (slot.some((s) => !validSet.has(s.salaryGrade))) {
+      throw new ValidationError(
+        "One of the selected salary grades doesn't exist. Re-pick the salary grade for each slot.",
+      );
+    }
+
+    const unit = await prisma.department.findUnique({
+      where: { id: body.unitId },
+      select: { id: true, name: true },
+    });
+    if (!unit) throw new NotFoundError("UNIT NOT FOUND!");
+
     const response = await prisma.$transaction(async (tx) => {
-      const unit = await tx.department.findUnique({
-        where: {
-          id: body.unitId,
-        },
-      });
-      if (!unit) throw new NotFoundError("UNIT NOT FOUND!");
       const slots = await tx.position.findFirst({
         where: {
           name: { contains: title, mode: "insensitive" },
@@ -172,36 +192,36 @@ export const addPosition = async (req: FastifyRequest, res: FastifyReply) => {
           },
         });
       }
-      // const checkedUnitPos = await tx.unitPosition.findFirst({
-      //   where: {
-      //     positionId: slots
-      //   }
-      // })
+      return {
+        name: craetedPosition?.name ?? title,
+        id: craetedPosition?.id ?? slots?.id ?? null,
+      };
+    });
 
-      await tx.humanResourcesLogs.create({
+    // Audit is best-effort and OUTSIDE the transaction, so a logging failure can
+    // never roll back the position that was just created.
+    try {
+      await prisma.humanResourcesLogs.create({
         data: {
           tab: 7,
           lineId: lineId,
           action: "Added",
           userId: userId,
-          desc: `Added new position: ${craetedPosition?.name || "N/A"} (${
-            craetedPosition?.id
-          }) to Unit ${unit.name} on Line ${body.lineId}. Created ${
-            body.slot.length
-          } position slot(s) with item number: ${body.itemNumber || "N/A"}.`,
+          desc:
+            `Added new position: ${response.name} (${response.id}) to Unit ` +
+            `${unit.name} on Line ${body.lineId}. Created ${body.slot.length} ` +
+            `position slot(s) with item number: ${body.itemNumber || "N/A"}.`,
         },
       });
+    } catch (e) {
+      console.warn("[addPosition] audit log skipped:", e);
+    }
 
-      return "OK";
-    });
-    if (response !== "OK")
-      throw new AppError("SOMETHING_WENT_WRONG", 500, "DB_ERROR");
     return res.code(200).send({ message: "OK" });
   } catch (error) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
-    }
-    throw error;
+    if (error instanceof ValidationError || error instanceof NotFoundError)
+      throw error;
+    throw dbError(error, "add position");
   }
 };
 
@@ -285,7 +305,7 @@ export const createNewUnitPosition = async (
     return res.code(200).send({ message: "OK" });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -503,7 +523,7 @@ export const positionSelectionList = async (
       .send({ list: response, lastCursor: newLastCursor, hasMore });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -534,7 +554,7 @@ export const positionData = async (req: FastifyRequest, res: FastifyReply) => {
     return res.code(200).send(response);
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -591,7 +611,7 @@ export const linePositions = async (req: FastifyRequest, res: FastifyReply) => {
       .send({ list: response, hasMore, lastCursor: newLastCursorId });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -621,7 +641,7 @@ export const publicJobPost = async (req: FastifyRequest, res: FastifyReply) => {
     return res.code(200).send(response);
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -794,7 +814,7 @@ ${result.municipal.name}, ${result.province.name}
   } catch (error) {
     if (error instanceof ValidationError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -1050,7 +1070,7 @@ ${result.municipal.name}, ${result.province.name}
     if (error instanceof ValidationError) throw error;
     if (error instanceof NotFoundError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -1127,7 +1147,7 @@ export const listPositionInvitations = async (
     return res.code(200).send({ list: decorated });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -1185,7 +1205,7 @@ export const cancelPositionInvitation = async (
     if (error instanceof ValidationError) throw error;
     if (error instanceof NotFoundError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -1264,7 +1284,7 @@ export const positionCheckInvitation = async (
     return res.code(200).send(response);
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -1549,7 +1569,7 @@ export const positionRegister = async (
     console.log(error);
 
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -1721,7 +1741,7 @@ export const vacantPosition = async (
     if (error instanceof ValidationError) throw error;
     if (error instanceof NotFoundError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }

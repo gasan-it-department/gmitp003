@@ -1,7 +1,7 @@
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
 import { prisma, Prisma } from "../barrel/prisma";
 
-import { AppError, NotFoundError, ValidationError } from "../errors/errors";
+import { AppError, NotFoundError, ValidationError, dbError } from "../errors/errors";
 import { PagingProps } from "../models/route";
 
 /**
@@ -49,7 +49,7 @@ export const groupList = async (req: FastifyRequest, res: FastifyReply) => {
       .send({ list: groups, lastCursor: newLastCursorId, hasMore });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_EROR", 500, "DB_FAILED");
+      throw dbError(error);
     }
     throw error;
   }
@@ -198,7 +198,7 @@ export const updateGroup = async (req: FastifyRequest, res: FastifyReply) => {
     if (error instanceof NotFoundError) throw error;
     if (error instanceof ValidationError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_EROR", 500, "DB_FAILED");
+      throw dbError(error);
     }
     throw error;
   }
@@ -225,7 +225,7 @@ export const unitInfo = async (req: FastifyRequest, res: FastifyReply) => {
   } catch (error) {
     if (error instanceof NotFoundError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_EROR", 500, "DB_FAILED");
+      throw dbError(error);
     }
     throw error;
   }
@@ -276,7 +276,7 @@ export const deleteUnit = async (req: FastifyRequest, res: FastifyReply) => {
     if (error instanceof NotFoundError) throw error;
     if (error instanceof ValidationError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_EROR", 500, "DB_FAILED");
+      throw dbError(error);
     }
     throw error;
   }

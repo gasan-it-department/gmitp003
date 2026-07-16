@@ -1,7 +1,7 @@
 import { FastifyRequest, FastifyReply } from "../barrel/fastify";
 import { Prisma, prisma } from "../barrel/prisma";
 import { PagingProps } from "../models/route";
-import { AppError, NotFoundError, ValidationError } from "../errors/errors";
+import { AppError, NotFoundError, ValidationError, dbError } from "../errors/errors";
 import { EncryptionService } from "../service/encryption";
 import { sendEmail } from "../middleware/handler";
 import { createUserNotification } from "../service/notificationEvents";
@@ -75,7 +75,7 @@ export const createProvisionalPosition = async (
     return res.code(200).send({ message: "OK", id: created.id });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -137,7 +137,7 @@ export const provisionalPositions = async (
     return res.code(200).send({ list, lastCursor, hasMore });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -624,7 +624,7 @@ export const provisionalPersonnel = async (
     return res.code(200).send({ list: response, lastCursor, hasMore });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -722,7 +722,7 @@ export const provisionalPersonnelExcel = async (
     return res.send(buffer);
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }

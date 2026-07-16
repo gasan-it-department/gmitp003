@@ -1,7 +1,7 @@
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
 import { prisma, Prisma } from "../barrel/prisma";
 import { NewAnnouncement, PagingProps } from "../models/route";
-import { AppError, NotFoundError, ValidationError } from "../errors/errors";
+import { AppError, NotFoundError, ValidationError, dbError } from "../errors/errors";
 import { EncryptionService } from "../service/encryption";
 import { announcementStatus } from "../utils/helper";
 import { sendEmail } from "../middleware/handler";
@@ -116,7 +116,7 @@ export const announcements = async (req: FastifyRequest, res: FastifyReply) => {
     });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
 
     if (error instanceof ValidationError) {
@@ -157,7 +157,7 @@ export const createNewAnnouncement = async (
     console.log(error);
 
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -240,7 +240,7 @@ export const announcementData = async (
     });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -315,7 +315,7 @@ export const publishAnnouncement = async (
     return res.code(200).send({ data: body });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -362,7 +362,7 @@ export const announcementUpdateStatus = async (
     return res.code(200).send({ message: "OK" });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -398,7 +398,7 @@ export const viewAnnouncement = async (
     return res.code(200).send({ message: "OK" });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -469,7 +469,7 @@ export const markOkayAnnouncement = async (
     });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -520,7 +520,7 @@ export const removeAnnouncement = async (
     console.log(error);
 
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -642,7 +642,7 @@ export const publicAnnouncement = async (
     });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }

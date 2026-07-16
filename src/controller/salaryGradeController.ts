@@ -3,7 +3,7 @@ import { prisma, Prisma } from "../barrel/prisma";
 import { PagingProps } from "../models/route";
 
 //
-import { AppError, ValidationError } from "../errors/errors";
+import { AppError, ValidationError, dbError } from "../errors/errors";
 export const salaryGradeList = async (
   req: FastifyRequest,
   res: FastifyReply,
@@ -41,7 +41,7 @@ export const salaryGradeList = async (
       .send({ list: response, lastCursor: newLastCursor, hasMore });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -66,7 +66,7 @@ export const saveNewSalaryGrade = async (
     console.log(error);
 
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -128,7 +128,7 @@ export const updateSalaryGrade = async (
     });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_ERROR", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -165,7 +165,7 @@ export const salaryGradeInfo = async (
   } catch (error) {
     if (error instanceof ValidationError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_ERROR", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -226,7 +226,7 @@ export const salaryGradeHistory = async (
   } catch (error) {
     if (error instanceof ValidationError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_ERROR", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -286,7 +286,7 @@ export const salaryGradeUsers = async (
   } catch (error) {
     if (error instanceof ValidationError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_ERROR", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
