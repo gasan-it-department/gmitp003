@@ -50,13 +50,16 @@ export const openLineHrSession = async (
   }
 
   if (!accountId) {
+    // The account MUST have a User row: the HR screens stamp `userId` on every
+    // audit log (HumanResourcesLogs.userId is a User FK), so an account without
+    // one makes each write fail with a foreign-key error.
     const acc =
       (await prisma.account.findFirst({
-        where: { lineId, role: "admin", active: true, status: 1 },
+        where: { lineId, role: "admin", active: true, status: 1, User: { isNot: null } },
         select: { id: true, username: true, User: { select: { id: true } } },
       })) ??
       (await prisma.account.findFirst({
-        where: { lineId, active: true, status: 1 },
+        where: { lineId, active: true, status: 1, User: { isNot: null } },
         select: { id: true, username: true, User: { select: { id: true } } },
       }));
     if (acc) {
@@ -66,10 +69,11 @@ export const openLineHrSession = async (
     }
   }
 
-  if (!accountId)
-    return reply
-      .code(409)
-      .send({ message: "This line has no account to manage yet." });
+  if (!accountId || !userId)
+    return reply.code(409).send({
+      message:
+        "This line has no staff account to manage HR as yet. Add a user to the line first.",
+    });
 
   // best-effort audit on the line's activity feed (ActivityLogs.userId is a User FK)
   if (userId) {
@@ -95,7 +99,10 @@ export const openLineHrSession = async (
     impLineId: lineId,
   });
 
+  // `userId` is the User behind the account. The web keys its session on it and
+  // sends it as `userId` on every write — the audit rows are FKs to User, so
+  // handing back the ACCOUNT id here made every HR save fail (500 / P2003).
   return reply
     .code(200)
-    .send({ token, accountId, lineId, lineName: line.name });
+    .send({ token, accountId, userId, lineId, lineName: line.name });
 };

@@ -88,30 +88,44 @@ export const createGroup = async (req: FastifyRequest, res: FastifyReply) => {
       );
     }
 
-    const created = await prisma.$transaction(async (tx) => {
-      const row = await tx.department.create({
-        data: {
-          name,
-          description: body.description?.trim() || null,
-          lineId: body.lineId,
-        },
-      });
-      await tx.humanResourcesLogs.create({
+    const created = await prisma.department.create({
+      data: {
+        name,
+        description: body.description?.trim() || null,
+        lineId: body.lineId,
+      },
+    });
+
+    // Audit is best-effort and deliberately OUTSIDE the transaction: a bad
+    // userId (its column is a User FK) used to roll the whole unit back and
+    // surface as an opaque 500, so an audit row could veto real work.
+    try {
+      await prisma.humanResourcesLogs.create({
         data: {
           action: "CREATED UNIT",
           lineId: body.lineId,
           userId: body.userId,
-          desc: `Created new unit: ${row.name}`,
+          desc: `Created new unit: ${created.name}`,
         },
       });
-      return row;
-    });
+    } catch (e) {
+      console.warn("[createGroup] audit log skipped:", e);
+    }
 
     return res.code(200).send({ message: "OK", id: created.id });
   } catch (error) {
     if (error instanceof ValidationError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_EROR", 500, "DB_FAILED");
+      // Keep the Prisma code — "DB_CONNECTION_EROR" told us nothing while
+      // this was actually a foreign-key violation.
+      console.error("[createGroup] prisma error", error.code, error.meta);
+      if (error.code === "P2002")
+        throw new ValidationError("A unit with this name already exists in this line.");
+      if (error.code === "P2003")
+        throw new ValidationError(
+          "Couldn't record this unit against your account. Sign in again and retry.",
+        );
+      throw new AppError(`DB_ERROR (${error.code})`, 500, "DB_FAILED");
     }
     throw error;
   }
