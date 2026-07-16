@@ -511,9 +511,16 @@ export const addStorageMed = async (req: FastifyRequest, res: FastifyReply) => {
         });
       }
       if (!med) {
+        // Same name (ignoring case/pad) in THIS line = already in the catalog.
+        // Was `contains` and unscoped, which got it wrong both ways: it blocked
+        // a name another LINE happened to own, it blocked "Cefalexin" when
+        // "Cefalexin 125mg/5ml" existed (different products), and it let
+        // "Cefalexin 125mg/5ml" through when plain "Cefalexin" existed —
+        // creating the duplicate rows that split a medicine's stock.
         med = await tx.medicine.findFirst({
           where: {
-            name: { contains: body.name, mode: "insensitive" },
+            lineId: body.lineId,
+            name: { equals: body.name.trim(), mode: "insensitive" },
           },
         });
       }
@@ -2773,12 +2780,17 @@ export const medicineBulkUpload = async (
     }
 
     // Skip names that already exist in THIS line (case-insensitive).
+    // `name: { in: names }` is case-SENSITIVE in Postgres, so a row stored as
+    // "CEFALEXIN 125MG/5ML" never came back and the lowercase check below could
+    // not see it — importing "Cefalexin 125mg/5ml" then created a SECOND row,
+    // splitting that medicine's stock across two catalog entries. Compare
+    // against every name in the line instead.
     const existing = await prisma.medicine.findMany({
-      where: { lineId: formData.lineId, name: { in: names } },
+      where: { lineId: formData.lineId },
       select: { name: true },
     });
-    const existingSet = new Set(existing.map((m) => m.name.toLowerCase()));
-    const newNames = names.filter((n) => !existingSet.has(n.toLowerCase()));
+    const existingSet = new Set(existing.map((m) => m.name.trim().toLowerCase()));
+    const newNames = names.filter((n) => !existingSet.has(n.trim().toLowerCase()));
 
     if (newNames.length === 0) {
       return res.status(200).send({
