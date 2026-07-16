@@ -110,7 +110,7 @@ export const authenticated = async (
     if (!token) {
       throw new Error("No token provided");
     }
-    const decoded = await request.jwtVerify<{ id: string }>();
+    const decoded = await request.jwtVerify<{ id: string; imp?: boolean }>();
     const user = await prisma.account.findUnique({
       where: {
         id: decoded.id,
@@ -122,6 +122,9 @@ export const authenticated = async (
             status: true,
           },
         },
+        // The User behind this account. Needed to attribute impersonated
+        // requests correctly — audit columns are User foreign keys.
+        User: { select: { id: true } },
       },
     });
     if (!user) {
@@ -133,6 +136,31 @@ export const authenticated = async (
     }
 
     request.user = user;
+
+    // ── Super-admin HR impersonation (imp:true tokens) ────────────────────
+    // Every write stamps the request's `userId` into a User foreign-key column
+    // (audit logs, created rows). The impersonating browser session sends a
+    // stale/account-level userId, so those writes hit a foreign-key violation
+    // and the whole request 500s — this is why EVERY HR action failed under
+    // "Manage HR". Fix it once, here: overwrite `userId` with the impersonation
+    // account's real User id, resolved server-side. This covers every endpoint
+    // and never depends on what the client sent. Writes only — a GET may use
+    // `userId` as a filter, so reads are left untouched.
+    if (
+      decoded.imp === true &&
+      user.User?.id &&
+      request.method !== "GET" &&
+      request.method !== "HEAD"
+    ) {
+      const actorUserId = user.User.id;
+      if (request.body && typeof request.body === "object") {
+        (request.body as Record<string, unknown>).userId = actorUserId;
+      }
+      if (request.query && typeof request.query === "object") {
+        (request.query as Record<string, unknown>).userId = actorUserId;
+      }
+    }
+
     return; // Success - continue to route handler
   } catch (error) {
     console.log(error);
