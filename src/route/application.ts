@@ -29,6 +29,7 @@ import {
   withdrawApplication,
   reuploadApplicationFile,
   editApplicationContact,
+  updatePublicApplication,
 } from "../controller/applicationController";
 
 import { exportPdsExcel } from "../controller/pdsExportController";
@@ -127,6 +128,8 @@ export const application = (fastify: FastifyInstance) => {
   fastify.post("/application/public/withdraw", withdrawApplication);
   fastify.post("/application/public/reupload", reuploadApplicationFile);
   fastify.patch("/application/public/edit-contact", editApplicationContact);
+  // PUBLIC applicant action — safe PARTIAL update (any section, only sent fields)
+  fastify.patch("/application/public/update", updatePublicApplication);
   fastify.post("/application/user/registration", applicationRegisterUser);
 
   fastify.patch(

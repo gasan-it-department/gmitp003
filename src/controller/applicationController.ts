@@ -2594,6 +2594,126 @@ export const editApplicationContact = async (
   }
 };
 
+/**
+ * PUBLIC applicant action: PARTIAL update of a submitted application.
+ *
+ * The safety guarantee for full-PDS editing: this only ever writes the keys
+ * present in the request body, so a section the applicant didn't touch can
+ * never be blanked. Each editable field is written EXACTLY the way
+ * applicationData reads it back — the encrypted set below is the same set that
+ * endpoint decrypts, so every edit round-trips. Unknown keys are ignored.
+ * Blocked once concluded/withdrawn. applicationId is the credential.
+ */
+
+// Fields stored ENCRYPTED — value column -> its IV column. These are precisely
+// the fields applicationData decrypts, so writes here match reads there.
+const APP_ENCRYPTED: Record<string, string> = {
+  email: "emailIv",
+  cvilStatus: "cvilStatusIv",
+  mobileNo: "ivMobileNo",
+  resProvince: "resProvinceIv",
+  resCity: "resCityIv",
+  resBarangay: "resBarangayIv",
+  permaProvince: "permaProvinceIv",
+  permaCity: "permaCityIv",
+  permaBarangay: "permaBarangayIv",
+  fatherSurname: "fatherSurnameIv",
+  fatherFirstname: "fatherFirstnameIv",
+  motherSurname: "motherSurnameIv",
+  motherFirstname: "motherFirstnameIv",
+  birthDate: "bdayIv",
+  umidNo: "umidNoIv",
+  pagIbigNo: "pagIbigNoIv",
+  philHealthNo: "philHealthNoIv",
+  philSys: "philSysIv",
+  tinNo: "tinNoIv",
+  agencyNo: "agencyNoIv",
+};
+// Plain scalar strings (stored as-is).
+const APP_PLAIN_STR = new Set([
+  "firstname", "lastname", "middleName", "suffix", "gender", "teleNo",
+  "height", "weight", "bloodType", "dualCitizenHalf",
+  "resStreet", "resSub", "resZipCode", "reshouseBlock",
+  "permaStreet", "permaSub", "permaZipCode", "permahouseBlock",
+  "spouseSurname", "spouseFirstname", "spouseMiddle",
+  "spouseBusinessAddress", "spouseTelephone",
+  "children", // stored as a JSON string column
+]);
+const APP_BOOL = new Set(["filipino", "dualCitizen", "byBirth", "byNatural"]);
+const APP_INT = new Set(["fatherAge", "motherAge"]);
+// JSON columns (objects / arrays) written straight through.
+const APP_JSON = new Set([
+  "elementary", "secondary", "vocational", "college", "graduateCollege",
+  "disclosures", "govId",
+  "experience", "civilService", "voluntaryWork", "learningDev",
+  "otherInfo", "references",
+]);
+
+export const updatePublicApplication = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as Record<string, unknown>;
+  const applicationId = body?.applicationId as string | undefined;
+  if (!applicationId) throw new ValidationError("INVALID REQUIRED ID");
+
+  try {
+    const app = await prisma.submittedApplication.findUnique({
+      where: { id: applicationId },
+      select: { id: true, status: true },
+    });
+    if (!app) throw new NotFoundError("APPLICATION NOT FOUND");
+    if (app.status === 2 || app.status === 3)
+      throw new ValidationError(
+        "This application can no longer be changed (it was concluded or withdrawn).",
+      );
+
+    const data: Record<string, unknown> = {};
+    for (const [key, raw] of Object.entries(body)) {
+      if (key === "applicationId") continue;
+
+      if (APP_ENCRYPTED[key]) {
+        // never store an empty ciphertext — treat blank as "clear to empty"
+        const text = raw == null ? "" : String(raw);
+        const enc = await EncryptionService.encrypt(text);
+        data[key] = enc.encryptedData;
+        data[APP_ENCRYPTED[key]] = enc.iv;
+      } else if (APP_PLAIN_STR.has(key)) {
+        data[key] =
+          key === "children" && typeof raw !== "string"
+            ? JSON.stringify(raw ?? [])
+            : raw == null
+              ? ""
+              : String(raw);
+      } else if (APP_BOOL.has(key)) {
+        data[key] = raw === true || raw === "true";
+      } else if (APP_INT.has(key)) {
+        const n = parseInt(String(raw), 10);
+        data[key] = Number.isFinite(n) ? n : 0;
+      } else if (APP_JSON.has(key)) {
+        data[key] = raw ?? (key === "disclosures" ? null : []);
+      }
+      // unknown keys ignored — cannot touch anything not whitelisted
+    }
+
+    if (Object.keys(data).length === 0)
+      return res.code(200).send({ message: "OK", updated: 0 });
+
+    await prisma.submittedApplication.update({
+      where: { id: app.id },
+      data,
+    });
+    return res
+      .code(200)
+      .send({ message: "OK", updated: Object.keys(data).length });
+  } catch (error) {
+    if (error instanceof NotFoundError || error instanceof ValidationError)
+      throw error;
+    if (error instanceof Prisma.PrismaClientKnownRequestError) throw dbError(error);
+    throw error;
+  }
+};
+
 export const updateApplicationStatus = async (
   req: FastifyRequest,
   res: FastifyReply,
