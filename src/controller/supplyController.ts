@@ -2736,6 +2736,9 @@ export const restockSupply = async (
     // The container dataset the item belongs to (datasets are per-container, and
     // a list isn't pinned to one). Required when creating a new item.
     datasetId?: string;
+    // Idempotency key for offline desktop restocks: a retried push with the same
+    // clientOpId is detected and skipped so stock is never applied twice.
+    clientOpId?: string;
     // When creating a brand-new item, pass newItem to create the supply in the
     // chosen dataset and stock it in one shot — still no order process.
     newItem?: {
@@ -2772,7 +2775,24 @@ export const restockSupply = async (
         .filter((b) => b.length > 0)
     : [];
 
+  // Offline desktop restocks carry a stable clientOpId so a retried push is
+  // idempotent — if we've already recorded this op, return OK without applying
+  // it again (this mirrors the dispense flow's clientOpId dedup).
+  const clientOpId = body.clientOpId?.trim() || undefined;
+
   try {
+    if (clientOpId) {
+      const existing = await prisma.supplieRecieveHistory.findUnique({
+        where: { clientOpId },
+        select: { id: true },
+      });
+      if (existing) {
+        return res
+          .code(200)
+          .send({ message: "OK", duplicate: true });
+      }
+    }
+
     await prisma.$transaction(async (tx) => {
       // Resolve (or create) the supply item.
       let supply;
@@ -2909,6 +2929,7 @@ export const restockSupply = async (
           supplyBatchId: body.listId,
           inventoryBoxId: body.inventoryBoxId,
           ...(supplierId ? { supplierId } : {}),
+          ...(clientOpId ? { clientOpId } : {}),
         },
       });
 

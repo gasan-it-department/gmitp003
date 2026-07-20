@@ -584,6 +584,10 @@ model SupplyOrderRecieved {
 
 model SupplieRecieveHistory {
   id                    String               @id @default(uuid())
+  // Idempotency key for offline desktop restocks: a retried POST /supply/restock
+  // carrying the same clientOpId is detected and skipped so stock (and this
+  // receive-history row the reports depend on) is never applied twice.
+  clientOpId            String?              @unique
   suppliesId            String?
   timestamp             DateTime             @default(now())
   quantity              Int                  @default(0)
