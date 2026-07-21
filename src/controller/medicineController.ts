@@ -2864,8 +2864,37 @@ export const updateMedicineThreshold = async (
   const threshold = Math.max(0, parseInt(String(body.threshold ?? 0), 10) || 0);
   const { medicineId, storageId, lineId, userId } = body;
 
-  // Storage access: thresholds are stock settings on that storage.
-  await assertStorageAccess(userId, [storageId], "update stock settings");
+  // A low-stock THRESHOLD is a benign alert setting — not a dispense or a stock
+  // move — and per-storage Dispense Access grants are rarely configured, so
+  // gating it exactly like dispensing blocked even the storage's own pharmacy
+  // staff. Allow it for EITHER an explicit storage grant OR any Pharmacy-module
+  // user in this line (the same audience that receives the low-stock alerts).
+  // Dispense / restock keep the stricter assertStorageAccess check.
+  if (userId) {
+    const [grant, mod] = await Promise.all([
+      prisma.medicineStorageAccess.findFirst({
+        where: { userId, medicineStorageId: storageId },
+        select: { id: true },
+      }),
+      prisma.module.findFirst({
+        where: {
+          userId,
+          lineId,
+          OR: [
+            { moduleName: { equals: "medicine", mode: "insensitive" } },
+            { moduleName: { equals: "Pharmacy", mode: "insensitive" } },
+          ],
+        },
+        select: { id: true },
+      }),
+    ]);
+    if (!grant && !mod) {
+      throw new ValidationError(
+        "You need the Pharmacy module (or Dispense Access on this storage) " +
+          "to change its low-stock threshold. Ask your admin to grant it.",
+      );
+    }
+  }
 
   try {
     const result = await prisma.$transaction(async (tx) => {
