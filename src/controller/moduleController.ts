@@ -48,7 +48,10 @@ export const modules = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const moduleUsers = async (req: FastifyRequest, res: FastifyReply) => {
   const params = req.query as PagingProps;
-  console.log({ params });
+  // Module access is per line — scope the membership list by lineId when the
+  // caller provides it, so "who has this module" (and the Add-page badges that
+  // read it) are accurate for the current line rather than counting every line.
+  const lineId = (req.query as { lineId?: string }).lineId;
 
   if (!params.id) throw new ValidationError("INVALID REQUIRED ID");
   try {
@@ -89,6 +92,7 @@ export const moduleUsers = async (req: FastifyRequest, res: FastifyReply) => {
         modules: {
           some: {
             moduleName: params.id,
+            ...(lineId ? { lineId } : {}),
           },
         },
         ...filter,
@@ -166,15 +170,21 @@ export const addModuleAccess = async (
 
       if (!user) throw new ValidationError("USER NOT FOUND!");
 
-      // Check if module access already exists
-      const moduleAccess = await tx.module.findFirst({
+      // Module access is stored PER LINE (Module.lineId = the grantee's line),
+      // so scope the duplicate check by lineId too — otherwise a user who has
+      // this module in a different line wrongly reads as "already assigned".
+      // Also make it IDEMPOTENT: if a row already exists, return calmly instead
+      // of throwing a hard "ALREADY ASSIGNED". The end state (user has access)
+      // is identical, so HR is never blocked by a pre-existing/stale row.
+      const existing = await tx.module.findFirst({
         where: {
           moduleName: body.module,
           userId: user.id,
+          lineId: user.lineId as string,
         },
       });
 
-      if (moduleAccess) throw new ValidationError("ALREADY ASSIGNED");
+      if (existing) return "EXISTS";
 
       // Get current user who is assigning the module
       const currentUser = await tx.user.findUnique({
@@ -261,9 +271,14 @@ System Administrator
       throw new AppError("SOMETHING WENT WRONG");
     }
 
-    return res
-      .status(200)
-      .send({ success: true, message: "Module access granted successfully" });
+    return res.status(200).send({
+      success: true,
+      alreadyHad: response === "EXISTS",
+      message:
+        response === "EXISTS"
+          ? "User already has access to this module."
+          : "Module access granted successfully",
+    });
   } catch (error) {
     console.log(error);
 
