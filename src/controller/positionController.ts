@@ -679,6 +679,8 @@ export const fillPositionInvite = async (
     unitPositionId: string;
     userId: string;
     slotId: string;
+    /** "full" (default) → PDS invite · "quick" → essentials-only invite. */
+    mode?: string;
   };
 
   if (
@@ -761,6 +763,7 @@ export const fillPositionInvite = async (
           unitPositionId: body.unitPositionId,
           positionSlotId: body.slotId,
           expiresAt,
+          mode: body.mode === "quick" ? "quick" : "full",
         },
       });
 
@@ -1569,6 +1572,243 @@ export const positionRegister = async (
     console.log(error);
 
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw dbError(error);
+    }
+    throw error;
+  }
+};
+
+// Public base URL for building the served-photo link (mirrors employee.ts).
+const selfBaseUrl = (req: FastifyRequest): string => {
+  const env = process.env.API_PUBLIC_URL;
+  if (env) return env.replace(/\/+$/, "");
+  const proto = String(
+    req.headers["x-forwarded-proto"] || req.protocol || "http",
+  ).split(",")[0];
+  const host = (req.headers["x-forwarded-host"] as string) || req.headers.host;
+  return `${proto}://${host}`;
+};
+
+/**
+ * PUBLIC quick registration — the "quick invite" counterpart to
+ * positionRegister. The candidate fills only the essentials (name, birthday,
+ * sex, address, contact) + a photo; there is NO CS Form 212 PDS. Everything is
+ * written straight to the User record, the slot is occupied, and the one-time
+ * invite is burned. Multipart so the profile photo can ride along.
+ *
+ * Fields (multipart form-data): linkId, lineId, slotId, username, password,
+ *   firstName, lastName, middleName?, suffix?, birthDate (ISO), gender,
+ *   email, mobileNumber, regionId?, provinceId?, municipalId?, barangayId?
+ *   photo (file, optional, image/*)
+ */
+export const positionQuickRegister = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  if (!req.isMultipart()) throw new ValidationError("NOT_MULTIPART");
+
+  const f: Record<string, string> = {};
+  let photo: { filename: string; mimetype: string; buffer: Buffer } | null =
+    null;
+  for await (const part of req.parts()) {
+    if (part.type === "file") {
+      if (part.fieldname === "photo") {
+        const chunks: Buffer[] = [];
+        for await (const chunk of part.file) chunks.push(chunk as Buffer);
+        photo = {
+          filename: part.filename,
+          mimetype: part.mimetype,
+          buffer: Buffer.concat(chunks),
+        };
+      } else {
+        // Drain unexpected file parts so the multipart stream can continue.
+        await part.toBuffer();
+      }
+    } else {
+      f[part.fieldname] = String(part.value ?? "");
+    }
+  }
+
+  if (
+    !f.linkId ||
+    !f.lineId ||
+    !f.slotId ||
+    !f.username ||
+    !f.password ||
+    !f.firstName ||
+    !f.lastName ||
+    !f.email
+  ) {
+    throw new ValidationError("INVALID REQUIRED DATA");
+  }
+  if (!isValidEmail(f.email)) {
+    throw new ValidationError("Email address is not valid.");
+  }
+  if (f.password.length < 8) {
+    throw new ValidationError("Password must be at least 8 characters.");
+  }
+  if (photo) {
+    if (!photo.mimetype.startsWith("image/"))
+      throw new ValidationError("FILE_MUST_BE_AN_IMAGE");
+    if (photo.buffer.length > 8 * 1024 * 1024)
+      throw new ValidationError("IMAGE_TOO_LARGE");
+  }
+
+  try {
+    // Encrypt PII exactly like the rest of the app (email + phone).
+    const encEmail = await EncryptionService.encrypt(f.email);
+    const encPhone = f.mobileNumber
+      ? await EncryptionService.encrypt(f.mobileNumber)
+      : null;
+
+    const userId = await prisma.$transaction(async (tx) => {
+      const invite = await tx.fillPositionInvitation.findUnique({
+        where: { id: f.linkId },
+        select: { concluded: true, mode: true },
+      });
+      if (!invite) throw new NotFoundError("LINK NOT FOUND");
+      if (invite.concluded)
+        throw new ValidationError("This registration link has already been used.");
+      if (invite.mode !== "quick")
+        throw new ValidationError("This link is not a quick-registration link.");
+
+      const slot = await tx.positionSlot.findUnique({
+        where: { id: f.slotId },
+        select: {
+          id: true,
+          positionId: true,
+          salaryGradeId: true,
+          occupied: true,
+          userId: true,
+          unitPosition: {
+            select: {
+              departmentId: true,
+              positionId: true,
+              plantilla: true,
+              position: { select: { salaryGradeId: true } },
+            },
+          },
+        },
+      });
+      if (!slot) throw new ValidationError("SLOT NOT FOUND");
+      if (slot.userId || slot.occupied)
+        throw new ValidationError("ALREADY OCCUPIED");
+
+      const effectivePositionId =
+        slot.positionId ?? slot.unitPosition?.positionId ?? null;
+      const effectiveDepartmentId = slot.unitPosition?.departmentId ?? null;
+      const effectiveSalaryGradeId =
+        slot.salaryGradeId ??
+        slot.unitPosition?.position?.salaryGradeId ??
+        null;
+      if (!effectivePositionId) {
+        throw new ValidationError(
+          "Slot has no resolvable position — check that the UnitPosition references a Position.",
+        );
+      }
+
+      const empStatus =
+        slot.unitPosition?.plantilla === false ? "Provisional" : "Regular";
+
+      const hashedPassword = await argon.hash(f.password);
+      const account = await tx.account.create({
+        data: { username: f.username, password: hashedPassword, lineId: f.lineId },
+      });
+
+      const user = await tx.user.create({
+        data: {
+          firstName: f.firstName,
+          lastName: f.lastName,
+          middleName: f.middleName?.trim() || null,
+          suffix: f.suffix?.trim() || null,
+          ...(f.birthDate ? { birthDate: new Date(f.birthDate) } : {}),
+          ...(f.gender === "male" || f.gender === "female"
+            ? { gender: f.gender }
+            : {}),
+          username: account.username,
+          accountId: account.id,
+          email: encEmail.encryptedData,
+          emailIv: encEmail.iv,
+          ...(encPhone
+            ? { phoneNumber: encPhone.encryptedData, phoneNumberIv: encPhone.iv }
+            : {}),
+          regionId: f.regionId || null,
+          provinceId: f.provinceId || null,
+          municipalId: f.municipalId || null,
+          barangayId: f.barangayId || null,
+          lineId: f.lineId,
+          positionId: effectivePositionId,
+          departmentId: effectiveDepartmentId,
+          status: empStatus,
+          ...(effectiveSalaryGradeId
+            ? { salaryGradeId: effectiveSalaryGradeId }
+            : {}),
+        },
+      });
+
+      await tx.positionSlot.update({
+        where: { id: slot.id },
+        data: {
+          userId: user.id,
+          positionId: effectivePositionId,
+          ...(effectiveSalaryGradeId
+            ? { salaryGradeId: effectiveSalaryGradeId }
+            : {}),
+          occupied: true,
+        },
+      });
+
+      await tx.fillPositionInvitation.update({
+        where: { id: f.linkId },
+        data: {
+          concluded: true,
+          concludedAt: new Date(),
+          concludedReason: "accepted",
+          step: 1,
+        },
+      });
+
+      await createUserNotification(tx, {
+        recipientId: user.id,
+        title: "Welcome to the Portal!",
+        content: `Welcome ${f.firstName} ${f.lastName}! Your account has been created. Your username is: ${f.username}.`,
+        senderId: null,
+      });
+
+      return user.id;
+    });
+
+    // Photo is non-critical: store it AFTER the account commits so a photo
+    // failure never rolls back a successful registration.
+    if (photo) {
+      try {
+        const fileUrl = `${selfBaseUrl(req)}/user/photo/${userId}?v=${Date.now()}`;
+        const picData = {
+          file_name: photo.filename || "avatar",
+          file_url: fileUrl,
+          file_public_id: "",
+          file_size: String(photo.buffer.length),
+          file_type: "image",
+          mime: photo.mimetype,
+          bytes: photo.buffer,
+        };
+        await prisma.userProfilePicture.upsert({
+          where: { userId },
+          update: picData,
+          create: { userId, ...picData },
+        });
+      } catch (e) {
+        console.warn("[positionQuickRegister] photo save failed", e);
+      }
+    }
+
+    return res.code(200).send({ message: "OK" });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      // Duplicate username → let the client show a friendly field error.
+      if (error.code === "P2002") {
+        return res.code(200).send({ error: 1, message: "Username already exists" });
+      }
       throw dbError(error);
     }
     throw error;

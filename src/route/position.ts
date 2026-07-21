@@ -11,6 +11,7 @@ import {
   fillPositionInvite,
   positionCheckInvitation,
   positionRegister,
+  positionQuickRegister,
   submitApplication,
   positionRecords,
   positionApplications,
@@ -78,6 +79,8 @@ export const position = (fastify: FastifyInstance) => {
   fastify.get("/position/check-invitation", positionCheckInvitation);
   fastify.post("/position/register", submitApplication);
   fastify.post("/position/account-register", positionRegister);
+  // PUBLIC quick registration (essentials-only invite; multipart with photo).
+  fastify.post("/position/quick-register", positionQuickRegister);
   fastify.get(
     "/position/records",
     { preHandler: authenticated },

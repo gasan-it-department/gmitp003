@@ -829,6 +829,10 @@ model FillPositionInvitation {
   lineId                 String
   positionSlotId         String?
   step                   Int                   @default(0)
+  /// Invite flavor: "full" → candidate completes the CS Form 212 PDS;
+  /// "quick" → candidate fills only the essentials (name, birthday, sex,
+  /// address, contact) + photo, written straight to User (no PDS row).
+  mode                   String                @default("full")
   /// Provisional hiring: the chosen unit (departmentId) + the ProvisionalPosition.
   /// empType is denormalized from the position for invite lists; the contract
   /// end date (User.term) is computed at register from position.termMonths.
