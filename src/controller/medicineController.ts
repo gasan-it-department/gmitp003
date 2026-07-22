@@ -2792,6 +2792,179 @@ export const bulkAddMedicineStock = async (
   });
 };
 
+/**
+ * POST /medicine/direct-dispense/bulk — dispense WITHOUT a prescription.
+ *
+ * Walk-in / counter releases: deducts stock FEFO (earliest expiry first,
+ * never from expired batches) from ONE storage, writes an audit row in
+ * Medicine Logs, and is idempotent per op (clientOpId) so the mobile's
+ * offline queue can retry safely. The actor comes from the AUTH TOKEN and
+ * must hold Dispense & Stock Access on the storage — no exceptions.
+ * The web/desktop call it with a single op; the mobile flushes its queue.
+ */
+export const directDispenseBulk = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as {
+    ops: Array<{
+      clientOpId: string;
+      lineId: string;
+      storageId: string;
+      medicineId?: string;
+      barcode?: string;
+      quantity: number;
+      note?: string | null;
+      patientName?: string | null;
+    }>;
+  };
+
+  if (!body?.ops || !Array.isArray(body.ops) || body.ops.length === 0) {
+    throw new ValidationError("BAD_REQUEST: ops array required");
+  }
+
+  // STRICT identity: the dispenser is whoever the token belongs to.
+  const accountId = (req.user as { id?: string } | undefined)?.id;
+  const authAccount = accountId
+    ? await prisma.account.findUnique({
+        where: { id: accountId },
+        select: { User: { select: { id: true, username: true } } },
+      })
+    : null;
+  const actorId = authAccount?.User?.id ?? null;
+
+  const results: Array<{
+    clientOpId: string;
+    status: "dispensed" | "duplicate" | "error";
+    message?: string;
+  }> = [];
+
+  for (const op of body.ops) {
+    if (!op?.clientOpId) {
+      results.push({ clientOpId: op?.clientOpId ?? "", status: "error", message: "Missing clientOpId" });
+      continue;
+    }
+    const prior = await prisma.mobileUploadLog.findUnique({
+      where: { clientOpId: op.clientOpId },
+      select: { message: true },
+    });
+    if (prior) {
+      results.push({ clientOpId: op.clientOpId, status: "duplicate", message: prior.message ?? "Already processed" });
+      continue;
+    }
+    if (!actorId) {
+      results.push({ clientOpId: op.clientOpId, status: "error", message: "Could not resolve your user account — sign in again." });
+      continue;
+    }
+    const qty = Math.floor(Number(op.quantity));
+    if (!Number.isFinite(qty) || qty <= 0) {
+      results.push({ clientOpId: op.clientOpId, status: "error", message: "Quantity must be a positive number." });
+      continue;
+    }
+    if (!op.storageId || !op.lineId || (!op.medicineId && !op.barcode)) {
+      results.push({ clientOpId: op.clientOpId, status: "error", message: "storageId, lineId and a medicine (id or barcode) are required." });
+      continue;
+    }
+
+    try {
+      // The user's rule, verbatim: storage access is STRICTLY enforced.
+      await assertStorageAccess(actorId, [op.storageId], "dispense");
+
+      const summary = await prisma.$transaction(async (tx) => {
+        const medicine = op.medicineId
+          ? await tx.medicine.findUnique({ where: { id: op.medicineId } })
+          : await tx.medicine.findFirst({
+              where: { barcode: op.barcode ?? "", lineId: op.lineId },
+            });
+        if (!medicine) throw new NotFoundError("MEDICINE_NOT_FOUND");
+        const storage = await tx.medicineStorage.findUnique({
+          where: { id: op.storageId },
+          select: { id: true, name: true, refNumber: true },
+        });
+        if (!storage) throw new NotFoundError("STORAGE_NOT_FOUND");
+
+        // FEFO over NON-EXPIRED batches only.
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const batches = await tx.medicineStock.findMany({
+          where: {
+            medicineId: medicine.id,
+            medicineStorageId: op.storageId,
+            actualStock: { gt: 0 },
+          },
+          orderBy: { expiration: "asc" },
+        });
+        const usable = batches.filter(
+          (b) => !b.expiration || b.expiration >= today,
+        );
+        const available = usable.reduce((s, b) => s + (b.actualStock ?? 0), 0);
+        if (available < qty) {
+          throw new ValidationError(
+            `Only ${available} non-expired unit(s) of ${medicine.name} in ${storage.name} — cannot dispense ${qty}.`,
+          );
+        }
+
+        let remaining = qty;
+        for (const b of usable) {
+          if (remaining <= 0) break;
+          const take = Math.min(remaining, b.actualStock ?? 0);
+          if (take <= 0) continue;
+          await clearLowStockAlerts(tx, b.id);
+          await tx.medicineStock.update({
+            where: { id: b.id },
+            data: { actualStock: (b.actualStock ?? 0) - take },
+          });
+          await checkAndNotifyLowStock(tx, b.id);
+          remaining -= take;
+        }
+
+        const extras = [
+          op.patientName?.trim() ? `patient: ${op.patientName.trim()}` : null,
+          op.note?.trim() ? `note: ${op.note.trim()}` : null,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        const message =
+          `Direct dispense (no prescription): ${medicine.name} ` +
+          `(${medicine.serialNumber}) — ${qty} unit(s) from storage ` +
+          `${storage.refNumber}${extras ? " · " + extras : ""}`;
+        await tx.medicineLogs.create({
+          data: { action: 4, message, userId: actorId, lineId: op.lineId },
+        });
+        return message;
+      });
+
+      await prisma.mobileUploadLog
+        .create({
+          data: {
+            clientOpId: op.clientOpId,
+            kind: "medicine.directDispense",
+            userId: actorId,
+            lineId: op.lineId,
+            resultId: null,
+            message: summary,
+          },
+        })
+        .catch(() => undefined);
+
+      results.push({ clientOpId: op.clientOpId, status: "dispensed", message: summary });
+    } catch (e: any) {
+      results.push({
+        clientOpId: op.clientOpId,
+        status: "error",
+        message: e?.message ?? "Failed",
+      });
+    }
+  }
+
+  return res.code(200).send({
+    attempted: body.ops.length,
+    succeeded: results.filter((r) => r.status !== "error").length,
+    failed: results.filter((r) => r.status === "error").length,
+    results,
+  });
+};
+
 export const exportMedicineReport = async (
   req: FastifyRequest,
   res: FastifyReply,

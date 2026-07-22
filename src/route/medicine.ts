@@ -21,6 +21,7 @@ import {
 import {
   medicineStorage,
   searchMedicineStock,
+  directDispenseBulk,
   addMedicineStorage,
   medicineList,
   addStorageMed,
@@ -63,6 +64,13 @@ export const medicine = (fastify: FastifyInstance) => {
     "/medicine/search-stock",
     { preHandler: authenticated },
     searchMedicineStock,
+  );
+  // Direct dispense (no prescription): FEFO deduction + Medicine Logs audit,
+  // idempotent ops, actor from token, Dispense & Stock Access enforced.
+  fastify.post(
+    "/medicine/direct-dispense/bulk",
+    { preHandler: authenticated },
+    directDispenseBulk,
   );
   fastify.get("/medicine/logs", { preHandler: authenticated }, medicineLogList);
   fastify.patch(
