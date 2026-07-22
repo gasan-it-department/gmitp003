@@ -1719,6 +1719,34 @@ export const positionQuickRegister = async (
       ? await EncryptionService.encrypt(f.mobileNumber)
       : null;
 
+    // The public form's address dropdowns are fed by the external PSGC API,
+    // while User.regionId/provinceId/municipalId/barangayId are FOREIGN KEYS
+    // into our own (partially seeded) tables — and the dropdowns' degenerate
+    // rows ("loading", "noData", …) are selectable too. Keep an id only when
+    // that row actually exists here; anything else becomes NULL. The address
+    // is optional — it must NEVER fail a registration with a P2003 400.
+    const junk = new Set(["loading", "noData", "error", "errors", "undefined", "null"]);
+    const cleanId = (v?: string) => (v && !junk.has(v) ? v : null);
+    const keep = async (
+      id: string | null,
+      find: (id: string) => Promise<{ id: string } | null>,
+    ) => (id ? (await find(id))?.id ?? null : null);
+    const [addrRegionId, addrProvinceId, addrMunicipalId, addrBarangayId] =
+      await Promise.all([
+        keep(cleanId(f.regionId), (id) =>
+          prisma.region.findUnique({ where: { id }, select: { id: true } }),
+        ),
+        keep(cleanId(f.provinceId), (id) =>
+          prisma.province.findUnique({ where: { id }, select: { id: true } }),
+        ),
+        keep(cleanId(f.municipalId), (id) =>
+          prisma.municipal.findUnique({ where: { id }, select: { id: true } }),
+        ),
+        keep(cleanId(f.barangayId), (id) =>
+          prisma.barangay.findUnique({ where: { id }, select: { id: true } }),
+        ),
+      ]);
+
     const userId = await prisma.$transaction(async (tx) => {
       const invite = await tx.fillPositionInvitation.findUnique({
         where: { id: f.linkId },
@@ -1772,10 +1800,10 @@ export const positionQuickRegister = async (
           ...(encPhone
             ? { phoneNumber: encPhone.encryptedData, phoneNumberIv: encPhone.iv }
             : {}),
-          regionId: f.regionId || null,
-          provinceId: f.provinceId || null,
-          municipalId: f.municipalId || null,
-          barangayId: f.barangayId || null,
+          regionId: addrRegionId,
+          provinceId: addrProvinceId,
+          municipalId: addrMunicipalId,
+          barangayId: addrBarangayId,
           lineId: f.lineId,
           positionId: effectivePositionId,
           departmentId: effectiveDepartmentId,
