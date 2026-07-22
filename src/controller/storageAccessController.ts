@@ -20,6 +20,56 @@ const fullName = (u: {
   `${u.lastName}, ${u.firstName}${u.middleName ? " " + u.middleName : ""}`;
 
 /**
+ * Self-healing default for mobile scanner users: when a user already holds
+ * PharmacyMobileAccess (an admin explicitly let them scan for this line) and
+ * the line has EXACTLY ONE active storage, grant them Dispense & Stock
+ * Access on it automatically — there is no "wrong" storage to pick, and
+ * scanner access is meaningless without it. Ambiguous lines (2+ storages)
+ * are never auto-granted; the admin assigns those on the storage's
+ * Dispense & Stock Access tab. Best-effort: never throws.
+ */
+export async function autoGrantSoleStorageAccess(
+  userId: string | null | undefined,
+  lineId: string | null | undefined,
+): Promise<void> {
+  try {
+    if (!userId || !lineId) return;
+    const storages = await prisma.medicineStorage.findMany({
+      where: { lineId, status: { not: 0 } },
+      select: { id: true, name: true, refNumber: true },
+      take: 2,
+    });
+    if (storages.length !== 1) return; // none, or ambiguous — don't guess
+    const sole = storages[0];
+    const existing = await prisma.medicineStorageAccess.findFirst({
+      where: { userId, medicineStorageId: sole.id },
+      select: { id: true },
+    });
+    if (existing) return;
+    const mobile = await prisma.pharmacyMobileAccess.findUnique({
+      where: { lineId_userId: { lineId, userId } },
+      select: { id: true },
+    });
+    if (!mobile) return; // only heal users an admin already trusted to scan
+    await prisma.medicineStorageAccess.create({
+      data: { userId, medicineStorageId: sole.id },
+    });
+    await prisma.medicineLogs.create({
+      data: {
+        action: 1,
+        message:
+          `Auto-assigned Dispense & Stock Access on ${sole.name} ` +
+          `(${sole.refNumber}) — the line's only storage — for a mobile scanner user`,
+        userId,
+        lineId,
+      },
+    });
+  } catch (e) {
+    console.warn("[autoGrantSoleStorageAccess] skipped:", e);
+  }
+}
+
+/**
  * The storages this user is granted on (possibly empty — empty means the
  * user can't touch ANY storage's stock).
  */

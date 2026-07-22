@@ -13,7 +13,10 @@ import { PagingProps } from "../models/route";
 //
 import { generateMedRef, generateStorageRef } from "../middleware/handler";
 import { getQuarter } from "../utils/date";
-import { assertStorageAccess } from "./storageAccessController";
+import {
+  assertStorageAccess,
+  autoGrantSoleStorageAccess,
+} from "./storageAccessController";
 import {
   checkAndNotifyLowStock,
   clearLowStockAlerts,
@@ -44,6 +47,9 @@ export const medicineStorage = async (
           })
         : null;
       const authUserId = account?.User?.id ?? null;
+      // Self-heal: single-storage lines auto-assign the scanner user before
+      // filtering, so the picker is never empty for a trusted mobile user.
+      await autoGrantSoleStorageAccess(authUserId, params.id);
       accessFilter = {
         MedicineStorageAccess: {
           some: { userId: authUserId ?? "__none__" },
@@ -2437,6 +2443,10 @@ export const bulkAddMedicineStock = async (
       })
     : null;
   const authUserId = authAccount?.User?.id ?? null;
+
+  // Self-heal: if this line has exactly one storage and the scanner user has
+  // no grant yet, assign it now so the upload doesn't bounce needlessly.
+  await autoGrantSoleStorageAccess(authUserId, body.ops[0]?.lineId);
 
   const results: Array<{
     clientOpId: string;

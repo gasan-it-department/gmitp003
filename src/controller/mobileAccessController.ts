@@ -30,6 +30,34 @@ export const listMobileAccess = async (req: FastifyRequest, res: FastifyReply) =
         grantedBy: { select: { firstName: true, lastName: true } },
       },
     });
+    // Which storages of THIS line each scanner user is assigned to — so the
+    // Mobile Access tab can flag anyone who can scan but has no storage to
+    // stock into (their uploads would bounce on Dispense & Stock Access).
+    const lineStorages = await prisma.medicineStorage.findMany({
+      where: { lineId, status: { not: 0 } },
+      select: { id: true, name: true, refNumber: true },
+    });
+    const storageName = new Map(
+      lineStorages.map((s) => [s.id, s.refNumber || s.name || s.id]),
+    );
+    const grants = rows.length
+      ? await prisma.medicineStorageAccess.findMany({
+          where: {
+            userId: { in: rows.map((r) => r.userId) },
+            medicineStorageId: { in: lineStorages.map((s) => s.id) },
+          },
+          select: { userId: true, medicineStorageId: true },
+        })
+      : [];
+    const byUser = new Map<string, string[]>();
+    for (const g of grants) {
+      const label = storageName.get(g.medicineStorageId);
+      if (!label) continue;
+      const arr = byUser.get(g.userId) ?? [];
+      arr.push(label);
+      byUser.set(g.userId, arr);
+    }
+
     const list = rows.map((r) => ({
       id: r.id,
       userId: r.userId,
@@ -38,8 +66,9 @@ export const listMobileAccess = async (req: FastifyRequest, res: FastifyReply) =
       department: r.user.department?.name ?? null,
       grantedAt: r.timestamp,
       grantedBy: r.grantedBy ? `${r.grantedBy.lastName}, ${r.grantedBy.firstName}` : null,
+      storages: byUser.get(r.userId) ?? [],
     }));
-    return res.code(200).send({ list });
+    return res.code(200).send({ list, lineStorageCount: lineStorages.length });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError)
       throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
