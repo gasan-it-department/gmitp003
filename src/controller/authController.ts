@@ -106,6 +106,34 @@ export const authController = async (
   }
 };
 
+/**
+ * GET /auth/session-line — which line does the AUTHENTICATED session belong
+ * to? Lets the web's root page send an already-signed-in user straight to
+ * their line's control panel (older sessions never persisted the line
+ * client-side). Token carries the ACCOUNT id.
+ */
+export const sessionLine = async (
+  request: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const accountId = (request.user as { id?: string } | undefined)?.id;
+  if (!accountId) return res.code(401).send({ message: "Unauthorized" });
+  try {
+    const account = await prisma.account.findUnique({
+      where: { id: accountId },
+      select: { lineId: true, User: { select: { id: true } } },
+    });
+    if (!account) return res.code(404).send({ message: "Account not found" });
+    return res.code(200).send({
+      lineId: account.lineId,
+      userId: account.User?.id ?? null,
+    });
+  } catch (error) {
+    console.log(error);
+    return res.code(500).send({ message: "Failed to resolve the session line" });
+  }
+};
+
 export const registerController = async (
   request: FastifyRequest,
   res: FastifyReply,
