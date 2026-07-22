@@ -1322,6 +1322,7 @@ export const positionRegister = async (
           concludedReason: true,
           empType: true,
           term: true,
+          mode: true,
           provisionalPositionId: true,
           departmentId: true,
           unitPositionId: true,
@@ -1335,6 +1336,14 @@ export const positionRegister = async (
       // concluded — block any reuse (double-submit, shared link, etc.).
       if (invite?.concluded) {
         throw new ValidationError("This registration link has already been used.");
+      }
+      // Quick invites belong to the essentials-only endpoint — refuse them
+      // here so a mixed-up client can't register a quick invite without the
+      // quick flow's guarantees.
+      if (invite?.mode === "quick") {
+        throw new ValidationError(
+          "This is a quick-registration link — open it in the browser and use the quick form.",
+        );
       }
 
       const application = await tx.submittedApplication.findUnique({
@@ -1577,15 +1586,17 @@ const REGISTER_SLOT_SELECT = {
   },
 } as const;
 
-const resolveVacantSlot = async (
+export const resolveVacantSlot = async (
   tx: Prisma.TransactionClient,
-  slotId: string,
+  slotId: string | null,
   fallbackUnitPositionId?: string | null,
 ) => {
-  const slot = await tx.positionSlot.findUnique({
-    where: { id: slotId },
-    select: REGISTER_SLOT_SELECT,
-  });
+  const slot = slotId
+    ? await tx.positionSlot.findUnique({
+        where: { id: slotId },
+        select: REGISTER_SLOT_SELECT,
+      })
+    : null;
   if (slot && !slot.userId && !slot.occupied) return slot;
 
   const upId = slot?.unitPositionId ?? fallbackUnitPositionId ?? null;
@@ -1598,7 +1609,7 @@ const resolveVacantSlot = async (
     if (alt) return alt;
   }
 
-  if (!slot) throw new ValidationError("SLOT NOT FOUND");
+  if (slotId && !slot) throw new ValidationError("SLOT NOT FOUND");
   throw new ValidationError(
     "This position has already been fully filled — every slot is taken. " +
       "Please contact HR for an invitation to another position.",
@@ -1611,7 +1622,7 @@ const resolveVacantSlot = async (
  * the loser's transaction rolls back with a clear message instead of silently
  * overwriting the winner.
  */
-const claimSlot = async (
+export const claimSlot = async (
   tx: Prisma.TransactionClient,
   slotId: string,
   userId: string,

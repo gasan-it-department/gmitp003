@@ -18,6 +18,7 @@ import {
 } from "../models/route";
 import { semaphoreKey } from "../class/Semaphore";
 import { phNumberFormat, sendEmail } from "../middleware/handler";
+import { resolveVacantSlot, claimSlot } from "./positionController";
 import { notificationSocket } from "..";
 import { semaphoreService } from "../class/Semaphore";
 import axios from "axios";
@@ -3049,6 +3050,32 @@ export const applicationRegisterUser = async (
         };
       }
 
+      // A vacant slot of the job post's unit position — the old nested
+      // update used a non-unique `where { occupied: false }`, which Prisma
+      // rejects at runtime, so this registration could never assign a slot.
+      // resolveVacantSlot/claimSlot are the same proven helpers the invite
+      // registrations use (atomic claim; clear "fully filled" message).
+      const slot = await resolveVacantSlot(
+        tx,
+        null,
+        application.jobPost?.unitPositionId ?? null,
+      );
+      const effectivePositionId =
+        slot.positionId ??
+        slot.unitPosition?.positionId ??
+        application.jobPost?.position?.id ??
+        null;
+      if (!effectivePositionId) {
+        throw new ValidationError(
+          "This job post has no resolvable position — contact HR.",
+        );
+      }
+      const effectiveSalaryGradeId =
+        application.jobPost?.salaryGradeId ??
+        slot.salaryGradeId ??
+        slot.unitPosition?.position?.salaryGradeId ??
+        null;
+
       const user = await tx.user.create({
         data: {
           username: newAccount.username,
@@ -3058,41 +3085,22 @@ export const applicationRegisterUser = async (
           lastName: application.lastname,
           email: application.email,
           emailIv: application.emailIv,
-          positionId: application.jobPost?.position?.id as string,
-          salaryGradeId: application.jobPost?.salaryGradeId as string,
+          positionId: effectivePositionId,
+          departmentId: slot.unitPosition?.departmentId ?? null,
+          ...(effectiveSalaryGradeId
+            ? { salaryGradeId: effectiveSalaryGradeId }
+            : {}),
+          ...optional,
         },
       });
 
-      await tx.unitPosition.update({
-        where: {
-          id: application.jobPost?.unitPositionId as string,
-          positionId: application.positionId as string,
-        },
-        data: {
-          slot: {
-            update: {
-              where: {
-                occupied: false,
-                userId: undefined,
-              },
-              data: {
-                occupied: true,
-                userId: user.id,
-              },
-            },
-          },
-        },
-      });
-
-      await tx.positionSlot.update({
-        where: {
-          userId: user.id,
-          salaryGradeId: application.jobPost?.salaryGradeId as string,
-        },
-        data: {
-          userId: user.id,
-        },
-      });
+      await claimSlot(
+        tx,
+        slot.id,
+        user.id,
+        effectivePositionId,
+        effectiveSalaryGradeId,
+      );
 
       await tx.submittedApplication.update({
         where: {
