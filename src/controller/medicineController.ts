@@ -1,6 +1,11 @@
 import { FastifyRequest, FastifyReply } from "../barrel/fastify";
 import { prisma, Prisma } from "../barrel/prisma";
-import { AppError, NotFoundError, ValidationError } from "../errors/errors";
+import {
+  AppError,
+  NotFoundError,
+  ValidationError,
+  dbError,
+} from "../errors/errors";
 
 //
 
