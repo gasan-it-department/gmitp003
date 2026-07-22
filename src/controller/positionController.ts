@@ -1324,6 +1324,7 @@ export const positionRegister = async (
           term: true,
           provisionalPositionId: true,
           departmentId: true,
+          unitPositionId: true,
           provisionalPosition: {
             select: { empType: true, termMonths: true, salaryGradeId: true },
           },
@@ -1415,40 +1416,13 @@ export const positionRegister = async (
       if (!body.slotId) {
         throw new ValidationError("INVALID REQUIRED DATA");
       }
-      const slot = await tx.positionSlot.findUnique({
-        where: {
-          id: body.slotId,
-        },
-        select: {
-          id: true,
-          positionId: true,
-          salaryGradeId: true,
-          unitPosition: {
-            select: {
-              id: true,
-              departmentId: true,
-              positionId: true,
-              plantilla: true,
-              position: {
-                select: {
-                  id: true,
-                  name: true,
-                  salaryGradeId: true,
-                },
-              },
-            },
-          },
-          occupied: true,
-          userId: true,
-        },
-      });
-
-      if (!slot) {
-        throw new ValidationError("SLOT NOT FOUND");
-      }
-      if (slot.userId) {
-        throw new ValidationError("ALREADY OCCUPIED");
-      }
+      // The invited slot if still vacant, else any vacant sibling slot of
+      // the same position (several invites usually point at one open slot).
+      const slot = await resolveVacantSlot(
+        tx,
+        body.slotId,
+        invite?.unitPositionId,
+      );
       // Resolve the *effective* position / department / SG from the slot
       // OR its parent UnitPosition. `PositionSlot.positionId` is
       // optional in the schema and is usually NULL — the canonical
@@ -1518,22 +1492,15 @@ export const positionRegister = async (
         },
       });
 
-      await tx.positionSlot.update({
-        where: {
-          id: slot.id,
-        },
-        data: {
-          userId: user.id,
-          // Backfill positionId on the slot itself so future reads don't
-          // depend on the unitPosition join, AND set salaryGradeId from
-          // whichever source resolved above.
-          positionId: effectivePositionId,
-          ...(effectiveSalaryGradeId
-            ? { salaryGradeId: effectiveSalaryGradeId }
-            : {}),
-          occupied: true,
-        },
-      });
+      // Atomic claim: backfills positionId/salaryGradeId on the slot and
+      // guards against a concurrent registrant taking it mid-transaction.
+      await claimSlot(
+        tx,
+        slot.id,
+        user.id,
+        effectivePositionId,
+        effectiveSalaryGradeId,
+      );
       // Name comes from the submitted application — the register body
       // doesn't carry firstname/lastname (that's why the old message
       // rendered "Welcome undefined undefined").
@@ -1575,6 +1542,97 @@ export const positionRegister = async (
       throw dbError(error);
     }
     throw error;
+  }
+};
+
+/**
+ * Resolve which PositionSlot a registrant actually receives.
+ *
+ * Invites bake a specific slotId at send time, but the slot stays VACANT
+ * until someone registers — so when HR sends several invites for the same
+ * position (rollout day!), they all point at the same open slot. The first
+ * registrant wins that exact slot; without this fallback every later
+ * registrant dies on a hard "ALREADY OCCUPIED" 400 even though the position
+ * still has other vacant slots.
+ *
+ * Order: (1) the invited slot if still vacant, (2) any other vacant slot of
+ * the same UnitPosition, (3) a clear error — either the slot id is unknown
+ * or the position is genuinely full.
+ */
+const REGISTER_SLOT_SELECT = {
+  id: true,
+  positionId: true,
+  salaryGradeId: true,
+  occupied: true,
+  userId: true,
+  unitPositionId: true,
+  unitPosition: {
+    select: {
+      id: true,
+      departmentId: true,
+      positionId: true,
+      plantilla: true,
+      position: { select: { id: true, name: true, salaryGradeId: true } },
+    },
+  },
+} as const;
+
+const resolveVacantSlot = async (
+  tx: Prisma.TransactionClient,
+  slotId: string,
+  fallbackUnitPositionId?: string | null,
+) => {
+  const slot = await tx.positionSlot.findUnique({
+    where: { id: slotId },
+    select: REGISTER_SLOT_SELECT,
+  });
+  if (slot && !slot.userId && !slot.occupied) return slot;
+
+  const upId = slot?.unitPositionId ?? fallbackUnitPositionId ?? null;
+  if (upId) {
+    const alt = await tx.positionSlot.findFirst({
+      where: { unitPositionId: upId, occupied: false, userId: null },
+      orderBy: { id: "asc" },
+      select: REGISTER_SLOT_SELECT,
+    });
+    if (alt) return alt;
+  }
+
+  if (!slot) throw new ValidationError("SLOT NOT FOUND");
+  throw new ValidationError(
+    "This position has already been fully filled — every slot is taken. " +
+      "Please contact HR for an invitation to another position.",
+  );
+};
+
+/**
+ * Atomically claim a slot for a newly registered user. The vacancy condition
+ * in the WHERE guards against two registrants racing into the same slot —
+ * the loser's transaction rolls back with a clear message instead of silently
+ * overwriting the winner.
+ */
+const claimSlot = async (
+  tx: Prisma.TransactionClient,
+  slotId: string,
+  userId: string,
+  effectivePositionId: string,
+  effectiveSalaryGradeId?: string | null,
+) => {
+  const claimed = await tx.positionSlot.updateMany({
+    where: { id: slotId, occupied: false, userId: null },
+    data: {
+      userId,
+      positionId: effectivePositionId,
+      ...(effectiveSalaryGradeId
+        ? { salaryGradeId: effectiveSalaryGradeId }
+        : {}),
+      occupied: true,
+    },
+  });
+  if (claimed.count === 0) {
+    throw new ValidationError(
+      "Someone registered into this slot a moment ago — please submit again.",
+    );
   }
 };
 
@@ -1664,7 +1722,7 @@ export const positionQuickRegister = async (
     const userId = await prisma.$transaction(async (tx) => {
       const invite = await tx.fillPositionInvitation.findUnique({
         where: { id: f.linkId },
-        select: { concluded: true, mode: true },
+        select: { concluded: true, mode: true, unitPositionId: true },
       });
       if (!invite) throw new NotFoundError("LINK NOT FOUND");
       if (invite.concluded)
@@ -1672,27 +1730,9 @@ export const positionQuickRegister = async (
       if (invite.mode !== "quick")
         throw new ValidationError("This link is not a quick-registration link.");
 
-      const slot = await tx.positionSlot.findUnique({
-        where: { id: f.slotId },
-        select: {
-          id: true,
-          positionId: true,
-          salaryGradeId: true,
-          occupied: true,
-          userId: true,
-          unitPosition: {
-            select: {
-              departmentId: true,
-              positionId: true,
-              plantilla: true,
-              position: { select: { salaryGradeId: true } },
-            },
-          },
-        },
-      });
-      if (!slot) throw new ValidationError("SLOT NOT FOUND");
-      if (slot.userId || slot.occupied)
-        throw new ValidationError("ALREADY OCCUPIED");
+      // The invited slot if still vacant, else any vacant sibling slot of
+      // the same position (several invites usually point at one open slot).
+      const slot = await resolveVacantSlot(tx, f.slotId, invite.unitPositionId);
 
       const effectivePositionId =
         slot.positionId ?? slot.unitPosition?.positionId ?? null;
@@ -1746,17 +1786,13 @@ export const positionQuickRegister = async (
         },
       });
 
-      await tx.positionSlot.update({
-        where: { id: slot.id },
-        data: {
-          userId: user.id,
-          positionId: effectivePositionId,
-          ...(effectiveSalaryGradeId
-            ? { salaryGradeId: effectiveSalaryGradeId }
-            : {}),
-          occupied: true,
-        },
-      });
+      await claimSlot(
+        tx,
+        slot.id,
+        user.id,
+        effectivePositionId,
+        effectiveSalaryGradeId,
+      );
 
       await tx.fillPositionInvitation.update({
         where: { id: f.linkId },

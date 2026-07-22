@@ -170,6 +170,23 @@ export const addModuleAccess = async (
 
       if (!user) throw new ValidationError("USER NOT FOUND!");
 
+      // Tripwire: the grant must happen inside the line HR is working in.
+      // If the id the client sent resolves to a user of a DIFFERENT line,
+      // fail loudly with the account name instead of silently granting a
+      // module that the current line's lists will never show.
+      if (body.lineId && user.lineId && user.lineId !== body.lineId) {
+        throw new ValidationError(
+          `@${user.username ?? user.id} belongs to a different line — ` +
+            "cannot grant module access from here.",
+        );
+      }
+      const grantLineId = (user.lineId ?? body.lineId) as string;
+      if (!grantLineId) {
+        throw new ValidationError(
+          `@${user.username ?? user.id} has no line assigned — ask MIS to fix the account before granting access.`,
+        );
+      }
+
       // Module access is stored PER LINE (Module.lineId = the grantee's line),
       // so scope the duplicate check by lineId too — otherwise a user who has
       // this module in a different line wrongly reads as "already assigned".
@@ -180,11 +197,11 @@ export const addModuleAccess = async (
         where: {
           moduleName: body.module,
           userId: user.id,
-          lineId: user.lineId as string,
+          lineId: grantLineId,
         },
       });
 
-      if (existing) return "EXISTS";
+      if (existing) return { outcome: "EXISTS" as const, user };
 
       // Get current user who is assigning the module
       const currentUser = await tx.user.findUnique({
@@ -218,7 +235,7 @@ export const addModuleAccess = async (
           privilege,
           moduleName: body.module,
           moduleIndex: "1",
-          lineId: user.lineId as string,
+          lineId: grantLineId,
         },
       });
 
@@ -264,20 +281,29 @@ System Administrator
         );
       }
 
-      return "OK";
+      return { outcome: "OK" as const, user };
     });
 
     if (!response) {
       throw new AppError("SOMETHING WENT WRONG");
     }
 
+    // Echo WHO the grant actually landed on. If the client ever sends a
+    // wrong id, the toast names the real account instead of hiding it.
+    const grantee = {
+      id: response.user.id,
+      username: response.user.username,
+      firstName: response.user.firstName,
+      lastName: response.user.lastName,
+    };
     return res.status(200).send({
       success: true,
-      alreadyHad: response === "EXISTS",
+      alreadyHad: response.outcome === "EXISTS",
+      grantee,
       message:
-        response === "EXISTS"
-          ? "User already has access to this module."
-          : "Module access granted successfully",
+        response.outcome === "EXISTS"
+          ? `@${grantee.username ?? grantee.id} already has access to this module.`
+          : `Module access granted to @${grantee.username ?? grantee.id}.`,
     });
   } catch (error) {
     console.log(error);

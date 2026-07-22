@@ -23,7 +23,7 @@ export const medicineStorage = async (
   req: FastifyRequest,
   res: FastifyReply,
 ) => {
-  const params = req.query as PagingProps;
+  const params = req.query as PagingProps & { accessibleOnly?: string };
 
   if (!params.id) throw new ValidationError("BAD_REQUEST");
 
@@ -31,10 +31,31 @@ export const medicineStorage = async (
     const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
     const limit = params.limit ? parseInt(params.limit.toString()) : 10;
 
+    // ?accessibleOnly=1 → only storages the AUTHENTICATED user has a
+    // Dispense Access grant on. The mobile scanner's storage picker uses
+    // this so a scan can only ever stock a storage the user is allowed in.
+    let accessFilter = {};
+    if (params.accessibleOnly === "1") {
+      const accountId = (req.user as { id?: string } | undefined)?.id;
+      const account = accountId
+        ? await prisma.account.findUnique({
+            where: { id: accountId },
+            select: { User: { select: { id: true } } },
+          })
+        : null;
+      const authUserId = account?.User?.id ?? null;
+      accessFilter = {
+        MedicineStorageAccess: {
+          some: { userId: authUserId ?? "__none__" },
+        },
+      };
+    }
+
     const response = await prisma.medicineStorage.findMany({
       where: {
         lineId: params.id,
         status: { not: 0 },
+        ...accessFilter,
       },
       skip: cursor ? 1 : 0,
       take: limit,
@@ -2392,6 +2413,19 @@ export const bulkAddMedicineStock = async (
     throw new ValidationError("BAD_REQUEST: ops array required");
   }
 
+  // Identity comes from the TOKEN, never from the payload. A client-supplied
+  // userId can be stale or plain wrong — and a missing one used to make
+  // assertStorageAccess SKIP the storage check entirely, letting scanned
+  // stock land in whichever storage the app happened to preselect.
+  const accountId = (req.user as { id?: string } | undefined)?.id;
+  const authAccount = accountId
+    ? await prisma.account.findUnique({
+        where: { id: accountId },
+        select: { User: { select: { id: true } } },
+      })
+    : null;
+  const authUserId = authAccount?.User?.id ?? null;
+
   const results: Array<{
     clientOpId: string;
     status: "created" | "restocked" | "duplicate" | "error";
@@ -2455,8 +2489,19 @@ export const bulkAddMedicineStock = async (
     const price = Math.max(0, Number(op.price ?? 0));
 
     try {
-      // Storage access: same rule as the web add-stock endpoint.
-      await assertStorageAccess(op.userId, [op.storageId], "add or restock");
+      // Storage access: same rule as the web add-stock endpoint — but bound
+      // to the AUTHENTICATED user. Never skipped: no resolvable identity
+      // means no write.
+      const actorId = authUserId ?? op.userId;
+      if (!actorId) {
+        results.push({
+          clientOpId: op.clientOpId,
+          status: "error",
+          message: "Could not resolve your user account — sign in again.",
+        });
+        continue;
+      }
+      await assertStorageAccess(actorId, [op.storageId], "add or restock");
 
       const txResult = await prisma.$transaction(async (tx) => {
         const [medicine, storage] = await Promise.all([
@@ -2535,7 +2580,7 @@ export const bulkAddMedicineStock = async (
               `${mode === "restock" ? "Restocked" : "Added new batch:"} ${medicine.name} ` +
               `(${medicine.serialNumber}) — qty ${op.quantity} × ${op.perUnit} ${op.unitOfMeasure} ` +
               `(${totalItems} items) → storage ${storage.refNumber} [mobile]`,
-            userId: op.userId,
+            userId: actorId,
             lineId: op.lineId,
           },
         });
@@ -2548,7 +2593,7 @@ export const bulkAddMedicineStock = async (
           data: {
             clientOpId: op.clientOpId,
             kind: "medicine.addStock",
-            userId: op.userId,
+            userId: actorId,
             lineId: op.lineId,
             resultId: txResult.stockId,
             message: txResult.mode === "restock" ? "Restocked" : "New batch",
