@@ -62,9 +62,9 @@ export async function assertStorageAccess(
     names.map((n) => `${n.name} (${n.refNumber})`).join(", ") ||
     "this storage";
   throw new ValidationError(
-    `No storage access: only users granted Dispense Access on ${label} ` +
+    `No storage access: only users granted Dispense & Stock Access on ${label} ` +
       `can ${action} there. Ask your admin to add you ` +
-      `(Pharmacy > Storage > Dispense Access).`,
+      `(Pharmacy > Storage > Dispense & Stock Access).`,
   );
 }
 

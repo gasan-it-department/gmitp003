@@ -769,7 +769,19 @@ export const addStorageMedInList = async (
   const price = Math.max(0, Number(body.price ?? 0));
 
   // Storage access: restricted users may only add/restock in their storages.
-  await assertStorageAccess(body.userId, [body.storageId], "add or restock");
+  // Prefer the TOKEN's identity over the client-supplied userId — a wrong or
+  // missing body.userId must never skip (or misdirect) the access check.
+  {
+    const accountId = (req.user as { id?: string } | undefined)?.id;
+    const authAccount = accountId
+      ? await prisma.account.findUnique({
+          where: { id: accountId },
+          select: { User: { select: { id: true } } },
+        })
+      : null;
+    const actorId = authAccount?.User?.id ?? body.userId;
+    await assertStorageAccess(actorId, [body.storageId], "add or restock");
+  }
 
   try {
     // ── Idempotency short-circuit ─────────────────────────────────────
