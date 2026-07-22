@@ -2448,6 +2448,12 @@ model Prescription {
   lineId              String
   age                 String                 @default("N/A")
   patientId           String?
+  /// True when the prescription originated OUTSIDE this RHU's system —
+  /// a private doctor or another municipality's RHU.
+  external            Boolean                @default(false)
+  /// Where the external prescription came from (free text, e.g.
+  /// "Private doctor — Dr. Cruz" or "RHU Boac").
+  externalSource      String?
   MedicineTransaction MedicineTransaction[]
   patientRecords      PatientRecord[]
   presMed             PrecribeMedicine[]

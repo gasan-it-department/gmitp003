@@ -90,6 +90,10 @@ export const createPrescriptions = async (
           street: body.street,
           condtion: body.desc,
           patientId: resolvedPatientId,
+          external: !!body.external,
+          externalSource: body.external
+            ? body.externalSource?.trim() || null
+            : null,
           progress: {
             create: { step: 0 },
           },
@@ -722,7 +726,11 @@ export const prescriptionDispense = async (
         data: {
           userId: body.userId,
           action: 4,
-          message: `Dispensed Medicine: Ref. #: ${prescription.refNumber}`,
+          message:
+            `Dispensed Medicine: Ref. #: ${prescription.refNumber}` +
+            ((prescription as { external?: boolean }).external
+              ? ` — EXTERNAL prescription${(prescription as { externalSource?: string | null }).externalSource ? ` (${(prescription as { externalSource?: string | null }).externalSource})` : ""}`
+              : ""),
           lineId: prescription.lineId,
         },
       });

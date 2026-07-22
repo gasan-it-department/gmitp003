@@ -612,6 +612,8 @@ export const REAL_PUSH: Record<
         municipalId: municipalId ?? undefined,
         provinceId: provinceId ?? undefined,
         status,
+        external: row.external === 1 || row.external === true,
+        externalSource: s(row.external_source),
         timestamp,
         // web createPrescription seeds a progress step 0; mirror it so the
         // dispensary progress view has a starting point
@@ -627,6 +629,8 @@ export const REAL_PUSH: Record<
         municipalId: municipalId ?? undefined,
         provinceId: provinceId ?? undefined,
         status,
+        external: row.external === 1 || row.external === true,
+        externalSource: s(row.external_source),
       },
     });
 
@@ -871,6 +875,8 @@ export const REAL_PULL: Record<
       patient_name: [r.firstname, r.lastname].filter((x) => x && String(x).trim()).join(" ") || null,
       diagnosis_id: null,
       descr: r.condtion,
+      external: r.external ? 1 : 0,
+      external_source: r.externalSource,
       // dispensed = 2 (web) or legacy 1; anything else is still open
       status: r.status === 2 || r.status === 1 ? "dispensed" : "open",
       created_by: null,

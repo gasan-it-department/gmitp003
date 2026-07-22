@@ -177,6 +177,8 @@ export type TimebaseGroupPrice = {
 };
 
 export type PrescriptionProps = {
+  external?: boolean;
+  externalSource?: string;
   id: string;
   refNumber: string;
   condtion?: string;
