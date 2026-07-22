@@ -64,6 +64,7 @@ export const createPrescriptions = async (
             lastname: body.lastname ?? "",
             birthday: body.birthday ? new Date(body.birthday) : undefined,
             phoneNumber: body.phoneNumber || undefined,
+            philHealthNo: body.philHealthNo || undefined,
             email: body.email || undefined,
             barangayId: body.barangayId || undefined,
             municipalId: body.municipalId || undefined,

@@ -186,6 +186,7 @@ export type PrescriptionProps = {
   age?: string;
   birthday?: string;
   phoneNumber?: string;
+  philHealthNo?: string;
   email?: string;
   barangay?: string;
   barangayId?: string;
@@ -482,6 +483,7 @@ export type PatientProps = {
   middlename?: string;
   email?: string;
   phoneNumber?: string;
+  philHealthNo?: string;
   barangayId?: string;
   municipalId?: string;
   provinceId?: string;
@@ -498,6 +500,7 @@ export type UpdatePatientProps = {
   middlename?: string;
   email?: string;
   phoneNumber?: string;
+  philHealthNo?: string;
   barangayId?: string;
   municipalId?: string;
   provinceId?: string;

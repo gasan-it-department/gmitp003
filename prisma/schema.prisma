@@ -2640,6 +2640,8 @@ model Patient {
   middlename    String?         @default("N/A")
   email         String?
   phoneNumber   String?
+  /// PhilHealth identification number — optional, free-form.
+  philHealthNo  String?
   barangay      Barangay?       @relation(fields: [barangayId], references: [id], onDelete: SetNull)
   barangayId    String?
   municipal     Municipal?      @relation(fields: [municipalId], references: [id], onDelete: SetNull)
