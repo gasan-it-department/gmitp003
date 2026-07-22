@@ -20,6 +20,7 @@ import {
 
 import {
   medicineStorage,
+  searchMedicineStock,
   addMedicineStorage,
   medicineList,
   addStorageMed,
@@ -55,6 +56,13 @@ export const medicine = (fastify: FastifyInstance) => {
     "/medicine/storage",
     { preHandler: authenticated },
     medicineStorage,
+  );
+  // Pharmacy Home search: any medicine-module user sees a medicine's stock
+  // per storage (each storage flagged accessible for the caller).
+  fastify.get(
+    "/medicine/search-stock",
+    { preHandler: authenticated },
+    searchMedicineStock,
   );
   fastify.get("/medicine/logs", { preHandler: authenticated }, medicineLogList);
   fastify.patch(

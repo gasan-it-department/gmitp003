@@ -631,6 +631,144 @@ export const medicineLogList = async (
 };
 
 /**
+ * GET /medicine/search-stock?id=<lineId>&query= — the Pharmacy Home search.
+ *
+ * ANY user holding the medicine module may search a medicine and see WHERE
+ * its stock sits: one row per medicine, its stock grouped per storage, each
+ * storage carrying an `accessible` flag — whether the CALLER holds Dispense
+ * & Stock Access there. Reading is open to the module; the flag is what the
+ * UI uses to show "view only" vs the edit affordances (the server still
+ * enforces every write regardless).
+ */
+export const searchMedicineStock = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as { id?: string; query?: string };
+  if (!params.id) throw new ValidationError("BAD_REQUEST");
+  const q = (params.query ?? "").trim();
+  if (!q) return res.code(200).send({ list: [] });
+
+  try {
+    const meds = await prisma.medicine.findMany({
+      where: {
+        lineId: params.id,
+        OR: [
+          { name: { contains: q, mode: "insensitive" } },
+          { serialNumber: { contains: q, mode: "insensitive" } },
+          { barcode: { contains: q, mode: "insensitive" } },
+        ],
+      },
+      take: 12,
+      orderBy: { name: "asc" },
+      select: {
+        id: true,
+        name: true,
+        serialNumber: true,
+        barcode: true,
+        MedicineStock: {
+          select: {
+            id: true,
+            actualStock: true,
+            quality: true,
+            perQuantity: true,
+            expiration: true,
+            medicineStorageId: true,
+            MedicineStorage: {
+              select: { id: true, name: true, refNumber: true },
+            },
+          },
+        },
+      },
+    });
+
+    // Which of the involved storages can the CALLER write in?
+    const accountId = (req.user as { id?: string } | undefined)?.id;
+    const account = accountId
+      ? await prisma.account.findUnique({
+          where: { id: accountId },
+          select: { User: { select: { id: true } } },
+        })
+      : null;
+    const callerUserId = account?.User?.id ?? null;
+    const storageIds = [
+      ...new Set(
+        meds.flatMap((m) =>
+          m.MedicineStock.map((s) => s.medicineStorageId).filter(Boolean),
+        ),
+      ),
+    ] as string[];
+    const grants = callerUserId
+      ? await prisma.medicineStorageAccess.findMany({
+          where: {
+            userId: callerUserId,
+            medicineStorageId: { in: storageIds },
+          },
+          select: { medicineStorageId: true },
+        })
+      : [];
+    const canWrite = new Set(grants.map((g) => g.medicineStorageId));
+
+    const list = meds.map((m) => {
+      const perStorage = new Map<
+        string,
+        {
+          id: string;
+          name: string | null;
+          refNumber: string | null;
+          onHand: number;
+          batches: number;
+          nearestExpiration: Date | null;
+          accessible: boolean;
+        }
+      >();
+      let totalOnHand = 0;
+      for (const s of m.MedicineStock) {
+        totalOnHand += s.actualStock ?? 0;
+        const st = s.MedicineStorage;
+        if (!st) continue;
+        const row = perStorage.get(st.id) ?? {
+          id: st.id,
+          name: st.name ?? null,
+          refNumber: st.refNumber ?? null,
+          onHand: 0,
+          batches: 0,
+          nearestExpiration: null as Date | null,
+          accessible: canWrite.has(st.id),
+        };
+        row.onHand += s.actualStock ?? 0;
+        row.batches += 1;
+        if (
+          s.expiration &&
+          (s.actualStock ?? 0) > 0 &&
+          (!row.nearestExpiration || s.expiration < row.nearestExpiration)
+        ) {
+          row.nearestExpiration = s.expiration;
+        }
+        perStorage.set(st.id, row);
+      }
+      return {
+        id: m.id,
+        name: m.name,
+        serialNumber: m.serialNumber,
+        barcode: m.barcode,
+        totalOnHand,
+        storages: [...perStorage.values()].sort(
+          (a, b) => b.onHand - a.onHand,
+        ),
+      };
+    });
+
+    return res.code(200).send({ list });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw dbError(error);
+    }
+    throw error;
+  }
+};
+
+/**
  * List medicines that have stock in the given storage.
  *
  * Returns one row per Medicine (NOT per MedicineStock). Each row includes the
