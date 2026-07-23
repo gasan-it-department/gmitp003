@@ -1961,9 +1961,83 @@ const expirationWhere = (
 };
 
 /**
+ * Collapse stock rows into ONE line per FULL batch identity:
+ * (medicine, storage, unit of measure, per-unit quantity, expiration
+ * day, manufacturing day). Rows are merged ONLY when every one of those
+ * matches — batches that differ on ANY of them stay separate lines.
+ * This mirrors exactly the restock-merge rule; it exists as a display
+ * safety net for identical rows the data healer hasn't merged yet.
+ */
+const groupExpirationRows = <
+  T extends {
+    id: string;
+    medicineId: string | null;
+    medicineStorageId: string | null;
+    quality: string;
+    perQuantity: number;
+    actualStock: number;
+    quantity: number;
+    expiration: Date | null;
+    manufacturingDate: Date | null;
+    addressRoom: string | null;
+    addressSec: string | null;
+    addressRow: string | null;
+    addressCol: string | null;
+    container: string | null;
+  },
+>(
+  rows: T[],
+) => {
+  const bucket = (d: Date | null) =>
+    d ? Math.round(d.getTime() / 86_400_000) : -1;
+  const addrOf = (x: T) =>
+    [x.addressRoom, x.addressSec, x.addressRow, x.addressCol, x.container].join(
+      "|",
+    );
+  const groups = new Map<
+    string,
+    {
+      first: T;
+      units: number;
+      qty: number;
+      batchCount: number;
+      addrAgree: boolean;
+    }
+  >();
+  for (const r of rows) {
+    // FULL identity key — merging happens only on an exact batch match.
+    const k = [
+      r.medicineId ?? "-",
+      r.medicineStorageId ?? "-",
+      r.quality,
+      r.perQuantity,
+      bucket(r.expiration),
+      bucket(r.manufacturingDate),
+    ].join("|");
+    const g = groups.get(k);
+    if (!g) {
+      groups.set(k, {
+        first: r,
+        units: r.actualStock,
+        qty: r.quantity,
+        batchCount: 1,
+        addrAgree: true,
+      });
+    } else {
+      g.units += r.actualStock;
+      g.qty += r.quantity;
+      g.batchCount += 1;
+      if (addrOf(r) !== addrOf(g.first)) g.addrAgree = false;
+    }
+  }
+  return [...groups.values()];
+};
+
+/**
  * Paginated list of stock batches that are either expiring within 6
  * months ("soon") or already expired ("expired"), ordered by closest
- * expiration first.
+ * expiration first. Lines are GROUPED per (medicine, storage, unit,
+ * expiry day) — see groupExpirationRows.
  */
 export const expirationList = async (
   req: FastifyRequest,
@@ -1979,64 +2053,67 @@ export const expirationList = async (
   if (!params.lineId) throw new ValidationError("INVALID REQUIRED ID");
   const mode: ExpirationMode = params.mode === "expired" ? "expired" : "soon";
   const limit = params.limit ? parseInt(params.limit, 10) : 20;
-  const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
 
   try {
     const where = expirationWhere(params.lineId, mode, params.query);
-    const [rows, totalAgg, qualityRows] = await Promise.all([
-      prisma.medicineStock.findMany({
-        where,
-        take: limit,
-        skip: cursor ? 1 : 0,
-        cursor,
-        orderBy: { expiration: mode === "soon" ? "asc" : "desc" },
-        include: {
-          medicine: { select: { id: true, name: true, serialNumber: true } },
-          MedicineStorage: {
-            select: { id: true, name: true, refNumber: true },
-          },
+    // Pull the full (bounded) window and group — pagination and the header
+    // totals both describe the GROUPED lines, not internal batch rows.
+    const rows = await prisma.medicineStock.findMany({
+      where,
+      take: 1000,
+      orderBy: { expiration: mode === "soon" ? "asc" : "desc" },
+      include: {
+        medicine: { select: { id: true, name: true, serialNumber: true } },
+        MedicineStorage: {
+          select: { id: true, name: true, refNumber: true },
         },
-      }),
-      prisma.medicineStock.aggregate({
-        where,
-        _sum: { actualStock: true },
-        _count: { _all: true },
-      }),
-      prisma.medicineStock.groupBy({
-        by: ["quality"],
-        where,
-        _sum: { actualStock: true },
-        _count: { _all: true },
-      }),
-    ]);
+      },
+    });
 
     const now = new Date();
-    const list = rows.map((r) => {
-      const exp = r.expiration ? new Date(r.expiration) : null;
+    const grouped = groupExpirationRows(rows).map((g) => {
+      const exp = g.first.expiration ? new Date(g.first.expiration) : null;
       const daysToExpire = exp
         ? Math.ceil((exp.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
         : null;
-      return { ...r, daysToExpire };
+      return {
+        ...g.first,
+        actualStock: g.units,
+        quantity: g.qty,
+        batchCount: g.batchCount,
+        daysToExpire,
+      };
     });
 
+    const byQuality = new Map<string, { batches: number; units: number }>();
+    for (const g of grouped) {
+      const q = byQuality.get(g.quality) ?? { batches: 0, units: 0 };
+      q.batches += 1;
+      q.units += g.actualStock;
+      byQuality.set(g.quality, q);
+    }
     const summary = {
-      totalBatches: totalAgg._count._all,
-      totalUnits: totalAgg._sum.actualStock ?? 0,
-      byQuality: qualityRows
-        .filter((q) => (q._sum.actualStock ?? 0) > 0)
-        .map((q) => ({
-          quality: q.quality,
-          batches: q._count._all,
-          units: q._sum.actualStock ?? 0,
+      totalBatches: grouped.length,
+      totalUnits: grouped.reduce((s, g) => s + g.actualStock, 0),
+      byQuality: [...byQuality.entries()]
+        .filter(([, v]) => v.units > 0)
+        .map(([quality, v]) => ({
+          quality,
+          batches: v.batches,
+          units: v.units,
         }))
         .sort((a, b) => b.units - a.units),
     };
 
-    const lastCursor = list.length > 0 ? list[list.length - 1].id : null;
-    const hasMore = list.length === limit;
+    const start = params.lastCursor
+      ? grouped.findIndex((g) => g.id === params.lastCursor) + 1
+      : 0;
+    const page = grouped.slice(start, start + limit);
+    const lastCursor = page.length > 0 ? page[page.length - 1].id : null;
+    const hasMore = start + page.length < grouped.length;
     return res
       .code(200)
-      .send({ list, lastCursor, hasMore, mode, summary });
+      .send({ list: page, lastCursor, hasMore, mode, summary });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw dbError(error);
@@ -2146,7 +2223,10 @@ export const exportExpirationList = async (
     const fmtDate = (d: Date | null) =>
       d ? d.toISOString().slice(0, 10) : "—";
 
-    rows.forEach((s, i) => {
+    // Same grouping as the on-screen list: one line per
+    // (medicine, storage, unit, expiry day), units summed.
+    groupExpirationRows(rows).forEach((g, i) => {
+      const s = g.first;
       const exp = s.expiration ? new Date(s.expiration) : null;
       const days = exp
         ? Math.ceil((exp.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
@@ -2161,11 +2241,11 @@ export const exportExpirationList = async (
         s.medicine?.name ?? "—",
         s.MedicineStorage?.name ?? "—",
         s.quality ?? "—",
-        s.actualStock,
+        g.units,
         fmtDate(s.manufacturingDate ? new Date(s.manufacturingDate) : null),
         fmtDate(exp),
         days ?? "—",
-        address || (s.container ?? "—"),
+        g.addrAgree ? address || (s.container ?? "—") : "— (mixed)",
       ]);
       row.font = { name: "Arial", size: 10 };
       row.alignment = { vertical: "middle" };
