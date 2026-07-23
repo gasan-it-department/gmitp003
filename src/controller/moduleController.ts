@@ -170,6 +170,25 @@ export const addModuleAccess = async (
 
       if (!user) throw new ValidationError("USER NOT FOUND!");
 
+      // Double-key verification: the client sends BOTH the id and the
+      // username of the row the admin clicked. If they don't belong to the
+      // same account, something served a stale/mismatched list — refuse
+      // loudly instead of granting anyone anything, and log the forensics.
+      const expected = (body as { username?: string }).username?.trim();
+      if (expected && user.username && user.username !== expected) {
+        console.error(
+          "[addModuleAccess] ID/USERNAME MISMATCH — id",
+          body.userId,
+          "resolves to @" + user.username,
+          "but the client selected @" + expected,
+        );
+        throw new ValidationError(
+          `Refused: the selected row points at @${user.username}, not @${expected}. ` +
+            "The user list was out of date — refresh the page and try again. " +
+            "No access was granted to anyone.",
+        );
+      }
+
       // Tripwire: the grant must happen inside the line HR is working in.
       // If the id the client sent resolves to a user of a DIFFERENT line,
       // fail loudly with the account name instead of silently granting a

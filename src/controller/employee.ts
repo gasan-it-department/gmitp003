@@ -264,6 +264,7 @@ export const employees = async (req: FastifyRequest, res: FastifyReply) => {
         suffix: true,
         username: true,
         email: true,
+        emailIv: true,
         birthDate: true,
         PositionSlot: {
           select: {
@@ -292,9 +293,29 @@ export const employees = async (req: FastifyRequest, res: FastifyReply) => {
       response.length > 0 ? response[response.length - 1].id : null;
     const hasMore = response.length === limit;
 
+    // Emails are stored ENCRYPTED — decrypt for display (the list used to
+    // render raw ciphertext hex, which read like a meaningless id). A row
+    // that can't decrypt (legacy plaintext or missing iv) falls back sanely.
+    const list = await Promise.all(
+      response.map(async (u) => {
+        let email: string | null = u.email ?? null;
+        if (u.email && u.emailIv) {
+          try {
+            email = await EncryptionService.decrypt(u.email, u.emailIv);
+          } catch {
+            email = null; // undecryptable — hide rather than show garbage
+          }
+        } else if (u.email && /^[0-9a-f]{32,}$/i.test(u.email)) {
+          email = null; // ciphertext without iv — never show the hex
+        }
+        const { emailIv: _iv, ...rest } = u;
+        return { ...rest, email };
+      }),
+    );
+
     return res
       .code(200)
-      .send({ list: response, lastCursor: newLastCursorId, hasMore });
+      .send({ list, lastCursor: newLastCursorId, hasMore });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DATABASE_CONNECTION_ERROR", 500, "DB_FAILED");
