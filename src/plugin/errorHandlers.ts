@@ -9,6 +9,27 @@ const errorHandlerPlugin: FastifyPluginAsync = async (
   fastify: FastifyInstance
 ) => {
   fastify.setErrorHandler((error: FastifyError | AppError, request, reply) => {
+    // The app boots WITHOUT a Fastify logger, so fastify.log.error was a
+    // silent sink — prod 500s left zero trace. Log unexpected errors for
+    // real, with the route and a compact body, so the platform logs name
+    // the culprit instead of a bare status code.
+    const status =
+      error instanceof AppError
+        ? error.statusCode
+        : ((error as FastifyError).statusCode ?? 500);
+    if (!status || status >= 500) {
+      let bodyPreview = "";
+      try {
+        bodyPreview = JSON.stringify(request.body).slice(0, 600);
+      } catch {
+        /* body not serializable */
+      }
+      console.error(
+        `[500] ${request.method} ${request.url} — ${error.message}\n` +
+          (error.stack ?? "") +
+          (bodyPreview ? `\n[500] body: ${bodyPreview}` : ""),
+      );
+    }
     fastify.log.error(error);
 
     // Handle specific error types
@@ -42,11 +63,13 @@ const errorHandlerPlugin: FastifyPluginAsync = async (
       });
     }
 
-    // Default error handler
+    // Default error handler — pass the real message through so field
+    // reports (mobile queue rows, toasts) say what actually failed
+    // instead of a generic "Something went wrong".
     reply.status(500).send({
       statusCode: 500,
       error: "InternalServerError",
-      message: "Something went wrong",
+      message: error.message || "Something went wrong",
     });
   });
 };

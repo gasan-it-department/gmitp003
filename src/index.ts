@@ -63,6 +63,18 @@ import errorHandlerPlugin from "./plugin/errorHandlers";
 //
 import { EncryptionService } from "./service/encryption";
 import { testGemini } from "./utils/gemini";
+// ── Last-line crash guards ──────────────────────────────────────────────
+// Without these, ONE leaked promise rejection anywhere kills the whole
+// process (Node's default), severing every in-flight request — mobile
+// uploads then surface as bare "Network Error" with nothing in the logs.
+// Log loudly with the stack, keep serving.
+process.on("unhandledRejection", (reason) => {
+  console.error("[unhandledRejection]", (reason as any)?.stack ?? reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[uncaughtException]", err?.stack ?? err);
+});
+
 // Allow large archive uploads. PostgreSQL bytea tops out at ~1GB. The body
 // limit covers multipart framing; the connection/keepalive timeouts are
 // bumped so a slow client uploading hundreds of MB doesn't get cut off.
