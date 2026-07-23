@@ -158,7 +158,7 @@ export const addModuleAccess = async (
   try {
     const response = await prisma.$transaction(async (tx) => {
       // Get user details
-      const user = await tx.user.findUnique({
+      let user = await tx.user.findUnique({
         where: {
           id: body.userId,
         },
@@ -168,26 +168,55 @@ export const addModuleAccess = async (
         },
       });
 
-      if (!user) throw new ValidationError("USER NOT FOUND!");
-
-      // Double-key verification: the client sends BOTH the id and the
-      // username of the row the admin clicked. If they don't belong to the
-      // same account, something served a stale/mismatched list — refuse
-      // loudly instead of granting anyone anything, and log the forensics.
+      // The admin's intent is the @USERNAME shown on the row and on the
+      // confirm button — the id is just plumbing that can go stale (cached
+      // lists, re-registered accounts). If the id is missing or points at a
+      // DIFFERENT username than the one the admin verified on screen,
+      // resolve the grantee BY USERNAME within the line and grant that
+      // person. Only refuse when the username itself can't be resolved.
       const expected = (body as { username?: string }).username?.trim();
-      if (expected && user.username && user.username !== expected) {
-        console.error(
-          "[addModuleAccess] ID/USERNAME MISMATCH — id",
-          body.userId,
-          "resolves to @" + user.username,
-          "but the client selected @" + expected,
-        );
-        throw new ValidationError(
-          `Refused: the selected row points at @${user.username}, not @${expected}. ` +
-            "The user list was out of date — refresh the page and try again. " +
-            "No access was granted to anyone.",
-        );
+      if (expected && (!user || (user.username && user.username !== expected))) {
+        const staleResolved = user?.username ?? null;
+        const candidates = await tx.user.findMany({
+          where: {
+            username: expected,
+            ...(body.lineId ? { lineId: body.lineId } : {}),
+          },
+          include: {
+            Position: true,
+            department: true,
+          },
+          orderBy: { createdAt: "desc" },
+        });
+        // Prefer the row wired to a real login account (duplicate rows can
+        // exist from failed-registration retries — grant the live one).
+        const withAccount = candidates.filter((c) => c.accountId);
+        const resolved = (withAccount.length ? withAccount : candidates)[0];
+        if (resolved) {
+          console.error(
+            `[addModuleAccess] STALE ID AUTO-CORRECT — requested id ${body.userId}` +
+              (staleResolved
+                ? ` resolves to @${staleResolved}`
+                : " matches no user") +
+              ` but the admin selected @${expected};` +
+              ` granting to @${expected} (id ${resolved.id})` +
+              (candidates.length > 1
+                ? ` [${candidates.length} rows share this username — picked the one with an active account]`
+                : ""),
+          );
+          user = resolved;
+        } else {
+          throw new ValidationError(
+            `Cannot grant: no account @${expected} exists in this line` +
+              (staleResolved
+                ? ` (the clicked row's id belongs to @${staleResolved})`
+                : "") +
+              ". Refresh the page and try again — no access was granted.",
+          );
+        }
       }
+
+      if (!user) throw new ValidationError("USER NOT FOUND!");
 
       // Tripwire: the grant must happen inside the line HR is working in.
       // If the id the client sent resolves to a user of a DIFFERENT line,
