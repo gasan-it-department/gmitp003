@@ -2278,7 +2278,9 @@ model Medicine {
   serialNumber             String
   /// Scanned barcode (EAN/UPC/CODE128/QR). Optional — older rows
   /// captured before the mobile scanner existed won't have one.
-  barcode                  String?                   @unique
+  /// UNIQUE PER LINE (not globally): real product barcodes are identical
+  /// nationwide, so two lines must each be able to register the same EAN.
+  barcode                  String?
   name                     String
   desc                     String?                   @default("None")
   phase                    Int                       @default(0)
@@ -2291,6 +2293,8 @@ model Medicine {
   MedicineTrack            MedicineTrack[]
   PrecribeMedicine         PrecribeMedicine[]
   medicineTransactionItems MedicineTransactionItem[]
+
+  @@unique([lineId, barcode])
 }
 
 model MedicineTransaction {

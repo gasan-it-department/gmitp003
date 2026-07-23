@@ -312,25 +312,35 @@ export const attachMedicineBarcode = async (
       }
     }
 
-    const holder = await prisma.medicine.findUnique({
-      where: { barcode },
-      select: { id: true, name: true, serialNumber: true },
+    const med = await prisma.medicine.findUnique({
+      where: { id: body.medicineId },
+      select: {
+        id: true,
+        name: true,
+        serialNumber: true,
+        phase: true,
+        barcode: true,
+        lineId: true,
+      },
     });
-    if (holder && holder.id !== body.medicineId) {
+    if (!med) throw new NotFoundError("Medicine not found");
+    if (med.phase === -1)
+      throw new ValidationError("This medicine has been removed.");
+
+    // Barcode uniqueness is PER LINE — another line owning the same EAN is
+    // fine (identical products nationwide); only a conflict INSIDE this
+    // medicine's line blocks the registration.
+    const holder = await prisma.medicine.findFirst({
+      where: { lineId: med.lineId, barcode, NOT: { id: med.id } },
+      select: { id: true, name: true },
+    });
+    if (holder) {
       return res.code(409).send({
         message: `Barcode already registered to ${holder.name}`,
         existingMedicineId: holder.id,
         existingName: holder.name,
       });
     }
-
-    const med = await prisma.medicine.findUnique({
-      where: { id: body.medicineId },
-      select: { id: true, name: true, serialNumber: true, phase: true, barcode: true },
-    });
-    if (!med) throw new NotFoundError("Medicine not found");
-    if (med.phase === -1)
-      throw new ValidationError("This medicine has been removed.");
 
     const updated = await prisma.medicine.update({
       where: { id: body.medicineId },
@@ -383,7 +393,7 @@ export const attachMedicineBarcode = async (
     if (error instanceof NotFoundError) throw error;
     if (error instanceof ValidationError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -538,8 +548,9 @@ export const addStorageMed = async (req: FastifyRequest, res: FastifyReply) => {
       // the legacy name-based dedupe used by the web Add Medicine flow.
       let med = null as Awaited<ReturnType<typeof tx.medicine.findFirst>>;
       if (body.barcode && body.barcode.trim()) {
+        // Line-scoped: another line owning this barcode is NOT a duplicate.
         med = await tx.medicine.findFirst({
-          where: { barcode: body.barcode.trim() },
+          where: { barcode: body.barcode.trim(), lineId: body.lineId },
         });
       }
       if (!med) {
@@ -2435,7 +2446,10 @@ export const recordMedicineScan = async (
     });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      // Surface the REAL cause (e.g. "That barcode already exists") — the
+      // old blanket DB_CONNECTION_FAILED masked every constraint error as
+      // a 500 and left the mobile queue undebuggable.
+      throw dbError(error);
     }
     throw error;
   }
