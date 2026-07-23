@@ -1961,12 +1961,12 @@ const expirationWhere = (
 };
 
 /**
- * Collapse stock rows into ONE line per FULL batch identity:
- * (medicine, storage, unit of measure, per-unit quantity, expiration
- * day, manufacturing day). Rows are merged ONLY when every one of those
- * matches — batches that differ on ANY of them stay separate lines.
- * This mirrors exactly the restock-merge rule; it exists as a display
- * safety net for identical rows the data healer hasn't merged yet.
+ * The expiry report answers ONE question: what expires when, and how
+ * much. So it shows ONE line per (medicine, storage, unit of measure,
+ * expiration day, manufacturing day) with the units SUMMED — internal
+ * batch rows that differ only in per-unit packing are a stockroom
+ * detail, not a reason for a second line on this screen. When the
+ * packing is uniform the line shows it (× N); when mixed it shows —.
  */
 const groupExpirationRows = <
   T extends {
@@ -2002,15 +2002,14 @@ const groupExpirationRows = <
       qty: number;
       batchCount: number;
       addrAgree: boolean;
+      perAgree: boolean;
     }
   >();
   for (const r of rows) {
-    // FULL identity key — merging happens only on an exact batch match.
     const k = [
       r.medicineId ?? "-",
       r.medicineStorageId ?? "-",
       r.quality,
-      r.perQuantity,
       bucket(r.expiration),
       bucket(r.manufacturingDate),
     ].join("|");
@@ -2022,12 +2021,14 @@ const groupExpirationRows = <
         qty: r.quantity,
         batchCount: 1,
         addrAgree: true,
+        perAgree: true,
       });
     } else {
       g.units += r.actualStock;
       g.qty += r.quantity;
       g.batchCount += 1;
       if (addrOf(r) !== addrOf(g.first)) g.addrAgree = false;
+      if (r.perQuantity !== g.first.perQuantity) g.perAgree = false;
     }
   }
   return [...groups.values()];
@@ -2081,6 +2082,8 @@ export const expirationList = async (
         actualStock: g.units,
         quantity: g.qty,
         batchCount: g.batchCount,
+        // Uniform packing → show it; mixed packing → null (renders "—").
+        perQuantity: g.perAgree ? g.first.perQuantity : null,
         daysToExpire,
       };
     });
