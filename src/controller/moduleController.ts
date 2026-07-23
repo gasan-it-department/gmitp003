@@ -315,6 +315,15 @@ System Administrator
       firstName: response.user.firstName,
       lastName: response.user.lastName,
     };
+    // Forensic trail for EVERY grant call — if a wrong-user report ever
+    // comes in again, the Railway logs show exactly what the client sent
+    // and who it resolved to, no guesswork.
+    console.log(
+      `[addModuleAccess] module=${body.module} requestedId=${body.userId}` +
+        ` expected=@${(body as { username?: string }).username ?? "-"}` +
+        ` resolved=@${grantee.username ?? grantee.id}` +
+        ` outcome=${response.outcome} by=${body.currUserId}`,
+    );
     return res.status(200).send({
       success: true,
       alreadyHad: response.outcome === "EXISTS",
