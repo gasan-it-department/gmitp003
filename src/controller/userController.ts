@@ -1,6 +1,6 @@
 import { prisma, Prisma } from "../barrel/prisma";
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
-import { AppError, NotFoundError, ValidationError } from "../errors/errors";
+import { AppError, NotFoundError, ValidationError, dbError } from "../errors/errors";
 import { PagingProps } from "../models/route";
 
 export const users = async (req: FastifyRequest, res: FastifyReply) => {

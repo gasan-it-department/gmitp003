@@ -1,6 +1,6 @@
 import { FastifyRequest, FastifyReply } from "../barrel/fastify";
 import { Prisma, prisma } from "../barrel/prisma";
-import { AppError, NotFoundError, ValidationError } from "../errors/errors";
+import { AppError, NotFoundError, ValidationError, dbError } from "../errors/errors";
 import { generatePrescriptionRef } from "../middleware/handler";
 import { checkAndNotifyLowStock } from "../service/medicineAlerts";
 import { createUserNotification } from "../service/notificationEvents";

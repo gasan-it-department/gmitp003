@@ -1,7 +1,7 @@
 import path from "path";
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
 import { prisma, InvitationLink, Prisma } from "../barrel/prisma";
-import { AppError, NotFoundError, ValidationError } from "../errors/errors";
+import { AppError, NotFoundError, ValidationError, dbError } from "../errors/errors";
 import {
   generatedInvitationCode,
   phNumberFormat,

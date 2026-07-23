@@ -252,6 +252,12 @@ app.get("/test/ai", async (request: FastifyRequest, reply: FastifyReply) => {
   return { status: "ok" };
 });
 
+// Public build marker — lets anyone (including the assistant) CONFIRM which
+// build is actually serving, instead of trusting deploy timers. Bump the
+// tag with each meaningful deploy.
+const BUILD_TAG = "2026-07-23-expiry-group-v2";
+app.get("/health/build", async () => ({ status: "ok", build: BUILD_TAG }));
+
 app.listen({ port: 3000, host: "0.0.0.0" }, (err, address) => {
   if (err) {
     console.error(err);

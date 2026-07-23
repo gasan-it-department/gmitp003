@@ -15,7 +15,7 @@ import {
   generateOrderRef,
   generateDispenseRef,
 } from "../middleware/handler";
-import { AppError, NotFoundError, ValidationError } from "../errors/errors";
+import { AppError, NotFoundError, ValidationError, dbError } from "../errors/errors";
 import { getPriceTotal } from "../utils/date";
 export const addSupply = async (req: FastifyRequest, res: FastifyReply) => {
   try {
