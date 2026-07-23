@@ -1399,8 +1399,10 @@ export const positionRegister = async (
           where: { id: body.applicationId },
           data: { userId: user.id },
         });
-        await tx.fillPositionInvitation.update({
-          where: { id: body.linkId },
+        // ATOMIC single-use claim: only succeeds if the link is still
+        // unused — two simultaneous submits can never both register.
+        const claimedInv = await tx.fillPositionInvitation.updateMany({
+          where: { id: body.linkId, concluded: false },
           data: {
             concluded: true,
             concludedAt: new Date(),
@@ -1408,6 +1410,10 @@ export const positionRegister = async (
             step: 1,
           },
         });
+        if (claimedInv.count === 0)
+          throw new ValidationError(
+            "This invitation link has already been used.",
+          );
         const provName = [application.firstname, application.lastname]
           .filter(Boolean)
           .join(" ")
@@ -1527,8 +1533,10 @@ export const positionRegister = async (
       });
 
       // Burn the one-time link so it can't be reused after registration.
-      await tx.fillPositionInvitation.update({
-        where: { id: body.linkId },
+      // ATOMIC: the claim only succeeds if the link is still unused, so two
+      // simultaneous submits can never both register.
+      const claimedInv = await tx.fillPositionInvitation.updateMany({
+        where: { id: body.linkId, concluded: false },
         data: {
           concluded: true,
           concludedAt: new Date(),
@@ -1536,6 +1544,10 @@ export const positionRegister = async (
           step: 1,
         },
       });
+      if (claimedInv.count === 0)
+        throw new ValidationError(
+          "This invitation link has already been used.",
+        );
       return true;
     });
 
@@ -1833,8 +1845,10 @@ export const positionQuickRegister = async (
         effectiveSalaryGradeId,
       );
 
-      await tx.fillPositionInvitation.update({
-        where: { id: f.linkId },
+      // ATOMIC single-use claim: only succeeds if the link is still unused —
+      // two simultaneous quick-register submits can never both register.
+      const claimedInv = await tx.fillPositionInvitation.updateMany({
+        where: { id: f.linkId, concluded: false },
         data: {
           concluded: true,
           concludedAt: new Date(),
@@ -1842,6 +1856,10 @@ export const positionQuickRegister = async (
           step: 1,
         },
       });
+      if (claimedInv.count === 0)
+        throw new ValidationError(
+          "This invitation link has already been used.",
+        );
 
       await createUserNotification(tx, {
         recipientId: user.id,
