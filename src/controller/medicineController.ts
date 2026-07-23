@@ -871,6 +871,123 @@ export const storageMeds = async (req: FastifyRequest, res: FastifyReply) => {
 };
 
 /**
+ * Batch dates arrive with CLIENT-DEPENDENT times of day: the web saves
+ * local midnight (+08 → 16:00Z of the previous day), the mobile saves UTC
+ * midnight, the desktop various. Same calendar date, different instants —
+ * which used to split ONE real batch into multiple rows because the
+ * restock dedupe compares exact timestamps. Normalize to the NEAREST UTC
+ * day boundary so one calendar date is one instant.
+ */
+const normalizeBatchDay = (d: Date) =>
+  new Date(Math.round(d.getTime() / 86_400_000) * 86_400_000);
+
+/** ±12h window around the normalized day — matches LEGACY rows stored
+ *  with any time-of-day for the same calendar date. */
+const batchDayWindow = (d: Date) => {
+  const mid = normalizeBatchDay(d).getTime();
+  return { gte: new Date(mid - 43_200_000), lt: new Date(mid + 43_200_000) };
+};
+
+/**
+ * Absorb duplicate rows of the SAME batch into `keep`: price history is
+ * repointed, the dupes' low-stock alerts dropped (stale state), and the
+ * rows deleted. Returns the quantity/items the caller must ADD onto the
+ * keeper. Caller guarantees all rows share the batch identity.
+ */
+const absorbDuplicateStocks = async (
+  tx: Prisma.TransactionClient,
+  keepId: string,
+  dupes: Array<{ id: string; quantity: number; actualStock: number }>,
+) => {
+  if (dupes.length === 0) return { addQty: 0, addItems: 0 };
+  const ids = dupes.map((d) => d.id);
+  await tx.medicineAlert.deleteMany({
+    where: { medicineStockId: { in: ids } },
+  });
+  await tx.medicinePriceTrack.updateMany({
+    where: { medicineStockId: { in: ids } },
+    data: { medicineStockId: keepId },
+  });
+  await tx.medicineStock.deleteMany({ where: { id: { in: ids } } });
+  return {
+    addQty: dupes.reduce((s, d) => s + d.quantity, 0),
+    addItems: dupes.reduce((s, d) => s + d.actualStock, 0),
+  };
+};
+
+/**
+ * One-shot healer, run at boot: find batches split across multiple rows
+ * (same medicine, storage, UoM, per-unit, and same nearest-day expiration
+ * + manufacturing date) and merge each group into its oldest row. Fixes
+ * the historical rows created before dates were normalized.
+ */
+export const consolidateSplitBatches = async (): Promise<number> => {
+  const all = await prisma.medicineStock.findMany({
+    select: {
+      id: true,
+      medicineId: true,
+      medicineStorageId: true,
+      quality: true,
+      perQuantity: true,
+      expiration: true,
+      manufacturingDate: true,
+      quantity: true,
+      actualStock: true,
+      timestamp: true,
+    },
+  });
+  const dayBucket = (d: Date | null) =>
+    d ? Math.round(d.getTime() / 86_400_000) : "x";
+  const groups = new Map<string, typeof all>();
+  for (const r of all) {
+    if (!r.medicineId || !r.medicineStorageId) continue;
+    const k = [
+      r.medicineId,
+      r.medicineStorageId,
+      r.quality,
+      r.perQuantity,
+      dayBucket(r.expiration),
+      dayBucket(r.manufacturingDate),
+    ].join("|");
+    const g = groups.get(k);
+    if (g) g.push(r);
+    else groups.set(k, [r]);
+  }
+  let merged = 0;
+  for (const rows of groups.values()) {
+    if (rows.length < 2) continue;
+    rows.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+    const keep = rows[0];
+    const dupes = rows.slice(1);
+    try {
+      await prisma.$transaction(async (tx) => {
+        const add = await absorbDuplicateStocks(tx, keep.id, dupes);
+        await tx.medicineStock.update({
+          where: { id: keep.id },
+          data: {
+            quantity: keep.quantity + add.addQty,
+            actualStock: keep.actualStock + add.addItems,
+            ...(keep.expiration
+              ? { expiration: normalizeBatchDay(keep.expiration) }
+              : {}),
+            ...(keep.manufacturingDate
+              ? { manufacturingDate: normalizeBatchDay(keep.manufacturingDate) }
+              : {}),
+          },
+        });
+      });
+      merged += dupes.length;
+      console.log(
+        `[consolidateSplitBatches] merged ${dupes.length} duplicate row(s) into stock ${keep.id}`,
+      );
+    } catch (e) {
+      console.warn("[consolidateSplitBatches] group skipped:", e);
+    }
+  }
+  return merged;
+};
+
+/**
  * Add (or restock) a medicine batch into a storage location.
  *
  * Business logic:
@@ -920,8 +1037,10 @@ export const addStorageMedInList = async (
     throw new ValidationError("Manufacturing and expiration dates are required.");
   }
 
-  const expiration = new Date(body.expiration);
-  const manufacturingDate = new Date(body.manufacturingDate);
+  // Normalized to the nearest UTC day — one calendar date, one instant,
+  // regardless of which client (web/mobile/desktop) sent it.
+  const expiration = normalizeBatchDay(new Date(body.expiration));
+  const manufacturingDate = normalizeBatchDay(new Date(body.manufacturingDate));
   if (!(expiration > manufacturingDate)) {
     throw new ValidationError("Expiration must be after manufacturing date.");
   }
@@ -972,17 +1091,24 @@ export const addStorageMedInList = async (
       if (!medicine) throw new NotFoundError("ITEM_NOT_FOUND");
       if (!storage) throw new NotFoundError("STORAGE_NOT_FOUND");
 
-      // Find an existing batch row that matches on all identity dimensions.
-      const existing = await tx.medicineStock.findFirst({
+      // Find EVERY batch row matching the identity — day-windowed, so
+      // legacy rows saved with a different time-of-day for the same
+      // calendar date still match. Extras get absorbed into the oldest.
+      const matches = await tx.medicineStock.findMany({
         where: {
           medicineId: body.medicineId,
           medicineStorageId: body.storageId,
-          expiration,
-          manufacturingDate,
+          expiration: batchDayWindow(expiration),
+          manufacturingDate: batchDayWindow(manufacturingDate),
           quality: body.unitOfMeasure,
           perQuantity: body.perUnit,
         },
+        orderBy: { timestamp: "asc" },
       });
+      const existing = matches[0] ?? null;
+      const absorbed = existing
+        ? await absorbDuplicateStocks(tx, existing.id, matches.slice(1))
+        : { addQty: 0, addItems: 0 };
 
       const totalItems = body.perUnit * body.quantity;
       let stockId: string;
@@ -998,8 +1124,8 @@ export const addStorageMedInList = async (
         const updated = await tx.medicineStock.update({
           where: { id: existing.id },
           data: {
-            actualStock: existing.actualStock + totalItems,
-            quantity: existing.quantity + body.quantity,
+            actualStock: existing.actualStock + absorbed.addItems + totalItems,
+            quantity: existing.quantity + absorbed.addQty + body.quantity,
             // Optional: only overwrite threshold/address when caller sent a value.
             threshold:
               body.thresHold !== undefined ? body.thresHold : existing.threshold,
@@ -2654,8 +2780,8 @@ export const bulkAddMedicineStock = async (
       continue;
     }
 
-    const expiration = new Date(op.expiration);
-    const manufacturingDate = new Date(op.manufacturingDate);
+    const expiration = normalizeBatchDay(new Date(op.expiration));
+    const manufacturingDate = normalizeBatchDay(new Date(op.manufacturingDate));
     if (!(expiration > manufacturingDate)) {
       results.push({
         clientOpId: op.clientOpId,
@@ -2690,16 +2816,22 @@ export const bulkAddMedicineStock = async (
         if (!medicine) throw new NotFoundError("ITEM_NOT_FOUND");
         if (!storage) throw new NotFoundError("STORAGE_NOT_FOUND");
 
-        const existing = await tx.medicineStock.findFirst({
+        // Day-windowed match + absorb — same merge rules as the web path.
+        const matches = await tx.medicineStock.findMany({
           where: {
             medicineId: op.medicineId,
             medicineStorageId: op.storageId,
-            expiration,
-            manufacturingDate,
+            expiration: batchDayWindow(expiration),
+            manufacturingDate: batchDayWindow(manufacturingDate),
             quality: op.unitOfMeasure,
             perQuantity: op.perUnit,
           },
+          orderBy: { timestamp: "asc" },
         });
+        const existing = matches[0] ?? null;
+        const absorbed = existing
+          ? await absorbDuplicateStocks(tx, existing.id, matches.slice(1))
+          : { addQty: 0, addItems: 0 };
 
         const totalItems = op.perUnit * op.quantity;
         let mode: "restock" | "new";
@@ -2711,8 +2843,8 @@ export const bulkAddMedicineStock = async (
           const updated = await tx.medicineStock.update({
             where: { id: existing.id },
             data: {
-              actualStock: existing.actualStock + totalItems,
-              quantity: existing.quantity + op.quantity,
+              actualStock: existing.actualStock + absorbed.addItems + totalItems,
+              quantity: existing.quantity + absorbed.addQty + op.quantity,
               threshold:
                 op.thresHold !== undefined ? op.thresHold : existing.threshold,
               ...(op.addressRoom ? { addressRoom: op.addressRoom } : {}),

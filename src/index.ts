@@ -258,5 +258,17 @@ app.listen({ port: 3000, host: "0.0.0.0" }, (err, address) => {
     process.exit(1);
   }
   console.log(`Server is running at ${address}`);
+
+  // One-shot data healer: merge stock batches that were split into
+  // multiple rows by client-dependent date times-of-day (web local
+  // midnight vs mobile UTC midnight). Best-effort, logged, non-blocking.
+  setTimeout(() => {
+    import("./controller/medicineController")
+      .then((m) => m.consolidateSplitBatches())
+      .then((n) => {
+        if (n) console.log(`[boot] consolidated ${n} split batch row(s)`);
+      })
+      .catch((e) => console.warn("[boot] batch consolidation failed:", e));
+  }, 5_000);
 });
 export { io };
