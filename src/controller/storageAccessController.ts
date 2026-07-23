@@ -97,11 +97,22 @@ export async function assertStorageAccess(
   if (!userId) return; // no identity on this call — token auth still applies
   const wanted = [...new Set(storageIds.filter(Boolean) as string[])];
   if (wanted.length === 0) return;
-  const grants = await prisma.medicineStorageAccess.findMany({
-    where: { userId, medicineStorageId: { in: wanted } },
-    select: { medicineStorageId: true },
-  });
-  const have = new Set(grants.map((g) => g.medicineStorageId));
+  const [grants, createdByMe] = await Promise.all([
+    prisma.medicineStorageAccess.findMany({
+      where: { userId, medicineStorageId: { in: wanted } },
+      select: { medicineStorageId: true },
+    }),
+    // The storage CREATOR is implicitly allowed in their own storage,
+    // alongside explicit Dispense & Stock Access grants.
+    prisma.medicineStorage.findMany({
+      where: { id: { in: wanted }, createdById: userId },
+      select: { id: true },
+    }),
+  ]);
+  const have = new Set([
+    ...grants.map((g) => g.medicineStorageId),
+    ...createdByMe.map((s) => s.id),
+  ]);
   const blocked = wanted.filter((id) => !have.has(id));
   if (blocked.length === 0) return;
   const names = await prisma.medicineStorage.findMany({

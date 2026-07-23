@@ -27,6 +27,7 @@ import {
   addStorageMed,
   medicineLogList,
   storageMeds,
+  setMedicineLowStockThreshold,
   addStorageMedInList,
   storageMedList,
   newPrescriptionCount,
@@ -91,6 +92,12 @@ export const medicine = (fastify: FastifyInstance) => {
 
   fastify.get("/medicine/items", { preHandler: authenticated }, storageMeds);
   fastify.get("/medicine/storage-item", storageMedList);
+  // ONE low-stock threshold per MEDICINE — alerts on the medicine TOTAL.
+  fastify.patch(
+    "/medicine/low-stock-threshold",
+    { preHandler: authenticated },
+    setMedicineLowStockThreshold,
+  );
 
   fastify.post("/add-medicine", { preHandler: authenticated }, addStorageMed);
   fastify.post(

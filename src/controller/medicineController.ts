@@ -108,6 +108,16 @@ export const addMedicineStorage = async (
   }
   try {
     const refNumber = await generateStorageRef();
+    // The CREATOR is implicitly allowed to stock/restock/dispense in their
+    // own storage — resolve them from the auth token (body.userId backup).
+    const accountId = (req.user as { id?: string } | undefined)?.id;
+    const authAccount = accountId
+      ? await prisma.account.findUnique({
+          where: { id: accountId },
+          select: { User: { select: { id: true } } },
+        })
+      : null;
+    const creatorId = authAccount?.User?.id ?? body.userId ?? null;
     await prisma.$transaction(async (tx) => {
       const storage = await prisma.medicineStorage.create({
         data: {
@@ -117,6 +127,7 @@ export const addMedicineStorage = async (
           departmentId: body.departmentId,
           refNumber: refNumber,
           timestamp: new Date().toISOString(),
+          createdById: creatorId,
         },
       });
       await tx.medicineLogs.create({
@@ -1285,6 +1296,73 @@ export const storageMedList = async (
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_ERROR", 500, "DB_FAILED");
+    }
+    throw error;
+  }
+};
+
+/**
+ * PATCH /medicine/low-stock-threshold — ONE threshold per MEDICINE.
+ * The low-stock alert fires when the medicine's TOTAL stock (all batches,
+ * all storages in the line) dips to or below this value. Re-evaluates
+ * immediately so setting a threshold above the current total notifies
+ * right away, and raising stock above it re-arms the alert.
+ */
+export const setMedicineLowStockThreshold = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as {
+    medicineId?: string;
+    threshold?: number;
+    lineId?: string;
+    userId?: string;
+  };
+  const threshold = Math.floor(Number(body.threshold));
+  if (!body.medicineId || !Number.isFinite(threshold) || threshold < 0) {
+    throw new ValidationError(
+      "A medicine id and a threshold of 0 or more are required.",
+    );
+  }
+  try {
+    const medicine = await prisma.$transaction(async (tx) => {
+      const med = await tx.medicine.update({
+        where: { id: body.medicineId },
+        data: { lowStockThreshold: threshold },
+        select: {
+          id: true,
+          name: true,
+          serialNumber: true,
+          lowStockThreshold: true,
+        },
+      });
+      // Re-evaluate against the current total right now.
+      const anyStock = await tx.medicineStock.findFirst({
+        where: { medicineId: med.id },
+        select: { id: true },
+      });
+      if (anyStock) {
+        await clearLowStockAlerts(tx, anyStock.id);
+        await checkAndNotifyLowStock(tx, anyStock.id);
+      }
+      if (body.userId) {
+        await tx.medicineLogs.create({
+          data: {
+            action: 2,
+            userId: body.userId,
+            lineId: body.lineId ?? null,
+            message:
+              `Set low-stock threshold of ${med.name} (${med.serialNumber}) ` +
+              `to ${threshold} (medicine-wide total)`,
+          },
+        });
+      }
+      return med;
+    });
+    return res.code(200).send({ message: "OK", medicine });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw dbError(error);
     }
     throw error;
   }

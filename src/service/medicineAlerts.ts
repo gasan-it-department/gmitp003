@@ -1,24 +1,38 @@
-// Low-stock alert helpers.
+// Low-stock alert helpers — MEDICINE-LEVEL.
 //
-// Business rules:
-//   * A stock row is "low" when threshold > 0 AND actualStock <= threshold.
-//   * We don't spam notifications: an active MedicineAlert (type=1) means
-//     the row is in a known low-stock state. We only emit a new notification
-//     when transitioning INTO that state.
-//   * When a row crosses back over its threshold (e.g. after restock), we
-//     clear its active alerts so the next dip will notify again.
-//   * Notifications fan out to every user with MedicineStorageAccess on the
-//     affected storage so the responsible humans actually see it.
+// Business rules (one threshold per MEDICINE, not per batch):
+//   * A medicine is "low" when Medicine.lowStockThreshold > 0 AND the SUM
+//     of actualStock across EVERY batch row of that medicine in the line
+//     is <= that threshold.
+//   * We don't spam: an active medicine-level MedicineAlert (type=1,
+//     medicineId set) means the low state is already known. We only emit
+//     when transitioning INTO the state.
+//   * When the total rises back above the threshold (restock), the
+//     medicine's alerts are cleared so the next dip notifies again.
+//   * Notifications fan out to storage-access holders + every Pharmacy
+//     module user in the line.
+//
+// Both helpers keep their historical (tx, stockId) signatures — every
+// stock mutation site calls them with the touched batch row, and the
+// helpers resolve the medicine from it.
 
 import type { Prisma } from "../barrel/prisma";
 
 type Tx = Prisma.TransactionClient;
 
+/** SUM of actualStock across every batch row of the medicine (line-wide). */
+async function medicineTotal(tx: Tx, medicineId: string): Promise<number> {
+  const agg = await tx.medicineStock.aggregate({
+    where: { medicineId },
+    _sum: { actualStock: true },
+  });
+  return agg._sum.actualStock ?? 0;
+}
+
 /**
- * After a stock row has been mutated, check whether it crossed into
- * low-stock state. If so, create one MedicineNotification per user with
- * access to the storage + a single MedicineAlert sentinel so we don't
- * fire again for the same dip.
+ * After a stock row has been mutated, check whether its MEDICINE crossed
+ * into low-stock state (total <= Medicine.lowStockThreshold). If so,
+ * notify once and plant a medicine-level sentinel alert.
  */
 export async function checkAndNotifyLowStock(
   tx: Tx,
@@ -27,29 +41,39 @@ export async function checkAndNotifyLowStock(
   const stock = await tx.medicineStock.findUnique({
     where: { id: stockId },
     include: {
-      medicine: { select: { id: true, name: true, serialNumber: true } },
+      medicine: {
+        select: {
+          id: true,
+          name: true,
+          serialNumber: true,
+          lowStockThreshold: true,
+        },
+      },
       MedicineStorage: {
         select: { id: true, name: true, refNumber: true, lineId: true },
       },
     },
   });
-  if (!stock) return null;
-  if (!stock.MedicineStorage) return null;
-  if (stock.threshold <= 0) return null;
-  if (stock.actualStock > stock.threshold) return null;
+  if (!stock || !stock.medicine || !stock.MedicineStorage) return null;
+  const threshold = stock.medicine.lowStockThreshold;
+  if (threshold <= 0) return null;
 
-  // Already in a known low-stock state? Skip — alert was emitted earlier.
+  const total = await medicineTotal(tx, stock.medicine.id);
+  if (total > threshold) return null;
+
+  // Already in a known low state for this MEDICINE? Skip.
   const existing = await tx.medicineAlert.findFirst({
-    where: { medicineStockId: stock.id, type: 1 },
+    where: { medicineId: stock.medicine.id, type: 1 },
     orderBy: { timestamp: "desc" },
   });
   if (existing) return null;
 
-  // Mark this transition with a sentinel alert.
+  // Sentinel — bound to the touched row (FK), keyed by the medicine.
   await tx.medicineAlert.create({
     data: {
       type: 1,
-      count: stock.actualStock,
+      count: total,
+      medicineId: stock.medicine.id,
       medicineStockId: stock.id,
       expiration: stock.expiration ?? null,
     },
@@ -57,19 +81,12 @@ export async function checkAndNotifyLowStock(
 
   const lineId = stock.MedicineStorage.lineId;
 
-  // Recipients: anyone with explicit access to this storage, PLUS every user
-  // who has the Medicine module in this line (the pharmacy staff). Storage
-  // access is effectively never granted, so without the module-user fallback
-  // the alert reached nobody.
   const [accessRows, moduleUsers] = await Promise.all([
     tx.medicineStorageAccess.findMany({
       where: { medicineStorageId: stock.MedicineStorage.id },
       select: { userId: true },
     }),
     tx.module.findMany({
-      // The Pharmacy (medicine inventory) module — its slug is "medicine".
-      // Exact-match so we don't also alert the prescriber ("prescribe-medicine")
-      // module. "Pharmacy" covers any rows stored by the panel title.
       where: {
         lineId,
         OR: [
@@ -89,16 +106,14 @@ export async function checkAndNotifyLowStock(
   ];
   if (recipientIds.length === 0) return { notified: 0 };
 
-  const isOut = stock.actualStock <= 0;
+  const isOut = total <= 0;
   const title = isOut ? "Out of stock" : "Low stock alert";
   const message =
-    `${stock.medicine?.name ?? "Medicine"} ` +
-    `(${stock.medicine?.serialNumber ?? "—"}) ` +
-    `is ${isOut ? "out of stock" : `low: ${stock.actualStock} left`} ` +
-    `in storage ${stock.MedicineStorage.refNumber}.`;
+    `${stock.medicine.name} (${stock.medicine.serialNumber}) ` +
+    (isOut
+      ? "is OUT of stock across all storages."
+      : `is low: ${total} left in total (threshold ${threshold}).`);
 
-  // `createMany` won't return rows; create one-by-one so we can emit
-  // each over the socket with its real id and timestamp.
   const path = `medicine/storage/${stock.MedicineStorage.id}`;
   const created = await Promise.all(
     recipientIds.map((userId) =>
@@ -127,8 +142,6 @@ export async function checkAndNotifyLowStock(
     ),
   );
 
-  // Real-time fan-out. Imported lazily so the service file stays
-  // free of a top-level dependency on index.ts.
   try {
     const { notificationSocket } = await import("..");
     for (const n of created) {
@@ -155,15 +168,36 @@ export async function checkAndNotifyLowStock(
 }
 
 /**
- * Clear active low-stock alerts for a stock row. Call after restocking so
- * the next dip can notify again.
+ * After a restock/add, clear the MEDICINE's active low-stock alerts if its
+ * total is back above the threshold — so the next dip notifies again.
+ * (Also clears any legacy per-stock alerts bound to this row.)
  */
 export async function clearLowStockAlerts(
   tx: Tx,
   stockId: string,
 ): Promise<number> {
-  const r = await tx.medicineAlert.deleteMany({
-    where: { medicineStockId: stockId, type: 1 },
+  const stock = await tx.medicineStock.findUnique({
+    where: { id: stockId },
+    select: {
+      id: true,
+      medicineId: true,
+      medicine: { select: { lowStockThreshold: true } },
+    },
   });
-  return r.count;
+  let count = 0;
+  if (stock?.medicineId) {
+    const threshold = stock.medicine?.lowStockThreshold ?? 0;
+    const total = await medicineTotal(tx, stock.medicineId);
+    if (threshold <= 0 || total > threshold) {
+      const r = await tx.medicineAlert.deleteMany({
+        where: { medicineId: stock.medicineId, type: 1 },
+      });
+      count += r.count;
+    }
+  }
+  // Legacy per-stock alerts (pre-medicine-level era) — always clearable.
+  const legacy = await tx.medicineAlert.deleteMany({
+    where: { medicineStockId: stockId, medicineId: null, type: 1 },
+  });
+  return count + legacy.count;
 }

@@ -2185,6 +2185,9 @@ model MedicineAlert {
   count           Int           @default(0)
   expiration      DateTime?
   timestamp       DateTime      @default(now())
+  /// Medicine-level low-stock sentinel (one alert per MEDICINE while its
+  /// TOTAL stock sits at/below Medicine.lowStockThreshold).
+  medicineId      String?
   medicineStockId String
   medicineStock   MedicineStock @relation(fields: [medicineStockId], references: [id])
 }
@@ -2198,6 +2201,9 @@ model MedicineStorage {
   lineId                   String
   departmentId             String
   status                   Int                       @default(1)
+  /// The USER who created this storage — implicitly allowed to stock,
+  /// restock, and dispense in it (alongside explicit access grants).
+  createdById              String?
   stocks                   MedicineStock[]
   unit                     Department                @relation(fields: [departmentId], references: [id], onDelete: SetDefault)
   line                     Line                      @relation(fields: [lineId], references: [id], onDelete: Cascade)
@@ -2287,6 +2293,11 @@ model Medicine {
   /// nationwide, so two lines must each be able to register the same EAN.
   barcode                  String?
   name                     String
+  /// ONE low-stock threshold for the WHOLE medicine: the alert fires when
+  /// the SUM of actualStock across every batch/storage in the line dips
+  /// to or below this. 0 = disabled. (Per-batch MedicineStock.threshold
+  /// no longer drives notifications.)
+  lowStockThreshold        Int                       @default(0)
   desc                     String?                   @default("None")
   phase                    Int                       @default(0)
   timestamp                DateTime                  @default(now())
