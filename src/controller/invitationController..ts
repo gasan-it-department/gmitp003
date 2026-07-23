@@ -100,7 +100,7 @@ export const createInvitationLink = async (
     if (error instanceof ValidationError) throw error;
     if (error instanceof AppError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -298,7 +298,7 @@ export const deleteInvitationLink = async (
   } catch (error) {
     if (error instanceof NotFoundError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -341,7 +341,7 @@ export const suspendInvitationLink = async (
     if (error instanceof NotFoundError) throw error;
     if (error instanceof ValidationError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }

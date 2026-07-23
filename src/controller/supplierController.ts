@@ -2,7 +2,7 @@ import { Prisma, prisma } from "../barrel/prisma";
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
 import { PagingProps } from "../models/route";
 
-import { ValidationError, AppError } from "../errors/errors";
+import { ValidationError, AppError, dbError } from "../errors/errors";
 
 export const getSuppliers = async (req: FastifyRequest, res: FastifyReply) => {
   const params = req.query as PagingProps;
@@ -58,7 +58,9 @@ export const addSupplier = async (name: string, lineId: string) => {
     return data;
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DATABASE_CONNECTION_ERROR", 500, "DB_FAILED");
+      // Surface the real cause (e.g. "That name already exists") instead
+      // of masking every constraint error as a fake connection failure.
+      throw dbError(error);
     }
     throw error;
   }

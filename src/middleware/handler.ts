@@ -377,75 +377,69 @@ function generateSecureRef(len: number): string {
   return result;
 }
 
+// NOTE for all ref generators below: the candidate MUST be regenerated
+// INSIDE the retry loop. The old shape computed it once, so a collision
+// re-checked the same value forever — hanging the request until timeout.
 export const generateOrderRef = async () => {
-  let isUnique = false;
-  const generated = generateSecureRef(12);
-  while (!isUnique) {
+  for (;;) {
+    const generated = generateSecureRef(12);
     const check = await prisma.supplyBatchOrder.findFirst({
       where: {
         refNumber: generated,
       },
     });
-    if (!check) isUnique = true;
+    if (!check) return generated;
   }
-  return generated;
 };
 
 export const generateItemRef = async () => {
-  let isUnique = false;
-  const generated = generateSecureRef(12);
-  while (!isUnique) {
+  for (;;) {
+    const generated = generateSecureRef(12);
     const check = await prisma.supplyOrder.findFirst({
       where: {
         refNumber: generated,
       },
     });
-    if (!check) isUnique = true;
+    if (!check) return generated;
   }
-  return generated;
 };
 
 export const generatedInvitationCode = async () => {
-  let isUnique = false;
-  const generated = Math.floor(100000 + Math.random() * 900000);
-  while (!isUnique) {
+  // 6-digit code — collisions are realistic at scale, so regeneration
+  // inside the loop matters here most of all.
+  for (;;) {
+    const generated = Math.floor(100000 + Math.random() * 900000);
     const check = await prisma.invitationLink.findFirst({
       where: {
         code: generated.toString(),
       },
     });
-    if (!check) isUnique = true;
+    if (!check) return generated;
   }
-  return generated;
 };
 
 export const generateStorageRef = async () => {
-  let isUnique = false;
-  const generated = generateSecureRef(12);
-  while (!isUnique) {
-    const check = await prisma.medicineStorage.findUnique({
+  for (;;) {
+    const generated = generateSecureRef(12);
+    const check = await prisma.medicineStorage.findFirst({
       where: {
         refNumber: generated,
       },
     });
-    if (!check) isUnique = true;
+    if (!check) return generated;
   }
-  return generated;
 };
 
 export const generateMedRef = async () => {
-  let isUnique = false;
-  const generated = generateSecureRef(12);
-
-  while (!isUnique) {
+  for (;;) {
+    const generated = generateSecureRef(12);
     const check = await prisma.medicine.findFirst({
       where: {
         serialNumber: generated,
       },
     });
-    if (!check) isUnique = true;
+    if (!check) return generated;
   }
-  return generated;
 };
 
 export const generatePrescriptionRef = async () => {

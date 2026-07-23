@@ -386,7 +386,9 @@ model SupplyBatchOrder {
 
 model Supplier {
   id                      String                  @id @default(cuid())
-  name                    String                  @unique
+  /// Unique PER LINE — the same real-world supplier (e.g. a national
+  /// distributor) must be registrable by every line independently.
+  name                    String
   timestamp               DateTime                @default(now())
   lineId                  String
   supplieRecieveHistories SupplieRecieveHistory[]
@@ -394,6 +396,8 @@ model Supplier {
   supplies                Supplies[]
   SupplyOrder             SupplyOrder[]
   SupplyStockTrack        SupplyStockTrack[]
+
+  @@unique([lineId, name])
 }
 
 model SupplyOrderSupportFile {
@@ -468,7 +472,8 @@ model SupplyOrderItemReturn {
 
 model SuppliesDataSet {
   id             String            @id @default(cuid())
-  title          String            @unique
+  /// Unique PER LINE — dataset titles are line-local working names.
+  title          String
   timestamp      DateTime          @default(now())
   lineId         String
   inventoryBoxId String

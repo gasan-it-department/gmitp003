@@ -98,7 +98,7 @@ export const orderItemList = async (req: FastifyRequest, res: FastifyReply) => {
     });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -791,7 +791,7 @@ export const purchaseRequestInfo = async (
     return res.code(200).send(response);
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -834,7 +834,7 @@ export const purchaseRequestList = async (
       .send({ list: response, hasMore, lastCursor: newLastCursorId });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }

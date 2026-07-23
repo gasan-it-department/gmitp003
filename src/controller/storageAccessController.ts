@@ -1,6 +1,6 @@
 import { FastifyRequest, FastifyReply } from "../barrel/fastify";
 import { prisma, Prisma } from "../barrel/prisma";
-import { AppError, ValidationError } from "../errors/errors";
+import { AppError, ValidationError, dbError } from "../errors/errors";
 
 /**
  * Per-storage "Dispense Access" (web Medicine > Storage > Dispense Access tab).
@@ -154,7 +154,7 @@ export const listStorageAccess = async (
     return res.code(200).send({ list });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError)
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     throw error;
   }
 };
@@ -216,7 +216,7 @@ export const storageAccessCandidates = async (
     return res.code(200).send({ list });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError)
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     throw error;
   }
 };
@@ -283,7 +283,7 @@ export const grantStorageAccess = async (
   } catch (error) {
     if (error instanceof ValidationError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError)
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     throw error;
   }
 };
@@ -334,7 +334,7 @@ export const revokeStorageAccess = async (
     return res.code(200).send({ message: "OK" });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError)
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     throw error;
   }
 };

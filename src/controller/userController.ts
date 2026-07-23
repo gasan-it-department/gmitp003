@@ -74,7 +74,7 @@ export const users = async (req: FastifyRequest, res: FastifyReply) => {
       .send({ list: response, lastCursorId: newLastCursorId, hasMore });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -169,7 +169,7 @@ export const searchUsers = async (req: FastifyRequest, res: FastifyReply) => {
       .send({ list: response, lastCursorId: newLastCursorId, hasMore });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -228,7 +228,7 @@ export const getUserInfo = async (req: FastifyRequest, res: FastifyReply) => {
     return res.code(200).send(user);
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }

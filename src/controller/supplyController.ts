@@ -721,7 +721,7 @@ export const updateSupplyDispense = async (
     if (error instanceof ValidationError) throw error;
     if (error instanceof NotFoundError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -984,7 +984,7 @@ export const supplyList = async (req: FastifyRequest, res: FastifyReply) => {
     return res.code(200).send({ list, lastCursor: newLastCursorId, hasMore });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "BD_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -1108,7 +1108,7 @@ export const categories = async (req: FastifyRequest, res: FastifyReply) => {
       .send({ list: response, hasMore, lastCursor: newLastCursorId });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -1298,7 +1298,7 @@ export const supplyDispenseTransaction = async (
       .send({ list: response, hasMore, lastCursor: newLastCursorId });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -2838,8 +2838,8 @@ export const restockSupply = async (
       }
 
       // Resolve supplier — accept an id, a known name, or create a new one.
-      // Supplier.name is GLOBALLY unique, so reuse any existing match by name
-      // (regardless of line) before creating, to avoid a unique violation.
+      // Supplier.name is unique PER LINE, so match within THIS line only —
+      // another line's supplier of the same name is a different record.
       let supplierId: string | undefined;
       if (body.supplier && body.supplier.trim()) {
         const raw = body.supplier.trim();
@@ -2848,7 +2848,10 @@ export const restockSupply = async (
           supplierId = byId.id;
         } else {
           const byName = await tx.supplier.findFirst({
-            where: { name: { equals: raw, mode: "insensitive" } },
+            where: {
+              name: { equals: raw, mode: "insensitive" },
+              ...(body.lineId ? { lineId: body.lineId } : {}),
+            },
           });
           if (byName) supplierId = byName.id;
           else if (body.lineId) {

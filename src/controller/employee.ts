@@ -318,7 +318,7 @@ export const employees = async (req: FastifyRequest, res: FastifyReply) => {
       .send({ list, lastCursor: newLastCursorId, hasMore });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DATABASE_CONNECTION_ERROR", 500, "DB_FAILED");
+      throw dbError(error);
     }
     throw error;
   }
@@ -358,7 +358,7 @@ export const viewUserProfile = async (
     return res.code(200).send({ message: "OK" });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DATABASE_CONNECTION_ERROR", 500, "DB_FAILED");
+      throw dbError(error);
     }
     throw error;
   }
@@ -768,7 +768,7 @@ export const decryptUserData = async (
     return res.code(200).send(decryptedUser);
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DATABASE_CONNECTION_ERROR", 500, "DB_FAILED");
+      throw dbError(error);
     }
     throw error;
   }
@@ -1154,7 +1154,7 @@ export const archivedPersonnel = async (
       .send({ list: response, lastCursor: newLastCursorId, hasMore });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DATABASE_CONNECTION_ERROR", 500, "DB_FAILED");
+      throw dbError(error);
     }
     throw error;
   }

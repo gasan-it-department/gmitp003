@@ -1,6 +1,6 @@
 import { FastifyRequest, FastifyReply } from "../barrel/fastify";
 import { prisma, Prisma } from "../barrel/prisma";
-import { AppError, ValidationError } from "../errors/errors";
+import { AppError, ValidationError, dbError } from "../errors/errors";
 
 /**
  * "Mobile Access" for the Pharmacy module (web Medicine > Config > Mobile Access
@@ -71,7 +71,7 @@ export const listMobileAccess = async (req: FastifyRequest, res: FastifyReply) =
     return res.code(200).send({ list, lineStorageCount: lineStorages.length });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError)
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     throw error;
   }
 };
@@ -121,7 +121,7 @@ export const mobileAccessCandidates = async (req: FastifyRequest, res: FastifyRe
     return res.code(200).send({ list });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError)
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     throw error;
   }
 };
@@ -162,7 +162,7 @@ export const grantMobileAccess = async (req: FastifyRequest, res: FastifyReply) 
   } catch (error) {
     if (error instanceof ValidationError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError)
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     throw error;
   }
 };
@@ -196,7 +196,7 @@ export const revokeMobileAccess = async (req: FastifyRequest, res: FastifyReply)
     return res.code(200).send({ message: "OK" });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError)
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     throw error;
   }
 };
@@ -220,7 +220,7 @@ export const myMobileAccess = async (req: FastifyRequest, res: FastifyReply) => 
     return res.code(200).send({ granted: !!access });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError)
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     throw error;
   }
 };

@@ -1,6 +1,6 @@
 import { FastifyRequest, FastifyReply } from "../barrel/fastify";
 import { Prisma, prisma } from "../barrel/prisma";
-import { AppError, NotFoundError, ValidationError } from "../errors/errors";
+import { AppError, NotFoundError, ValidationError, dbError } from "../errors/errors";
 import { PagingProps, PatientProps, UpdatePatientProps } from "../models/route";
 
 export const patientList = async (req: FastifyRequest, res: FastifyReply) => {
@@ -62,7 +62,7 @@ export const patientList = async (req: FastifyRequest, res: FastifyReply) => {
       .send({ list: response, hasMore, lastCursor: newLastCursorId });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -90,7 +90,7 @@ export const patientData = async (req: FastifyRequest, res: FastifyReply) => {
     return res.code(200).send(response);
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -128,7 +128,7 @@ export const addPatient = async (req: FastifyRequest, res: FastifyReply) => {
     console.log(error);
 
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -170,7 +170,7 @@ export const updatePatient = async (req: FastifyRequest, res: FastifyReply) => {
     console.log(error);
 
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -208,7 +208,7 @@ export const patientRecordList = async (req: FastifyRequest, res: FastifyReply) 
     return res.code(200).send({ list: response, hasMore, lastCursor });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -337,7 +337,7 @@ export const patientRecordData = async (req: FastifyRequest, res: FastifyReply) 
     return res.code(200).send(result);
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -366,7 +366,7 @@ export const addPatientRecord = async (req: FastifyRequest, res: FastifyReply) =
     return res.code(200).send({ message: "OK", data: record });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
@@ -411,7 +411,7 @@ export const deletePatient = async (req: FastifyRequest, res: FastifyReply) => {
     console.log(error);
 
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+      throw dbError(error);
     }
     throw error;
   }
