@@ -26,6 +26,7 @@ import {
   checkAndNotifyLowStock,
   clearLowStockAlerts,
 } from "../service/medicineAlerts";
+import { readScannedCode, barcodeLookupCandidates } from "../utils/scanCode";
 
 export const medicineStorage = async (
   req: FastifyRequest,
@@ -301,7 +302,13 @@ export const attachMedicineBarcode = async (
     /** Mobile queue-row UUID: replays of the same op short-circuit. */
     clientOpId?: string;
   };
-  const barcode = body.barcode?.trim();
+  // QR payloads are read through the SAME canonical reader as 1D barcodes:
+  // GS1 QR yields the product GTIN (so every lot maps to one medicine),
+  // and foreign QRs (employee IDs, signature links, WiFi, vCard) are
+  // refused here rather than being registered as a medicine.
+  const reading = readScannedCode(body.barcode ?? "");
+  if (reading.rejected) throw new ValidationError(reading.rejected);
+  const barcode = reading.code;
   if (!body.medicineId || !barcode)
     throw new ValidationError("medicineId and barcode are required");
 
@@ -340,9 +347,14 @@ export const attachMedicineBarcode = async (
 
     // Barcode uniqueness is PER LINE — another line owning the same EAN is
     // fine (identical products nationwide); only a conflict INSIDE this
-    // medicine's line blocks the registration.
+    // medicine's line blocks the registration. Match every stored form so
+    // a pre-normalization row is recognised as the holder.
     const holder = await prisma.medicine.findFirst({
-      where: { lineId: med.lineId, barcode, NOT: { id: med.id } },
+      where: {
+        lineId: med.lineId,
+        barcode: { in: barcodeLookupCandidates(body.barcode ?? "") },
+        NOT: { id: med.id },
+      },
       select: { id: true, name: true },
     });
     if (holder) {
@@ -996,6 +1008,207 @@ export const consolidateSplitBatches = async (): Promise<number> => {
     }
   }
   return merged;
+};
+
+/**
+ * PATCH /medicine/stock/edit — correct a batch's details.
+ *
+ * Editable: quantity, per-unit quantity, unit of measure, expiration and
+ * manufacturing dates. STRICT access: only the storage's creator or a
+ * holder of Dispense & Stock Access may edit, exactly like restocking.
+ *
+ * The dangerous part is that four of those fields ARE the batch identity
+ * — editing them can turn this row into a twin of an existing batch. In
+ * that case we MERGE into the older row (price history repointed, stale
+ * alerts cleared) instead of leaving two identical rows, which is the
+ * split-batch bug this system already fought once. Totals are recomputed
+ * (actualStock = quantity x perUnit), every change is written to Medicine
+ * Logs with before/after values, and the medicine's low-stock state is
+ * re-evaluated afterwards.
+ */
+export const editMedicineStock = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as {
+    stockId?: string;
+    quantity?: number;
+    perUnit?: number;
+    unitOfMeasure?: string;
+    expiration?: string;
+    manufacturingDate?: string;
+    reason?: string | null;
+  };
+  if (!body.stockId) throw new ValidationError("stockId is required");
+
+  // Identity from the TOKEN — never trust a client-supplied user id.
+  const accountId = (req.user as { id?: string } | undefined)?.id;
+  const authAccount = accountId
+    ? await prisma.account.findUnique({
+        where: { id: accountId },
+        select: { User: { select: { id: true } } },
+      })
+    : null;
+  const actorId = authAccount?.User?.id ?? null;
+  if (!actorId)
+    throw new ValidationError(
+      "Could not resolve your user account — sign in again.",
+    );
+
+  try {
+    const current = await prisma.medicineStock.findUnique({
+      where: { id: body.stockId },
+      include: {
+        medicine: { select: { id: true, name: true, serialNumber: true } },
+        MedicineStorage: { select: { id: true, refNumber: true } },
+      },
+    });
+    if (!current) throw new NotFoundError("BATCH_NOT_FOUND");
+
+    await assertStorageAccess(
+      actorId,
+      [current.medicineStorageId],
+      "edit stock",
+    );
+
+    const quantity =
+      body.quantity !== undefined ? Math.trunc(Number(body.quantity)) : current.quantity;
+    const perUnit =
+      body.perUnit !== undefined ? Math.trunc(Number(body.perUnit)) : current.perQuantity;
+    const quality =
+      body.unitOfMeasure !== undefined && body.unitOfMeasure.trim()
+        ? body.unitOfMeasure.trim()
+        : current.quality;
+    const expiration =
+      body.expiration !== undefined
+        ? normalizeBatchDay(new Date(body.expiration))
+        : current.expiration;
+    const manufacturingDate =
+      body.manufacturingDate !== undefined
+        ? normalizeBatchDay(new Date(body.manufacturingDate))
+        : current.manufacturingDate;
+
+    if (!Number.isFinite(quantity) || quantity < 0)
+      throw new ValidationError("Quantity must be 0 or more.");
+    if (!Number.isFinite(perUnit) || perUnit <= 0)
+      throw new ValidationError("Per-unit quantity must be greater than 0.");
+    if (
+      expiration &&
+      manufacturingDate &&
+      !(expiration.getTime() > manufacturingDate.getTime())
+    )
+      throw new ValidationError("Expiration must be after manufacturing date.");
+
+    const result = await prisma.$transaction(async (tx) => {
+      const totalItems = quantity * perUnit;
+
+      // Did this edit turn the row into a twin of another batch?
+      const twins = await tx.medicineStock.findMany({
+        where: {
+          id: { not: current.id },
+          medicineId: current.medicineId,
+          medicineStorageId: current.medicineStorageId,
+          quality,
+          perQuantity: perUnit,
+          ...(expiration ? { expiration: batchDayWindow(expiration) } : {}),
+          ...(manufacturingDate
+            ? { manufacturingDate: batchDayWindow(manufacturingDate) }
+            : {}),
+        },
+        orderBy: { timestamp: "asc" },
+      });
+
+      await clearLowStockAlerts(tx, current.id);
+
+      if (twins.length > 0) {
+        // Fold this row INTO the older twin — never leave duplicates.
+        const keep = twins[0];
+        const absorbed = await absorbDuplicateStocks(tx, keep.id, [
+          ...twins.slice(1),
+          {
+            id: current.id,
+            quantity,
+            actualStock: totalItems,
+          },
+        ]);
+        const merged = await tx.medicineStock.update({
+          where: { id: keep.id },
+          data: {
+            quantity: keep.quantity + absorbed.addQty,
+            actualStock: keep.actualStock + absorbed.addItems,
+            quality,
+            perQuantity: perUnit,
+            ...(expiration ? { expiration } : {}),
+            ...(manufacturingDate ? { manufacturingDate } : {}),
+          },
+        });
+        return { stockId: merged.id, mergedInto: keep.id, totalItems };
+      }
+
+      const updated = await tx.medicineStock.update({
+        where: { id: current.id },
+        data: {
+          quantity,
+          perQuantity: perUnit,
+          quality,
+          actualStock: totalItems,
+          ...(expiration ? { expiration } : {}),
+          ...(manufacturingDate ? { manufacturingDate } : {}),
+        },
+      });
+      return { stockId: updated.id, mergedInto: null, totalItems };
+    });
+
+    // Audit — spell out exactly what changed, old → new.
+    const d = (x: Date | null | undefined) =>
+      x ? new Date(x).toISOString().slice(0, 10) : "—";
+    const changes: string[] = [];
+    if (quantity !== current.quantity)
+      changes.push(`quantity ${current.quantity} → ${quantity}`);
+    if (perUnit !== current.perQuantity)
+      changes.push(`per-unit ${current.perQuantity} → ${perUnit}`);
+    if (quality !== current.quality)
+      changes.push(`unit ${current.quality} → ${quality}`);
+    if (d(expiration) !== d(current.expiration))
+      changes.push(`expiry ${d(current.expiration)} → ${d(expiration)}`);
+    if (d(manufacturingDate) !== d(current.manufacturingDate))
+      changes.push(`manufactured ${d(current.manufacturingDate)} → ${d(manufacturingDate)}`);
+    if (result.mergedInto) changes.push("merged into an identical batch");
+
+    if (changes.length > 0) {
+      await prisma.medicineLogs.create({
+        data: {
+          action: 2,
+          userId: actorId,
+          lineId: current.lineId,
+          message:
+            `Edited batch of ${current.medicine?.name ?? "medicine"} ` +
+            `(${current.medicine?.serialNumber ?? "—"}) in storage ` +
+            `${current.MedicineStorage?.refNumber ?? "—"}: ${changes.join(", ")}` +
+            (body.reason?.trim() ? ` — reason: ${body.reason.trim()}` : ""),
+        },
+      });
+    }
+
+    // Stock moved, so the medicine-level low-stock state may have flipped.
+    await prisma.$transaction(async (tx) => {
+      await checkAndNotifyLowStock(tx, result.stockId);
+    });
+
+    return res.code(200).send({
+      message: "OK",
+      stockId: result.stockId,
+      mergedInto: result.mergedInto,
+      actualStock: result.totalItems,
+      changes,
+    });
+  } catch (error) {
+    if (error instanceof NotFoundError) throw error;
+    if (error instanceof ValidationError) throw error;
+    if (error instanceof Prisma.PrismaClientKnownRequestError)
+      throw dbError(error);
+    throw error;
+  }
 };
 
 /**
@@ -2667,17 +2880,25 @@ export const recordMedicineScan = async (
   }
 
   try {
-    const barcode = body.barcode.trim();
+    // Same canonical reading as attach-barcode — a QR scanned here and a
+    // barcode scanned there must land on ONE medicine.
+    const scanned = readScannedCode(body.barcode);
+    if (scanned.rejected) throw new ValidationError(scanned.rejected);
+    const barcode = scanned.code;
     const name = body.name.trim();
     const desc = body.notes?.trim() || undefined;
 
     // Match on barcode first (the natural scanner key), then fall back to
     // a legacy match on serialNumber so older "barcode = serial" rows are
     // still picked up instead of duplicated.
+    const candidates = barcodeLookupCandidates(body.barcode);
     const existing = await prisma.medicine.findFirst({
       where: {
         lineId: body.lineId,
-        OR: [{ barcode }, { serialNumber: barcode }],
+        OR: [
+          { barcode: { in: candidates } },
+          { serialNumber: { in: candidates } },
+        ],
       },
       select: { id: true, barcode: true },
     });
@@ -3181,7 +3402,10 @@ export const directDispenseBulk = async (
         const medicine = op.medicineId
           ? await tx.medicine.findUnique({ where: { id: op.medicineId } })
           : await tx.medicine.findFirst({
-              where: { barcode: op.barcode ?? "", lineId: op.lineId },
+              where: {
+                barcode: { in: barcodeLookupCandidates(op.barcode ?? "") },
+                lineId: op.lineId,
+              },
             });
         if (!medicine) throw new NotFoundError("MEDICINE_NOT_FOUND");
         const storage = await tx.medicineStorage.findUnique({

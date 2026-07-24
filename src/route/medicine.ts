@@ -48,6 +48,7 @@ import {
   attachMedicineBarcode,
   medicineSync,
   bulkAddMedicineStock,
+  editMedicineStock,
   exportMedicineReport,
   medicineBulkUpload,
   updateMedicineThreshold,
@@ -192,6 +193,13 @@ export const medicine = (fastify: FastifyInstance) => {
     "/medicine/add-stock/bulk",
     { preHandler: [authenticated, pharmacyMobileAuth] },
     bulkAddMedicineStock,
+  );
+  // Correct a batch's details (quantity, per-unit, unit, dates). Access is
+  // enforced inside: storage creator or Dispense & Stock Access only.
+  fastify.patch(
+    "/medicine/stock/edit",
+    { preHandler: authenticated },
+    editMedicineStock,
   );
   fastify.get(
     "/medicine/expiration",

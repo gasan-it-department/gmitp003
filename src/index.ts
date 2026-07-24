@@ -255,7 +255,7 @@ app.get("/test/ai", async (request: FastifyRequest, reply: FastifyReply) => {
 // Public build marker — lets anyone (including the assistant) CONFIRM which
 // build is actually serving, instead of trusting deploy timers. Bump the
 // tag with each meaningful deploy.
-const BUILD_TAG = "2026-07-23-med-threshold";
+const BUILD_TAG = "2026-07-23-qr-scan-batch-edit";
 app.get("/health/build", async () => ({ status: "ok", build: BUILD_TAG }));
 
 app.listen({ port: 3000, host: "0.0.0.0" }, (err, address) => {
