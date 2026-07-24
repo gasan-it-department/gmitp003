@@ -5,6 +5,7 @@ import { generatePrescriptionRef } from "../middleware/handler";
 import { checkAndNotifyLowStock } from "../service/medicineAlerts";
 import { createUserNotification } from "../service/notificationEvents";
 import { assertStorageAccess } from "./storageAccessController";
+import { createDispenseRecord } from "./medicineController";
 import {
   PagingProps,
   PrescriptionDispenseProps,
@@ -797,6 +798,56 @@ export const prescriptionDispense = async (
         } catch (e) {
           console.warn("[prescription] dispensed notif emit failed:", e);
         }
+      }
+
+      // Dispense-history record (kind = prescription) so the Dispense
+      // History tab shows Rx dispenses alongside direct ones. Best-effort:
+      // wrapped so a history-write hiccup can never fail the dispense.
+      try {
+        const releasedItems = await tx.precribeMedicine.findMany({
+          where: { prescriptionId: prescription.id },
+          select: {
+            releaseQuantity: true,
+            quantity: true,
+            medicine: {
+              select: { id: true, name: true, serialNumber: true, barcode: true },
+            },
+          },
+        });
+        const items = releasedItems
+          .filter((m) => m.medicine)
+          .map((m) => ({
+            medicineId: m.medicine!.id,
+            medicineName: m.medicine!.name,
+            serialNumber: m.medicine!.serialNumber,
+            barcode: m.medicine!.barcode,
+            quantity: m.releaseQuantity ?? m.quantity ?? 0,
+          }));
+        if (items.length > 0 && prescription.lineId) {
+          await createDispenseRecord(tx, {
+            lineId: prescription.lineId,
+            kind: 1,
+            dispenser: {
+              id: body.userId,
+              username: null,
+              name: dispenser
+                ? `${dispenser.firstName ?? ""} ${dispenser.lastName ?? ""}`.trim()
+                : null,
+            },
+            patientName: dispFor,
+            patientId: prescription.patientId,
+            note: (prescription as { condtion?: string | null }).condtion ?? null,
+            external: !!(prescription as { external?: boolean }).external,
+            externalSource:
+              (prescription as { externalSource?: string | null })
+                .externalSource ?? null,
+            prescriptionId: prescription.id,
+            refNumber: prescription.refNumber,
+            items,
+          });
+        }
+      } catch (e) {
+        console.warn("[prescription] dispense-history write skipped:", e);
       }
     });
 

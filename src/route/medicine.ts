@@ -52,6 +52,9 @@ import {
   exportMedicineReport,
   medicineBulkUpload,
   updateMedicineThreshold,
+  directDispenseMulti,
+  dispenseHistoryList,
+  dispenseHistoryDetail,
 } from "../controller/medicineController";
 
 export const medicine = (fastify: FastifyInstance) => {
@@ -73,6 +76,23 @@ export const medicine = (fastify: FastifyInstance) => {
     "/medicine/direct-dispense/bulk",
     { preHandler: authenticated },
     directDispenseBulk,
+  );
+  // Bulk direct dispense: ONE patient, MANY scanned items → one record.
+  fastify.post(
+    "/medicine/direct-dispense/multi",
+    { preHandler: authenticated },
+    directDispenseMulti,
+  );
+  // Dispense History (direct + prescription) list + detail.
+  fastify.get(
+    "/medicine/dispense-history",
+    { preHandler: authenticated },
+    dispenseHistoryList,
+  );
+  fastify.get(
+    "/medicine/dispense-history/detail",
+    { preHandler: authenticated },
+    dispenseHistoryDetail,
   );
   fastify.get("/medicine/logs", { preHandler: authenticated }, medicineLogList);
   fastify.patch(

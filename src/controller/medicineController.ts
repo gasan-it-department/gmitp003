@@ -3320,6 +3320,89 @@ export const bulkAddMedicineStock = async (
   });
 };
 
+/** Resolve the dispenser (User) from the auth token — id, username, and
+ *  display name — for the denormalized dispense-history snapshot. */
+const resolveDispenser = async (accountId: string | undefined | null) => {
+  if (!accountId) return { id: null, username: null, name: null };
+  const acct = await prisma.account.findUnique({
+    where: { id: accountId },
+    select: {
+      User: { select: { id: true, username: true, firstName: true, lastName: true } },
+    },
+  });
+  const u = acct?.User;
+  return {
+    id: u?.id ?? null,
+    username: u?.username ?? null,
+    name: u ? `${u.firstName ?? ""} ${u.lastName ?? ""}`.trim() || null : null,
+  };
+};
+
+interface DispenseItemInput {
+  medicineId?: string | null;
+  medicineName: string;
+  serialNumber?: string | null;
+  barcode?: string | null;
+  quantity: number;
+  unit?: string | null;
+  storageId?: string | null;
+  storageName?: string | null;
+  storageRef?: string | null;
+}
+
+/** Write ONE dispense-history record (with its item snapshots) inside an
+ *  existing transaction. Best-effort at the caller: a history-write failure
+ *  must never roll back an actual stock deduction. */
+export const createDispenseRecord = async (
+  tx: Prisma.TransactionClient,
+  data: {
+    lineId: string;
+    kind: 0 | 1;
+    dispenser: { id: string | null; username: string | null; name: string | null };
+    patientName?: string | null;
+    patientId?: string | null;
+    note?: string | null;
+    external?: boolean;
+    externalSource?: string | null;
+    prescriptionId?: string | null;
+    refNumber?: string | null;
+    items: DispenseItemInput[];
+  },
+) => {
+  const totalUnits = data.items.reduce((s, it) => s + (it.quantity || 0), 0);
+  return tx.dispenseRecord.create({
+    data: {
+      lineId: data.lineId,
+      kind: data.kind,
+      dispensedById: data.dispenser.id,
+      dispenserName: data.dispenser.name,
+      dispenserUsername: data.dispenser.username,
+      patientName: data.patientName ?? null,
+      patientId: data.patientId ?? null,
+      note: data.note ?? null,
+      external: !!data.external,
+      externalSource: data.externalSource ?? null,
+      prescriptionId: data.prescriptionId ?? null,
+      refNumber: data.refNumber ?? null,
+      totalUnits,
+      items: {
+        create: data.items.map((it) => ({
+          medicineId: it.medicineId ?? null,
+          medicineName: it.medicineName,
+          serialNumber: it.serialNumber ?? null,
+          barcode: it.barcode ?? null,
+          quantity: it.quantity,
+          unit: it.unit ?? null,
+          storageId: it.storageId ?? null,
+          storageName: it.storageName ?? null,
+          storageRef: it.storageRef ?? null,
+        })),
+      },
+    },
+    select: { id: true },
+  });
+};
+
 /**
  * POST /medicine/direct-dispense/bulk — dispense WITHOUT a prescription.
  *
@@ -3329,6 +3412,7 @@ export const bulkAddMedicineStock = async (
  * offline queue can retry safely. The actor comes from the AUTH TOKEN and
  * must hold Dispense & Stock Access on the storage — no exceptions.
  * The web/desktop call it with a single op; the mobile flushes its queue.
+ * Each op also writes a single-item DispenseRecord for the history tab.
  */
 export const directDispenseBulk = async (
   req: FastifyRequest,
@@ -3353,13 +3437,8 @@ export const directDispenseBulk = async (
 
   // STRICT identity: the dispenser is whoever the token belongs to.
   const accountId = (req.user as { id?: string } | undefined)?.id;
-  const authAccount = accountId
-    ? await prisma.account.findUnique({
-        where: { id: accountId },
-        select: { User: { select: { id: true, username: true } } },
-      })
-    : null;
-  const actorId = authAccount?.User?.id ?? null;
+  const dispenser = await resolveDispenser(accountId);
+  const actorId = dispenser.id;
 
   const results: Array<{
     clientOpId: string;
@@ -3462,6 +3541,28 @@ export const directDispenseBulk = async (
         await tx.medicineLogs.create({
           data: { action: 4, message, userId: actorId, lineId: op.lineId },
         });
+
+        // Structured history record (single item per op → the Dispense
+        // History tab and its detail view).
+        await createDispenseRecord(tx, {
+          lineId: op.lineId,
+          kind: 0,
+          dispenser,
+          patientName: op.patientName?.trim() || null,
+          note: op.note?.trim() || null,
+          items: [
+            {
+              medicineId: medicine.id,
+              medicineName: medicine.name,
+              serialNumber: medicine.serialNumber,
+              barcode: medicine.barcode,
+              quantity: qty,
+              storageId: storage.id,
+              storageName: storage.name,
+              storageRef: storage.refNumber,
+            },
+          ],
+        });
         return message;
       });
 
@@ -3494,6 +3595,275 @@ export const directDispenseBulk = async (
     failed: results.filter((r) => r.status === "error").length,
     results,
   });
+};
+
+/**
+ * POST /medicine/direct-dispense/multi — bulk direct dispense for ONE
+ * patient across MANY scanned items. The whole request is atomic: every
+ * line is dispensed (FEFO, non-expired, strict storage access) or NOTHING
+ * is, and it produces a SINGLE DispenseRecord with one item per line —
+ * which is exactly what the Dispense History detail shows.
+ *
+ * Body: { lineId, patientName?, note?, external?, externalSource?,
+ *         items: [{ storageId, medicineId?|barcode?, quantity }] }
+ */
+export const directDispenseMulti = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as {
+    lineId: string;
+    patientName?: string | null;
+    note?: string | null;
+    external?: boolean;
+    externalSource?: string | null;
+    items?: Array<{
+      storageId: string;
+      medicineId?: string;
+      barcode?: string;
+      quantity: number;
+    }>;
+  };
+  if (!body.lineId) throw new ValidationError("lineId is required");
+  if (!body.items || !Array.isArray(body.items) || body.items.length === 0)
+    throw new ValidationError("At least one item is required.");
+
+  const dispenser = await resolveDispenser(
+    (req.user as { id?: string } | undefined)?.id,
+  );
+  const actorId = dispenser.id;
+  if (!actorId)
+    throw new ValidationError(
+      "Could not resolve your user account — sign in again.",
+    );
+
+  // Validate every line up front so a bad one fails the batch cleanly.
+  const items = body.items.map((it, i) => {
+    const qty = Math.floor(Number(it.quantity));
+    if (!it.storageId || (!it.medicineId && !it.barcode))
+      throw new ValidationError(
+        `Item ${i + 1}: a storage and a medicine (id or barcode) are required.`,
+      );
+    if (!Number.isFinite(qty) || qty <= 0)
+      throw new ValidationError(`Item ${i + 1}: quantity must be positive.`);
+    return { ...it, quantity: qty };
+  });
+
+  try {
+    // ONE storage-access assertion covering every storage touched.
+    await assertStorageAccess(
+      actorId,
+      [...new Set(items.map((it) => it.storageId))],
+      "dispense",
+    );
+
+    const result = await prisma.$transaction(async (tx) => {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const recordItems: DispenseItemInput[] = [];
+      const logLines: string[] = [];
+
+      for (const [idx, it] of items.entries()) {
+        const medicine = it.medicineId
+          ? await tx.medicine.findUnique({ where: { id: it.medicineId } })
+          : await tx.medicine.findFirst({
+              where: {
+                barcode: { in: barcodeLookupCandidates(it.barcode ?? "") },
+                lineId: body.lineId,
+              },
+            });
+        if (!medicine)
+          throw new ValidationError(`Item ${idx + 1}: medicine not found.`);
+        const storage = await tx.medicineStorage.findUnique({
+          where: { id: it.storageId },
+          select: { id: true, name: true, refNumber: true },
+        });
+        if (!storage)
+          throw new ValidationError(`Item ${idx + 1}: storage not found.`);
+
+        const batches = await tx.medicineStock.findMany({
+          where: {
+            medicineId: medicine.id,
+            medicineStorageId: it.storageId,
+            actualStock: { gt: 0 },
+          },
+          orderBy: { expiration: "asc" },
+        });
+        const usable = batches.filter(
+          (b) => !b.expiration || b.expiration >= today,
+        );
+        const available = usable.reduce((s, b) => s + (b.actualStock ?? 0), 0);
+        if (available < it.quantity)
+          throw new ValidationError(
+            `${medicine.name}: only ${available} non-expired unit(s) in ${storage.name} — cannot dispense ${it.quantity}.`,
+          );
+
+        let remaining = it.quantity;
+        let unit: string | null = null;
+        for (const b of usable) {
+          if (remaining <= 0) break;
+          const take = Math.min(remaining, b.actualStock ?? 0);
+          if (take <= 0) continue;
+          if (!unit) unit = b.quality;
+          await clearLowStockAlerts(tx, b.id);
+          await tx.medicineStock.update({
+            where: { id: b.id },
+            data: { actualStock: (b.actualStock ?? 0) - take },
+          });
+          await checkAndNotifyLowStock(tx, b.id);
+          remaining -= take;
+        }
+
+        recordItems.push({
+          medicineId: medicine.id,
+          medicineName: medicine.name,
+          serialNumber: medicine.serialNumber,
+          barcode: medicine.barcode,
+          quantity: it.quantity,
+          unit,
+          storageId: storage.id,
+          storageName: storage.name,
+          storageRef: storage.refNumber,
+        });
+        logLines.push(
+          `${medicine.name} (${medicine.serialNumber}) ×${it.quantity} from ${storage.refNumber}`,
+        );
+      }
+
+      const record = await createDispenseRecord(tx, {
+        lineId: body.lineId,
+        kind: 0,
+        dispenser,
+        patientName: body.patientName?.trim() || null,
+        note: body.note?.trim() || null,
+        external: !!body.external,
+        externalSource: body.externalSource?.trim() || null,
+        items: recordItems,
+      });
+
+      await tx.medicineLogs.create({
+        data: {
+          action: 4,
+          userId: actorId,
+          lineId: body.lineId,
+          message:
+            `Bulk direct dispense (no prescription)` +
+            (body.patientName?.trim()
+              ? ` to ${body.patientName.trim()}`
+              : "") +
+            `: ${recordItems.length} item(s) — ${logLines.join("; ")}`,
+        },
+      });
+
+      return { recordId: record.id, count: recordItems.length };
+    });
+
+    return res.code(200).send({
+      message: "OK",
+      recordId: result.recordId,
+      itemCount: result.count,
+    });
+  } catch (error) {
+    if (error instanceof ValidationError || error instanceof NotFoundError)
+      throw error;
+    if (error instanceof Prisma.PrismaClientKnownRequestError)
+      throw dbError(error);
+    throw error;
+  }
+};
+
+/** GET /medicine/dispense-history — paginated list of dispense events. */
+export const dispenseHistoryList = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as {
+    lineId?: string;
+    lastCursor?: string | null;
+    limit?: string;
+    query?: string;
+    kind?: string;
+  };
+  if (!params.lineId) throw new ValidationError("INVALID REQUIRED ID");
+  const limit = params.limit ? parseInt(params.limit, 10) : 20;
+  const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
+
+  try {
+    const where: any = { lineId: params.lineId };
+    if (params.kind === "direct") where.kind = 0;
+    else if (params.kind === "prescription") where.kind = 1;
+    if (params.query?.trim()) {
+      const q = params.query.trim();
+      where.OR = [
+        { patientName: { contains: q, mode: "insensitive" } },
+        { refNumber: { contains: q, mode: "insensitive" } },
+        { dispenserName: { contains: q, mode: "insensitive" } },
+        { items: { some: { medicineName: { contains: q, mode: "insensitive" } } } },
+      ];
+    }
+
+    const rows = await prisma.dispenseRecord.findMany({
+      where,
+      take: limit,
+      skip: cursor ? 1 : 0,
+      cursor,
+      orderBy: { timestamp: "desc" },
+      include: {
+        items: {
+          select: { medicineName: true, quantity: true, unit: true },
+          orderBy: { medicineName: "asc" },
+        },
+      },
+    });
+
+    const list = rows.map((r) => ({
+      id: r.id,
+      kind: r.kind,
+      patientName: r.patientName,
+      dispenserName: r.dispenserName,
+      dispenserUsername: r.dispenserUsername,
+      external: r.external,
+      externalSource: r.externalSource,
+      refNumber: r.refNumber,
+      totalUnits: r.totalUnits,
+      itemCount: r.items.length,
+      preview: r.items
+        .slice(0, 3)
+        .map((it) => `${it.medicineName} ×${it.quantity}`)
+        .join(", "),
+      timestamp: r.timestamp,
+    }));
+
+    const lastCursorId = rows.length > 0 ? rows[rows.length - 1].id : null;
+    const hasMore = rows.length === limit;
+    return res.code(200).send({ list, lastCursor: lastCursorId, hasMore });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError)
+      throw dbError(error);
+    throw error;
+  }
+};
+
+/** GET /medicine/dispense-history/detail?id= — one dispense event + items. */
+export const dispenseHistoryDetail = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as { id?: string };
+  if (!params.id) throw new ValidationError("INVALID REQUIRED ID");
+  try {
+    const record = await prisma.dispenseRecord.findUnique({
+      where: { id: params.id },
+      include: { items: { orderBy: { medicineName: "asc" } } },
+    });
+    if (!record) throw new NotFoundError("DISPENSE_RECORD_NOT_FOUND");
+    return res.code(200).send({ record });
+  } catch (error) {
+    if (error instanceof NotFoundError) throw error;
+    if (error instanceof Prisma.PrismaClientKnownRequestError)
+      throw dbError(error);
+    throw error;
+  }
 };
 
 export const exportMedicineReport = async (

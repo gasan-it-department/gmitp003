@@ -2821,3 +2821,50 @@ model ChatPresence {
 
   @@index([lineId])
 }
+
+// ── Dispense history ─────────────────────────────────────────────────────
+// One row per dispensing EVENT. A bulk direct dispense (one patient, many
+// scanned items) is ONE record with many DispenseItem rows; a single direct
+// dispense is one record with one item; a prescription dispense is one
+// record linked back to the prescription. Fields are DENORMALIZED snapshots
+// (names, refs, dispenser) so the history is an immutable audit record that
+// survives edits/renames/deletes of the underlying medicine or storage.
+model DispenseRecord {
+  id                String         @id @default(uuid())
+  lineId            String
+  // 0 = direct (no prescription), 1 = from a prescription.
+  kind              Int            @default(0)
+  dispensedById     String?
+  dispenserName     String?
+  dispenserUsername String?
+  patientName       String?
+  patientId         String?
+  note              String?
+  external          Boolean        @default(false)
+  externalSource    String?
+  prescriptionId    String?
+  refNumber         String?
+  totalUnits        Int            @default(0)
+  timestamp         DateTime       @default(now())
+  items             DispenseItem[]
+
+  @@index([lineId, timestamp])
+  @@index([prescriptionId])
+}
+
+model DispenseItem {
+  id               String         @id @default(uuid())
+  dispenseRecordId String
+  medicineId       String?
+  medicineName     String
+  serialNumber     String?
+  barcode          String?
+  quantity         Int            @default(0)
+  unit             String?
+  storageId        String?
+  storageName      String?
+  storageRef       String?
+  record           DispenseRecord @relation(fields: [dispenseRecordId], references: [id], onDelete: Cascade)
+
+  @@index([dispenseRecordId])
+}
