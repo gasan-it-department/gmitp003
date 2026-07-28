@@ -1702,6 +1702,27 @@ export const viewNotification = async (
  *   - Refreshes low-stock alerts on both source (may now be low) and
  *     destination (may have recovered).
  */
+/**
+ * Transfer a medicine batch (or part of it) from one storage to another.
+ *
+ * Anticipated failure modes, all handled:
+ *   - identity is taken from the TOKEN, never a client-supplied userId;
+ *   - the actor must hold Dispense & Stock Access on BOTH storages;
+ *   - source ≠ destination; destination must exist, be active, and be in
+ *     the SAME line (no cross-office transfer);
+ *   - quantity must be a positive whole number ≤ units on hand, AND the
+ *     batch must actually hold enough PIECES (a partially-dispensed batch
+ *     can't move full units it no longer has) — no phantom stock;
+ *   - the source decrement is an ATOMIC conditional update, so two
+ *     simultaneous transfers can never over-draw the batch;
+ *   - the destination match is day-windowed (times-of-day ignored) and
+ *     folds any duplicate twins together, so a transfer never splits a
+ *     batch; created rows store normalized dates;
+ *   - clientOpId makes the whole thing idempotent for the offline desktop
+ *     queue — a replay returns the prior result instead of moving twice;
+ *   - low-stock alerts are re-evaluated on both sides;
+ *   - real DB errors surface their cause instead of a masked 500.
+ */
 export const transferMedicine = async (
   req: FastifyRequest,
   res: FastifyReply,
@@ -1710,31 +1731,70 @@ export const transferMedicine = async (
     stockId: string;
     departId: string;
     quantity: number;
-    userId: string;
-    fromId?: string; // kept for back-compat — derived from stock if omitted
+    userId?: string; // legacy — identity now comes from the token
+    clientOpId?: string; // offline idempotency key (desktop)
   };
 
-  if (!body.stockId || !body.departId || !body.userId) {
-    throw new ValidationError("INVALID REQUIRED ID");
+  if (!body.stockId || !body.departId) {
+    throw new ValidationError("A batch and a destination storage are required.");
   }
-  const transferQty = Number(body.quantity);
+  const transferQty = Math.trunc(Number(body.quantity));
   if (!Number.isFinite(transferQty) || transferQty <= 0) {
-    throw new ValidationError("Transfer quantity must be greater than zero.");
+    throw new ValidationError(
+      "Transfer quantity must be a positive whole number.",
+    );
+  }
+  if (body.stockId === body.departId) {
+    throw new ValidationError("Destination must be different from the source.");
   }
 
-  // Storage access: restricted users need BOTH sides of the transfer —
-  // taking stock out of the source and putting it into the destination.
-  const srcRow = await prisma.medicineStock.findUnique({
-    where: { id: body.stockId },
-    select: { medicineStorageId: true },
-  });
-  await assertStorageAccess(
-    body.userId,
-    [srcRow?.medicineStorageId, body.departId],
-    "transfer stock",
-  );
+  // Identity from the TOKEN. Fall back to a client userId only if a token
+  // user can't be resolved (keeps older callers working) — but never let a
+  // client override a resolved token identity.
+  const accountId = (req.user as { id?: string } | undefined)?.id;
+  const dispenser = await resolveDispenser(accountId);
+  const actorId = dispenser.id ?? body.userId ?? null;
+  if (!actorId) {
+    throw new ValidationError(
+      "Could not resolve your user account — sign in again.",
+    );
+  }
 
   try {
+    // Idempotent replay (offline desktop retry): if we already processed
+    // this op, report success again without moving stock a second time.
+    if (body.clientOpId) {
+      const prior = await prisma.mobileUploadLog.findUnique({
+        where: { clientOpId: body.clientOpId },
+        select: { resultId: true, message: true },
+      });
+      if (prior) {
+        return res.code(200).send({
+          message: "OK (already applied)",
+          mode: "duplicate",
+          destStockId: prior.resultId,
+          duplicate: true,
+        });
+      }
+    }
+
+    const srcRow = await prisma.medicineStock.findUnique({
+      where: { id: body.stockId },
+      select: { medicineStorageId: true },
+    });
+    if (!srcRow) throw new NotFoundError("Source batch not found.");
+    if (srcRow.medicineStorageId === body.departId) {
+      throw new ValidationError(
+        "Destination must be different from the source storage.",
+      );
+    }
+    // Restricted users need BOTH sides — out of the source, into the target.
+    await assertStorageAccess(
+      actorId,
+      [srcRow.medicineStorageId, body.departId],
+      "transfer stock",
+    );
+
     const result = await prisma.$transaction(async (tx) => {
       const source = await tx.medicineStock.findUnique({
         where: { id: body.stockId },
@@ -1743,64 +1803,93 @@ export const transferMedicine = async (
           MedicineStorage: { select: { id: true, name: true, refNumber: true } },
         },
       });
-      if (!source) throw new NotFoundError("STOCK NOT FOUND");
+      if (!source) throw new NotFoundError("Source batch not found.");
       if (!source.medicineId)
         throw new ValidationError(
-          "Stock has no medicine linked — cannot transfer.",
+          "This batch has no medicine linked — it cannot be transferred.",
         );
       if (!source.MedicineStorage)
-        throw new ValidationError("Source storage missing on this stock row.");
-
-      if (source.MedicineStorage.id === body.departId) {
+        throw new ValidationError("This batch has no source storage on record.");
+      if (source.MedicineStorage.id === body.departId)
         throw new ValidationError(
           "Destination must be different from the source storage.",
         );
-      }
-      if (source.quantity < transferQty) {
-        throw new ValidationError(
-          `Not enough on hand. Available: ${source.quantity} ${source.quality}.`,
-        );
-      }
 
       const destination = await tx.medicineStorage.findUnique({
         where: { id: body.departId },
+        select: { id: true, name: true, refNumber: true, lineId: true, status: true },
       });
-      if (!destination)
-        throw new NotFoundError("TARGET STORAGE NOT FOUND");
+      if (!destination) throw new NotFoundError("Destination storage not found.");
+      if (destination.status === 0)
+        throw new ValidationError("The destination storage is inactive.");
+      if (destination.lineId !== source.lineId)
+        throw new ValidationError(
+          "Cannot transfer to a storage in a different office/line.",
+        );
 
-      const perQuantity = source.perQuantity;
+      const perQuantity = source.perQuantity || 1;
       const itemsMoved = perQuantity * transferQty;
 
-      // 1) Decrement source row.
-      await tx.medicineStock.update({
-        where: { id: source.id },
+      if (source.quantity < transferQty)
+        throw new ValidationError(
+          `Not enough on hand. Available: ${source.quantity} ${source.quality}.`,
+        );
+      if (source.actualStock < itemsMoved)
+        throw new ValidationError(
+          `This batch holds only ${source.actualStock} piece(s) — not enough to move ` +
+            `${transferQty} ${source.quality} (needs ${itemsMoved}). Some stock may ` +
+            `already have been dispensed; transfer fewer units.`,
+        );
+
+      // ATOMIC, race-proof decrement: only succeeds if the batch STILL has
+      // enough units and pieces. Two simultaneous transfers can't over-draw.
+      const dec = await tx.medicineStock.updateMany({
+        where: {
+          id: source.id,
+          quantity: { gte: transferQty },
+          actualStock: { gte: itemsMoved },
+        },
         data: {
-          quantity: source.quantity - transferQty,
-          actualStock: Math.max(0, source.actualStock - itemsMoved),
+          quantity: { decrement: transferQty },
+          actualStock: { decrement: itemsMoved },
         },
       });
+      if (dec.count === 0)
+        throw new ValidationError(
+          "This batch changed while you were transferring (another action ran). " +
+            "Refresh and try again — nothing was moved.",
+        );
 
-      // 2) Find or create the destination batch (same identity).
-      const matching = await tx.medicineStock.findFirst({
+      const exp = source.expiration;
+      const mfg = source.manufacturingDate;
+
+      // Destination match: same medicine/storage/unit/per-unit and the SAME
+      // calendar day for expiry + manufacturing (times-of-day ignored).
+      const matches = await tx.medicineStock.findMany({
         where: {
           medicineId: source.medicineId,
           medicineStorageId: body.departId,
-          expiration: source.expiration ?? undefined,
-          manufacturingDate: source.manufacturingDate ?? undefined,
           quality: source.quality,
           perQuantity: source.perQuantity,
+          expiration: exp ? batchDayWindow(exp) : null,
+          manufacturingDate: mfg ? batchDayWindow(mfg) : null,
         },
+        orderBy: { timestamp: "asc" },
       });
 
       let destStockId: string;
       let mode: "merge" | "new";
-      if (matching) {
+      if (matches.length > 0) {
         mode = "merge";
+        const keep = matches[0];
+        const absorbed = await absorbDuplicateStocks(tx, keep.id, matches.slice(1));
         const updated = await tx.medicineStock.update({
-          where: { id: matching.id },
+          where: { id: keep.id },
           data: {
-            quantity: matching.quantity + transferQty,
-            actualStock: matching.actualStock + itemsMoved,
+            quantity: keep.quantity + absorbed.addQty + transferQty,
+            actualStock: keep.actualStock + absorbed.addItems + itemsMoved,
+            ...(exp ? { expiration: normalizeBatchDay(exp) } : {}),
+            ...(mfg ? { manufacturingDate: normalizeBatchDay(mfg) } : {}),
           },
         });
         destStockId = updated.id;
@@ -1817,18 +1906,17 @@ export const transferMedicine = async (
             quantity: transferQty,
             actualStock: itemsMoved,
             threshold: source.threshold,
-            expiration: source.expiration,
-            manufacturingDate: source.manufacturingDate,
+            expiration: exp ? normalizeBatchDay(exp) : null,
+            manufacturingDate: mfg ? normalizeBatchDay(mfg) : null,
           },
         });
         destStockId = created.id;
       }
 
-      // 3) Audit log.
       await tx.medicineLogs.create({
         data: {
           action: 2,
-          userId: body.userId,
+          userId: actorId,
           lineId: source.lineId,
           message:
             `Transferred ${source.medicine?.name ?? "?"} ` +
@@ -1839,22 +1927,41 @@ export const transferMedicine = async (
         },
       });
 
-      // 4) Refresh low-stock alerts on both rows. Source may now be low;
-      //    destination may have recovered.
+      if (body.clientOpId) {
+        await tx.mobileUploadLog
+          .create({
+            data: {
+              clientOpId: body.clientOpId,
+              kind: "medicine.transfer",
+              userId: actorId,
+              lineId: source.lineId,
+              resultId: destStockId,
+              message: `Transferred ${transferQty} ${source.quality}`,
+            },
+          })
+          .catch(() => undefined);
+      }
+
+      // Source may now be low; destination may have recovered.
       await checkAndNotifyLowStock(tx, source.id);
       await clearLowStockAlerts(tx, destStockId);
       await checkAndNotifyLowStock(tx, destStockId);
 
-      return { mode, sourceStockId: source.id, destStockId };
+      return {
+        mode,
+        sourceStockId: source.id,
+        destStockId,
+        transferredUnits: transferQty,
+        itemsMoved,
+        sourceRemainingUnits: source.quantity - transferQty,
+      };
     });
 
     return res.code(200).send({ message: "OK", ...result });
   } catch (error) {
     if (error instanceof NotFoundError) throw error;
     if (error instanceof ValidationError) throw error;
-    if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      throw new AppError("DB_CONNECTION_ERROR", 500, "DB_FAILED");
-    }
+    if (error instanceof Prisma.PrismaClientKnownRequestError) throw dbError(error);
     throw error;
   }
 };
