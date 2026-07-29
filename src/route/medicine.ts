@@ -55,6 +55,7 @@ import {
   directDispenseMulti,
   dispenseHistoryList,
   dispenseHistoryDetail,
+  medicineDispenseInsights,
 } from "../controller/medicineController";
 
 export const medicine = (fastify: FastifyInstance) => {
@@ -93,6 +94,12 @@ export const medicine = (fastify: FastifyInstance) => {
     "/medicine/dispense-history/detail",
     { preHandler: authenticated },
     dispenseHistoryDetail,
+  );
+  // Procurement decision-support: fast/slow movers, reorder priority, trend.
+  fastify.get(
+    "/medicine/insights",
+    { preHandler: authenticated },
+    medicineDispenseInsights,
   );
   fastify.get("/medicine/logs", { preHandler: authenticated }, medicineLogList);
   fastify.patch(

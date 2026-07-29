@@ -3973,6 +3973,169 @@ export const dispenseHistoryDetail = async (
   }
 };
 
+/**
+ * GET /medicine/insights?lineId=&days=90 — procurement decision-support.
+ *
+ * Aggregates how much of each medicine was actually DISPENSED over a
+ * window, from BOTH sources without double counting:
+ *   - prescription dispenses → MedicineTransactionItem.releasedQuantity
+ *   - direct (no-Rx) dispenses → DispenseItem.quantity (record.kind = 0)
+ * then joins current on-hand per medicine so the RHU can see what to buy
+ * more of (fast-moving, and demand-exceeds-stock) and what to hold off on
+ * (slow-moving with stock still sitting).
+ */
+export const medicineDispenseInsights = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const q = req.query as { lineId?: string; days?: string };
+  if (!q.lineId) throw new ValidationError("INVALID REQUIRED ID");
+  let days = q.days ? parseInt(q.days, 10) : 90;
+  if (!Number.isFinite(days) || days <= 0) days = 90;
+  days = Math.min(days, 730);
+  const since = new Date(Date.now() - days * 86_400_000);
+
+  try {
+    const [rxItems, directItems, stockGroups, meds] = await Promise.all([
+      // Prescription dispenses (full history).
+      prisma.medicineTransactionItem.findMany({
+        where: {
+          releasedQuantity: { gt: 0 },
+          medicineId: { not: null },
+          presTranscription: { lineId: q.lineId, timestamp: { gte: since } },
+        },
+        select: {
+          medicineId: true,
+          releasedQuantity: true,
+          presTranscription: { select: { timestamp: true } },
+        },
+      }),
+      // Direct dispenses (kind 0) — prescription ones (kind 1) are counted
+      // above via MedicineTransactionItem, so only direct here (no double).
+      prisma.dispenseItem.findMany({
+        where: {
+          medicineId: { not: null },
+          quantity: { gt: 0 },
+          record: { lineId: q.lineId, kind: 0, timestamp: { gte: since } },
+        },
+        select: {
+          medicineId: true,
+          quantity: true,
+          record: { select: { timestamp: true } },
+        },
+      }),
+      // Current on-hand per medicine (line-wide).
+      prisma.medicineStock.groupBy({
+        by: ["medicineId"],
+        where: { lineId: q.lineId },
+        _sum: { actualStock: true },
+      }),
+      prisma.medicine.findMany({
+        where: { lineId: q.lineId, phase: { not: -1 } },
+        select: { id: true, name: true, serialNumber: true },
+      }),
+    ]);
+
+    const nameById = new Map(meds.map((m) => [m.id, m]));
+    const onHandById = new Map<string, number>();
+    for (const g of stockGroups)
+      if (g.medicineId) onHandById.set(g.medicineId, g._sum.actualStock ?? 0);
+
+    // ── per-medicine dispensed totals ──────────────────────────────────
+    const agg = new Map<string, { units: number; events: number }>();
+    const bump = (id: string | null, units: number) => {
+      if (!id) return;
+      const cur = agg.get(id) ?? { units: 0, events: 0 };
+      cur.units += units;
+      cur.events += 1;
+      agg.set(id, cur);
+    };
+    for (const r of rxItems) bump(r.medicineId, r.releasedQuantity);
+    for (const d of directItems) bump(d.medicineId, d.quantity);
+
+    const dispensedRows = [...agg.entries()]
+      .filter(([id]) => nameById.has(id))
+      .map(([id, v]) => ({
+        medicineId: id,
+        name: nameById.get(id)!.name,
+        serialNumber: nameById.get(id)!.serialNumber,
+        units: v.units,
+        events: v.events,
+        onHand: onHandById.get(id) ?? 0,
+      }));
+
+    const top = [...dispensedRows]
+      .sort((a, b) => b.units - a.units)
+      .slice(0, 12);
+
+    // Slow-moving: medicines that STILL HAVE STOCK but barely moved (incl.
+    // zero) — capital sitting on the shelf. Zero-dispensed-but-in-stock
+    // items are the clearest "review before reordering" candidates.
+    const dispensedMap = new Map(dispensedRows.map((r) => [r.medicineId, r.units]));
+    const slow = meds
+      .map((m) => ({
+        medicineId: m.id,
+        name: m.name,
+        serialNumber: m.serialNumber,
+        units: dispensedMap.get(m.id) ?? 0,
+        onHand: onHandById.get(m.id) ?? 0,
+      }))
+      .filter((m) => m.onHand > 0)
+      .sort((a, b) => a.units - b.units || b.onHand - a.onHand)
+      .slice(0, 12);
+
+    // Reorder priority: demand in the window EXCEEDS what's on hand now.
+    const reorder = dispensedRows
+      .filter((r) => r.units > r.onHand)
+      .sort((a, b) => b.units - a.units - (a.onHand - b.onHand))
+      .slice(0, 12)
+      .map((r) => ({ ...r, shortfall: r.units - r.onHand }));
+
+    // ── trend buckets (weekly for short windows, else monthly) ─────────
+    const weekly = days <= 120;
+    const buckets = new Map<string, { key: number; label: string; units: number }>();
+    const keyOf = (d: Date) => {
+      if (weekly) {
+        const ms = Math.floor(d.getTime() / (7 * 86_400_000));
+        const start = new Date(ms * 7 * 86_400_000);
+        return {
+          key: ms,
+          label: start.toLocaleDateString("en-PH", { month: "short", day: "numeric" }),
+        };
+      }
+      return {
+        key: d.getFullYear() * 12 + d.getMonth(),
+        label: d.toLocaleDateString("en-PH", { month: "short", year: "2-digit" }),
+      };
+    };
+    const addTrend = (ts: Date, units: number) => {
+      const { key, label } = keyOf(ts);
+      const b = buckets.get(String(key)) ?? { key, label, units: 0 };
+      b.units += units;
+      buckets.set(String(key), b);
+    };
+    for (const r of rxItems)
+      addTrend(r.presTranscription.timestamp, r.releasedQuantity);
+    for (const d of directItems) addTrend(d.record.timestamp, d.quantity);
+    const trend = [...buckets.values()]
+      .sort((a, b) => a.key - b.key)
+      .map((b) => ({ label: b.label, units: b.units }));
+
+    return res.code(200).send({
+      windowDays: days,
+      totalDispensedUnits: dispensedRows.reduce((s, r) => s + r.units, 0),
+      distinctMedicinesDispensed: dispensedRows.length,
+      top,
+      slow,
+      reorder,
+      trend,
+    });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) throw dbError(error);
+    throw error;
+  }
+};
+
 export const exportMedicineReport = async (
   req: FastifyRequest,
   res: FastifyReply,
