@@ -55,6 +55,7 @@ import {
   directDispenseMulti,
   dispenseHistoryList,
   dispenseHistoryDetail,
+  dispenseHistoryExport,
   medicineDispenseInsights,
 } from "../controller/medicineController";
 
@@ -94,6 +95,13 @@ export const medicine = (fastify: FastifyInstance) => {
     "/medicine/dispense-history/detail",
     { preHandler: authenticated },
     dispenseHistoryDetail,
+  );
+  // Per-patient dispensing summary (No, Full Name, Address, medicine units) as
+  // an .xlsx — honors the same search / kind / date-range filters as the list.
+  fastify.get(
+    "/medicine/dispense-history/export",
+    { preHandler: authenticated },
+    dispenseHistoryExport,
   );
   // Procurement decision-support: fast/slow movers, reorder priority, trend.
   fastify.get(

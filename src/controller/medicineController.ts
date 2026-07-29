@@ -3880,6 +3880,31 @@ export const directDispenseMulti = async (
 };
 
 /** GET /medicine/dispense-history — paginated list of dispense events. */
+// Build a Prisma timestamp filter from inclusive calendar-day bounds
+// (yyyy-MM-dd). Returns undefined when neither bound is given.
+const dispenseDateRange = (
+  dateFrom?: string,
+  dateTo?: string,
+): { gte?: Date; lte?: Date } | undefined => {
+  if (!dateFrom && !dateTo) return undefined;
+  const range: { gte?: Date; lte?: Date } = {};
+  if (dateFrom) {
+    const s = new Date(dateFrom);
+    if (!isNaN(s.getTime())) {
+      s.setHours(0, 0, 0, 0);
+      range.gte = s;
+    }
+  }
+  if (dateTo) {
+    const e = new Date(dateTo);
+    if (!isNaN(e.getTime())) {
+      e.setHours(23, 59, 59, 999);
+      range.lte = e;
+    }
+  }
+  return range.gte || range.lte ? range : undefined;
+};
+
 export const dispenseHistoryList = async (
   req: FastifyRequest,
   res: FastifyReply,
@@ -3890,6 +3915,8 @@ export const dispenseHistoryList = async (
     limit?: string;
     query?: string;
     kind?: string;
+    dateFrom?: string;
+    dateTo?: string;
   };
   if (!params.lineId) throw new ValidationError("INVALID REQUIRED ID");
   const limit = params.limit ? parseInt(params.limit, 10) : 20;
@@ -3899,6 +3926,9 @@ export const dispenseHistoryList = async (
     const where: any = { lineId: params.lineId };
     if (params.kind === "direct") where.kind = 0;
     else if (params.kind === "prescription") where.kind = 1;
+    // Inclusive day bounds: dateFrom = start of that day, dateTo = end of it.
+    const range = dispenseDateRange(params.dateFrom, params.dateTo);
+    if (range) where.timestamp = range;
     if (params.query?.trim()) {
       const q = params.query.trim();
       where.OR = [
@@ -3967,6 +3997,199 @@ export const dispenseHistoryDetail = async (
     return res.code(200).send({ record });
   } catch (error) {
     if (error instanceof NotFoundError) throw error;
+    if (error instanceof Prisma.PrismaClientKnownRequestError)
+      throw dbError(error);
+    throw error;
+  }
+};
+
+/**
+ * GET /medicine/dispense-history/export
+ *   ?lineId= &dateFrom= &dateTo= &query= &kind= &periodLabel=
+ *
+ * A per-PATIENT summary of dispensing over the selected period, streamed as an
+ * .xlsx: columns No, Full Name, Address, No. of Medicines Dispensed. Honors the
+ * SAME filters as the Dispense History list (search / kind / date range).
+ *
+ * "Medicines dispensed" = total medicine UNITS the patient received in the
+ * period (sum of each dispense's totalUnits). Records are grouped by the linked
+ * patient when there is one (prescription dispenses → address resolved from the
+ * Patient's barangay/municipal/province); walk-in direct dispenses group by the
+ * typed name and have no address on file.
+ */
+export const dispenseHistoryExport = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as {
+    lineId?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    query?: string;
+    kind?: string;
+    periodLabel?: string;
+  };
+  if (!params.lineId) throw new ValidationError("INVALID REQUIRED ID");
+
+  try {
+    const where: any = { lineId: params.lineId };
+    if (params.kind === "direct") where.kind = 0;
+    else if (params.kind === "prescription") where.kind = 1;
+    const range = dispenseDateRange(params.dateFrom, params.dateTo);
+    if (range) where.timestamp = range;
+    if (params.query?.trim()) {
+      const q = params.query.trim();
+      where.OR = [
+        { patientName: { contains: q, mode: "insensitive" } },
+        { refNumber: { contains: q, mode: "insensitive" } },
+        { dispenserName: { contains: q, mode: "insensitive" } },
+        { items: { some: { medicineName: { contains: q, mode: "insensitive" } } } },
+      ];
+    }
+
+    const records = await prisma.dispenseRecord.findMany({
+      where,
+      select: {
+        patientName: true,
+        patientId: true,
+        totalUnits: true,
+      },
+      orderBy: { timestamp: "desc" },
+      take: 100_000, // safety cap; a period export never realistically hits this
+    });
+
+    // Resolve addresses for the linked patients in one batch.
+    const patientIds = Array.from(
+      new Set(records.map((r) => r.patientId).filter((x): x is string => !!x)),
+    );
+    const patients = patientIds.length
+      ? await prisma.patient.findMany({
+          where: { id: { in: patientIds } },
+          select: {
+            id: true,
+            firstname: true,
+            lastname: true,
+            middlename: true,
+            barangay: { select: { name: true } },
+            municipal: { select: { name: true } },
+            province: { select: { name: true } },
+          },
+        })
+      : [];
+    const pmap = new Map(patients.map((p) => [p.id, p]));
+
+    const fullName = (p: (typeof patients)[number]): string => {
+      const mid = p.middlename && p.middlename !== "N/A" ? p.middlename : "";
+      const given = [p.firstname, mid].filter(Boolean).join(" ").trim();
+      return [p.lastname, given].filter(Boolean).join(", ").trim();
+    };
+    const addressOf = (p: (typeof patients)[number]): string =>
+      [p.barangay?.name, p.municipal?.name, p.province?.name]
+        .filter(Boolean)
+        .join(", ");
+
+    // Aggregate per patient (linked patient by id, else typed name).
+    type Agg = { name: string; address: string; units: number };
+    const agg = new Map<string, Agg>();
+    for (const r of records) {
+      const p = r.patientId ? pmap.get(r.patientId) : undefined;
+      let key: string, name: string, address: string;
+      if (p) {
+        key = "id:" + p.id;
+        name = fullName(p);
+        address = addressOf(p);
+      } else {
+        const nm = (r.patientName ?? "").trim();
+        key = nm ? "name:" + nm.toLowerCase() : "unnamed";
+        name = nm || "Walk-in / unnamed";
+        address = "";
+      }
+      const cur = agg.get(key) ?? { name, address, units: 0 };
+      cur.units += r.totalUnits || 0;
+      if (!cur.address && address) cur.address = address;
+      agg.set(key, cur);
+    }
+
+    const rows = Array.from(agg.values()).sort(
+      (a, b) => b.units - a.units || a.name.localeCompare(b.name),
+    );
+
+    // ── build the workbook ────────────────────────────────────────────────
+    const label = (params.periodLabel ?? "").trim() || "All time";
+    const workbook = new ExcelJS.Workbook();
+    workbook.created = new Date();
+    const ws = workbook.addWorksheet("Dispense Report", {
+      pageSetup: { paperSize: 9, orientation: "portrait", fitToPage: true },
+    });
+
+    ws.columns = [
+      { header: "No", key: "no", width: 6 },
+      { header: "Full Name", key: "name", width: 34 },
+      { header: "Address", key: "address", width: 40 },
+      { header: "No. of Medicines Dispensed", key: "units", width: 26 },
+    ];
+
+    // Title band above the header row.
+    ws.spliceRows(1, 0, ["DISPENSE HISTORY REPORT"], [`Period: ${label}`], []);
+    ws.mergeCells("A1:D1");
+    ws.mergeCells("A2:D2");
+    ws.getCell("A1").font = { bold: true, size: 14 };
+    ws.getCell("A1").alignment = { horizontal: "center" };
+    ws.getCell("A2").font = { italic: true, size: 10 };
+    ws.getCell("A2").alignment = { horizontal: "center" };
+
+    // The column headers now live on row 4 (after the 3 spliced rows).
+    const headerRow = ws.getRow(4);
+    headerRow.eachCell((cell) => {
+      cell.font = { bold: true };
+      cell.alignment = { horizontal: "center", vertical: "middle" };
+      cell.border = {
+        top: { style: "thin" },
+        left: { style: "thin" },
+        bottom: { style: "thin" },
+        right: { style: "thin" },
+      };
+      cell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FFF3F4F6" },
+      };
+    });
+
+    let total = 0;
+    rows.forEach((r, i) => {
+      total += r.units;
+      const row = ws.addRow({
+        no: i + 1,
+        name: r.name,
+        address: r.address || "—",
+        units: r.units,
+      });
+      row.getCell("units").alignment = { horizontal: "center" };
+      row.getCell("no").alignment = { horizontal: "center" };
+    });
+
+    // Total row.
+    const totalRow = ws.addRow({ name: "TOTAL", units: total });
+    totalRow.getCell("name").font = { bold: true };
+    totalRow.getCell("name").alignment = { horizontal: "right" };
+    totalRow.getCell("units").font = { bold: true };
+    totalRow.getCell("units").alignment = { horizontal: "center" };
+
+    const safeLabel = label.replace(/[^A-Za-z0-9]+/g, "_").replace(/^_|_$/g, "");
+    res.header(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+    res.header(
+      "Content-Disposition",
+      `attachment; filename="Dispense_Report_${safeLabel || "All"}.xlsx"`,
+    );
+    res.header("Access-Control-Expose-Headers", "Content-Disposition");
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    return res.send(buffer);
+  } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError)
       throw dbError(error);
     throw error;
