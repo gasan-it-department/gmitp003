@@ -84,17 +84,36 @@ export async function allowedStorageIds(
 }
 
 /**
+ * A super-admin (User.privilege.super) manages the whole line, so they may
+ * write to EVERY storage in it without a per-storage grant — the same people
+ * who run the "Dispense & Stock Access" tab shouldn't be locked out of their
+ * own storages (especially legacy ones created before creators were tracked,
+ * whose createdById is null). Regular staff stay strictly gated.
+ */
+export async function isSuperAdmin(
+  userId: string | null | undefined,
+): Promise<boolean> {
+  if (!userId) return false;
+  const u = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { privilege: { select: { super: true } } },
+  });
+  return !!u?.privilege?.super;
+}
+
+/**
  * Non-throwing counterpart to {@link assertStorageAccess} for ONE storage:
- * true when `userId` may write there — i.e. they created the storage OR hold a
- * Dispense & Stock Access grant on it. Used to tell the UI whether to show the
- * write controls (the mutation endpoints still re-check server-side).
+ * true when `userId` may write there — i.e. they are a super-admin, they
+ * created the storage, OR they hold a Dispense & Stock Access grant on it.
+ * Used to tell the UI whether to show the write controls (the mutation
+ * endpoints still re-check server-side).
  */
 export async function canWriteStorage(
   userId: string | null | undefined,
   storageId: string | null | undefined,
 ): Promise<boolean> {
   if (!userId || !storageId) return false;
-  const [grant, created] = await Promise.all([
+  const [grant, created, sup] = await Promise.all([
     prisma.medicineStorageAccess.findFirst({
       where: { userId, medicineStorageId: storageId },
       select: { id: true },
@@ -103,8 +122,9 @@ export async function canWriteStorage(
       where: { id: storageId, createdById: userId },
       select: { id: true },
     }),
+    isSuperAdmin(userId),
   ]);
-  return !!grant || !!created;
+  return !!grant || !!created || sup;
 }
 
 /**
@@ -121,7 +141,7 @@ export async function assertStorageAccess(
   if (!userId) return; // no identity on this call — token auth still applies
   const wanted = [...new Set(storageIds.filter(Boolean) as string[])];
   if (wanted.length === 0) return;
-  const [grants, createdByMe] = await Promise.all([
+  const [grants, createdByMe, sup] = await Promise.all([
     prisma.medicineStorageAccess.findMany({
       where: { userId, medicineStorageId: { in: wanted } },
       select: { medicineStorageId: true },
@@ -132,7 +152,10 @@ export async function assertStorageAccess(
       where: { id: { in: wanted }, createdById: userId },
       select: { id: true },
     }),
+    // A super-admin runs the whole line and manages every storage in it.
+    isSuperAdmin(userId),
   ]);
+  if (sup) return; // super-admins are never blocked on their line's storages
   const have = new Set([
     ...grants.map((g) => g.medicineStorageId),
     ...createdByMe.map((s) => s.id),

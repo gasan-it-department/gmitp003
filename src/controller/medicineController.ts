@@ -22,6 +22,7 @@ import {
   assertStorageAccess,
   autoGrantSoleStorageAccess,
   canWriteStorage,
+  isSuperAdmin,
 } from "./storageAccessController";
 import {
   checkAndNotifyLowStock,
@@ -738,16 +739,27 @@ export const searchMedicineStock = async (
         ),
       ),
     ] as string[];
-    const grants = callerUserId
-      ? await prisma.medicineStorageAccess.findMany({
-          where: {
-            userId: callerUserId,
-            medicineStorageId: { in: storageIds },
-          },
-          select: { medicineStorageId: true },
-        })
-      : [];
-    const canWrite = new Set(grants.map((g) => g.medicineStorageId));
+    const [grants, createdMine, callerIsSuper] = await Promise.all([
+      callerUserId && storageIds.length
+        ? prisma.medicineStorageAccess.findMany({
+            where: { userId: callerUserId, medicineStorageId: { in: storageIds } },
+            select: { medicineStorageId: true },
+          })
+        : Promise.resolve([]),
+      callerUserId && storageIds.length
+        ? prisma.medicineStorage.findMany({
+            where: { id: { in: storageIds }, createdById: callerUserId },
+            select: { id: true },
+          })
+        : Promise.resolve([]),
+      isSuperAdmin(callerUserId),
+    ]);
+    // Accessible = super-admin (all), OR the storage's creator, OR an explicit
+    // Dispense & Stock Access grant. Drives whether Dispense can use a storage.
+    const canWrite = new Set([
+      ...grants.map((g) => g.medicineStorageId),
+      ...createdMine.map((s) => s.id),
+    ]);
 
     const list = meds.map((m) => {
       const perStorage = new Map<
@@ -774,7 +786,7 @@ export const searchMedicineStock = async (
           onHand: 0,
           batches: 0,
           nearestExpiration: null as Date | null,
-          accessible: canWrite.has(st.id),
+          accessible: callerIsSuper || canWrite.has(st.id),
         };
         row.onHand += s.actualStock ?? 0;
         row.batches += 1;

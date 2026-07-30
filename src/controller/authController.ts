@@ -28,6 +28,7 @@ export const authController = async (
           select: {
             departmentId: true,
             id: true,
+            privilege: { select: { super: true } },
           },
         },
         line: {
@@ -93,6 +94,9 @@ export const authController = async (
         id: user.User?.id,
         line: user.lineId,
         departmentId: user.User?.departmentId,
+        // Super-admins bypass per-storage access in the desktop app (mirrors
+        // the server rule). Extra field; other clients ignore it.
+        super: !!user.User?.privilege?.super,
       },
     });
   } catch (error) {
