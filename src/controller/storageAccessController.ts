@@ -84,6 +84,30 @@ export async function allowedStorageIds(
 }
 
 /**
+ * Non-throwing counterpart to {@link assertStorageAccess} for ONE storage:
+ * true when `userId` may write there — i.e. they created the storage OR hold a
+ * Dispense & Stock Access grant on it. Used to tell the UI whether to show the
+ * write controls (the mutation endpoints still re-check server-side).
+ */
+export async function canWriteStorage(
+  userId: string | null | undefined,
+  storageId: string | null | undefined,
+): Promise<boolean> {
+  if (!userId || !storageId) return false;
+  const [grant, created] = await Promise.all([
+    prisma.medicineStorageAccess.findFirst({
+      where: { userId, medicineStorageId: storageId },
+      select: { id: true },
+    }),
+    prisma.medicineStorage.findFirst({
+      where: { id: storageId, createdById: userId },
+      select: { id: true },
+    }),
+  ]);
+  return !!grant || !!created;
+}
+
+/**
  * LOCKED BY DEFAULT: throw a ValidationError unless `userId` holds a grant on
  * EVERY storage in `storageIds`. Call before mutating stock or dispensing.
  * (Batches with no storage location fall outside the storage system and are

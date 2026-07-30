@@ -21,6 +21,7 @@ import { getQuarter } from "../utils/date";
 import {
   assertStorageAccess,
   autoGrantSoleStorageAccess,
+  canWriteStorage,
 } from "./storageAccessController";
 import {
   checkAndNotifyLowStock,
@@ -820,6 +821,18 @@ export const storageMeds = async (req: FastifyRequest, res: FastifyReply) => {
 
   if (!params.id) throw new ValidationError("BAD_REQUEST");
 
+  // Whether the CALLER (token identity) may write to this storage — creator or
+  // a Dispense & Stock Access holder. The UI uses this to show/hide the edit,
+  // transfer, add and remove controls; the write endpoints re-check regardless.
+  const accountId = (req.user as { id?: string } | undefined)?.id;
+  const authAccount = accountId
+    ? await prisma.account.findUnique({
+        where: { id: accountId },
+        select: { User: { select: { id: true } } },
+      })
+    : null;
+  const actorId = authAccount?.User?.id ?? null;
+
   try {
     const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
     const limit = params.limit ? parseInt(params.limit, 10) : 10;
@@ -882,9 +895,11 @@ export const storageMeds = async (req: FastifyRequest, res: FastifyReply) => {
       list.length > 0 ? list[list.length - 1].id : null;
     const hasMore = list.length === limit;
 
+    const canWrite = await canWriteStorage(actorId, params.id);
+
     return res
       .code(200)
-      .send({ list, lastCursor: newLastCursorId, hasMore });
+      .send({ list, lastCursor: newLastCursorId, hasMore, canWrite });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_EROR", 500, "DB_FAILED");
@@ -2838,6 +2853,19 @@ export const removeStorage = async (req: FastifyRequest, res: FastifyReply) => {
   const params = req.query as { id: string; userId: string; lineId: string };
 
   if (!params.id) throw new ValidationError("INVALID REQUIRED ID");
+
+  // Identity from the TOKEN — removing a storage is a write to it, so only the
+  // creator or a Dispense & Stock Access holder may do it (never trust the
+  // client-supplied userId for the access decision).
+  const accountId = (req.user as { id?: string } | undefined)?.id;
+  const authAccount = accountId
+    ? await prisma.account.findUnique({
+        where: { id: accountId },
+        select: { User: { select: { id: true } } },
+      })
+    : null;
+  const actorId = authAccount?.User?.id ?? null;
+  await assertStorageAccess(actorId, [params.id], "remove");
 
   try {
     const response = await prisma.$transaction(async (tx) => {

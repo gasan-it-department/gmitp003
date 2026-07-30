@@ -396,7 +396,13 @@ export const REAL_PUSH: Record<
 
     await prisma.medicineStorage.upsert({
       where: { id },
-      create: { id, refNumber, name, desc, lineId, departmentId, timestamp },
+      // On create, the pushing user IS the creator (fall back to any created_by
+      // the client sent) — so the creator-write bypass recognizes them. Never
+      // reassign the creator on update.
+      create: {
+        id, refNumber, name, desc, lineId, departmentId, timestamp,
+        createdById: ctx.userId ?? s(row.created_by) ?? undefined,
+      },
       update: { name, desc, departmentId },
     });
     if (!existing)
@@ -789,6 +795,9 @@ export const REAL_PULL: Record<
       descr: r.desc,
       department_id: r.departmentId,
       department_name: r.unit?.name ?? null,
+      // creator id so the desktop can honor the SAME creator-write bypass the
+      // server does (a storage's creator may write even without a grant).
+      created_by: r.createdById,
       timestamp: r.timestamp,
       updated_at: r.timestamp,
       deleted_at: null,
