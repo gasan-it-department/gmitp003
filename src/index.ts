@@ -94,6 +94,12 @@ const io = new Server(app.server, {
       "http://localhost:5173",
       "https://gasanmarinduque.xyz",
       "https://g671jwjj-5173.asse.devtunnels.ms",
+      // Current production frontend (Vercel). The apex is the canonical URL;
+      // www is kept as a safe alias.
+      "https://portal.gasan.ph",
+      "https://www.portal.gasan.ph",
+      // Legacy frontend origins — kept so old links keep working during the
+      // switch to portal.gasan.ph.
       "https://lgu-portal.xyz",
       "https://www.lgu-portal.xyz",
       "https://fastify-service-production.up.railway.app",
@@ -127,10 +133,14 @@ app.register(cors, {
     "http://localhost:5173",
     "https://gasanmarinduque.xyz",
     "https://ckv55gfl-5173.asse.devtunnels.ms",
+    // Current production frontend (Vercel). Apex is canonical; www is a safe alias.
+    "https://portal.gasan.ph",
+    "https://www.portal.gasan.ph",
+    // Legacy frontend origins — kept during the switch to portal.gasan.ph.
     "https://lgu-portal.xyz",
     "https://www.lgu-portal.xyz",
     "https://fastify-service-production.up.railway.app",
-  ], // Allow all origins
+  ], // Allowed browser origins (credentials mode → must be explicit, no "*")
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH"], // Allowed HTTP methods
   allowedHeaders: [
     "Origin",
@@ -255,7 +265,7 @@ app.get("/test/ai", async (request: FastifyRequest, reply: FastifyReply) => {
 // Public build marker — lets anyone (including the assistant) CONFIRM which
 // build is actually serving, instead of trusting deploy timers. Bump the
 // tag with each meaningful deploy.
-const BUILD_TAG = "2026-07-30-superadmin-storage-bypass";
+const BUILD_TAG = "2026-07-30-portal-gasan-ph-cors";
 app.get("/health/build", async () => ({ status: "ok", build: BUILD_TAG }));
 
 app.listen({ port: 3000, host: "0.0.0.0" }, (err, address) => {
