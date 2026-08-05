@@ -93,6 +93,11 @@ const io = new Server(app.server, {
   cors: {
     origin: [
       "http://localhost:5173",
+    // Inventory desktop (Tauri). 5174 is its vite dev server; the packaged
+    // shell serves from tauri:// and http://tauri.localhost on Windows.
+    "http://localhost:5174",
+    "tauri://localhost",
+    "http://tauri.localhost",
       "https://gasanmarinduque.xyz",
       "https://g671jwjj-5173.asse.devtunnels.ms",
       // Current production frontend (Vercel). The apex is the canonical URL;
@@ -132,6 +137,11 @@ app.register(import("@fastify/rate-limit"), {
 app.register(cors, {
   origin: [
     "http://localhost:5173",
+    // Inventory desktop (Tauri). 5174 is its vite dev server; the packaged
+    // shell serves from tauri:// and http://tauri.localhost on Windows.
+    "http://localhost:5174",
+    "tauri://localhost",
+    "http://tauri.localhost",
     "https://gasanmarinduque.xyz",
     "https://ckv55gfl-5173.asse.devtunnels.ms",
     // Current production frontend (Vercel). Apex is canonical; www is a safe alias.
@@ -267,7 +277,7 @@ app.get("/test/ai", async (request: FastifyRequest, reply: FastifyReply) => {
 // Public build marker — lets anyone (including the assistant) CONFIRM which
 // build is actually serving, instead of trusting deploy timers. Bump the
 // tag with each meaningful deploy.
-const BUILD_TAG = "2026-08-05-attendance-filters";
+const BUILD_TAG = "2026-08-05-tauri-cors";
 app.get("/health/build", async () => ({ status: "ok", build: BUILD_TAG }));
 
 app.listen({ port: 3000, host: "0.0.0.0" }, (err, address) => {
