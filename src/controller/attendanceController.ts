@@ -318,32 +318,74 @@ const withBackfill = async <
   });
 };
 
-// GET /attendance/event/:eventId/records?page&search
+export interface RecordFilters {
+  dateFrom?: string;
+  dateTo?: string;
+  departmentId?: string;
+  search?: string;
+}
+
+/**
+ * Turns the query string into a Prisma filter.
+ *
+ * Date and office are real SQL filters. Office keys off the employee's CURRENT
+ * department rather than the frozen snapshot, because `office` is only in the
+ * snapshot if HR happened to pick that column — filtering must work either way.
+ */
+const recordWhere = (
+  eventId: string,
+  f: RecordFilters,
+): Prisma.AttendanceRecordWhereInput => {
+  const where: Prisma.AttendanceRecordWhereInput = { eventId };
+  if (f.dateFrom || f.dateTo) {
+    const gte = f.dateFrom ? new Date(f.dateFrom) : undefined;
+    // A bare YYYY-MM-DD means the WHOLE day, so push the end to 23:59:59.999.
+    let lte: Date | undefined;
+    if (f.dateTo) {
+      lte = new Date(f.dateTo);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(f.dateTo)) lte.setHours(23, 59, 59, 999);
+    }
+    where.timestamp = {
+      ...(gte && !Number.isNaN(gte.getTime()) ? { gte } : {}),
+      ...(lte && !Number.isNaN(lte.getTime()) ? { lte } : {}),
+    };
+  }
+  if (f.departmentId) where.user = { departmentId: f.departmentId };
+  return where;
+};
+
+// GET /attendance/event/:eventId/records?page&search&dateFrom&dateTo&departmentId
 export const attendanceRecords = async (
   req: FastifyRequest,
   res: FastifyReply,
 ) => {
   const { eventId } = req.params as { eventId: string };
-  const q = req.query as { page?: string; search?: string };
+  const q = (req.query ?? {}) as RecordFilters & { page?: string };
   const event = await eventForCaller(eventId, req);
 
   const page = Math.max(0, Number(q.page ?? 0) || 0);
   const take = 25;
 
   try {
-    const [rows, total] = await Promise.all([
-      prisma.attendanceRecord.findMany({
-        where: { eventId },
-        orderBy: { timestamp: "desc" },
-        skip: page * take,
-        take,
-        include: {
-          user: { select: { id: true, profilePicture: true } },
-          scannedBy: { select: { firstName: true, lastName: true } },
+    // Text search has to run AFTER the snapshot is materialised (the values
+    // live in JSON, and the underlying User columns are encrypted at rest, so
+    // there's nothing meaningful to LIKE against in SQL). An attendance sheet
+    // is a bounded list, so we filter the sheet in memory and paginate the
+    // result — that way search spans the whole sheet, not just one page.
+    const rows = await prisma.attendanceRecord.findMany({
+      where: recordWhere(eventId, q),
+      orderBy: { timestamp: "desc" },
+      include: {
+        user: {
+          select: {
+            id: true,
+            profilePicture: true,
+            department: { select: { id: true, name: true } },
+          },
         },
-      }),
-      prisma.attendanceRecord.count({ where: { eventId } }),
-    ]);
+        scannedBy: { select: { firstName: true, lastName: true } },
+      },
+    });
 
     const filled = await withBackfill(rows, event.fields);
     const search = (q.search || "").trim().toLowerCase();
@@ -355,17 +397,44 @@ export const attendanceRecords = async (
         )
       : filled;
 
+    const total = visible.length;
+    const pageRows = visible.slice(page * take, page * take + take);
+
+    // Offices actually present on this sheet, so the dropdown can't offer a
+    // choice that yields nothing. Built from the UNFILTERED sheet so the
+    // options don't vanish as soon as you pick one.
+    const allForFacet = q.departmentId
+      ? await prisma.attendanceRecord.findMany({
+          where: recordWhere(eventId, { ...q, departmentId: undefined }),
+          select: {
+            user: { select: { department: { select: { id: true, name: true } } } },
+          },
+        })
+      : rows;
+    const facet = new Map<string, { id: string; name: string; count: number }>();
+    for (const r of allForFacet) {
+      const d = r.user?.department;
+      if (!d?.id) continue;
+      const hit = facet.get(d.id);
+      if (hit) hit.count += 1;
+      else facet.set(d.id, { id: d.id, name: d.name ?? "Unnamed", count: 1 });
+    }
+
     return res.code(200).send({
       columns: event.fields.map((k) => ({
         key: k,
         label: attendanceFieldLabel(k),
       })),
-      records: visible.map((r) => ({
+      departments: [...facet.values()].sort((a, b) =>
+        a.name.localeCompare(b.name),
+      ),
+      records: pageRows.map((r) => ({
         id: r.id,
         userId: r.userId,
         timestamp: r.timestamp,
         remarks: r.remarks,
         profilePicture: r.user?.profilePicture ?? null,
+        office: r.user?.department?.name ?? null,
         scannedBy: r.scannedBy
           ? `${r.scannedBy.firstName} ${r.scannedBy.lastName}`.trim()
           : null,
@@ -697,14 +766,24 @@ export const exportAttendance = async (
   res: FastifyReply,
 ) => {
   const { eventId } = req.params as { eventId: string };
+  const q = (req.query ?? {}) as RecordFilters;
   const event = await eventForCaller(eventId, req);
 
   try {
+    // Same filters as the on-screen table — you export what you're looking at.
     const rows = await prisma.attendanceRecord.findMany({
-      where: { eventId },
+      where: recordWhere(eventId, q),
       orderBy: { timestamp: "asc" },
     });
-    const filled = await withBackfill(rows, event.fields);
+    const all = await withBackfill(rows, event.fields);
+    const term = (q.search || "").trim().toLowerCase();
+    const filled = term
+      ? all.filter((r) =>
+          Object.values(r.values).some((v) =>
+            (v || "").toLowerCase().includes(term),
+          ),
+        )
+      : all;
 
     const workbook = new ExcelJS.Workbook();
     workbook.creator = "Municipality of Gasan";
