@@ -267,6 +267,61 @@ export const documentMobileAuth = async (
   }
 };
 
+/**
+ * Mobile attendance-scanner gate. Unlike the pharmacy/document gates this one
+ * has three ways through, because "HR or an allowed user may scan":
+ *   1. a super-admin,
+ *   2. the line's HRMO (the HR officer owns attendance by definition), or
+ *   3. an explicit AttendanceMobileAccess grant.
+ * Everyone else gets 403 so a rank-and-file employee can't record attendance
+ * for other people.
+ */
+export const attendanceMobileAuth = async (
+  request: FastifyRequest,
+  reply: FastifyReply,
+) => {
+  const deny = () =>
+    reply.code(403).send({
+      error: "NO_ATTENDANCE_ACCESS",
+      message:
+        "You're not allowed to record attendance. Ask HR to grant it in Human Resources > Attendance > Scanner Access.",
+    });
+  try {
+    const accountId = (request.user as { id?: string } | undefined)?.id;
+    if (!accountId) return reply.code(401).send({ error: "Unauthorized" });
+
+    const account = await prisma.account.findUnique({
+      where: { id: accountId },
+      select: {
+        lineId: true,
+        User: {
+          select: {
+            id: true,
+            lineId: true,
+            privilege: { select: { super: true } },
+            hrmoLin: { select: { id: true } },
+          },
+        },
+      },
+    });
+    const lineId = account?.lineId ?? account?.User?.lineId ?? null;
+    const userId = account?.User?.id ?? null;
+    if (!lineId || !userId) return deny();
+
+    if (account?.User?.privilege?.super) return;
+    if (account?.User?.hrmoLin) return;
+
+    const access = await prisma.attendanceMobileAccess.findUnique({
+      where: { lineId_userId: { lineId, userId } },
+      select: { id: true },
+    });
+    if (!access) return deny();
+    return;
+  } catch (error) {
+    return deny();
+  }
+};
+
 export const medicineAccessAuth = async (
   request: FastifyRequest,
   reply: FastifyReply,

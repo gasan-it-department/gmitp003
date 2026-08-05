@@ -83,6 +83,8 @@ model Line {
   payslips                Payslip[]
   payrollDeductions       PayrollDeduction[]
   complaints              Complaint[]
+  attendanceEvents        AttendanceEvent[]
+  AttendanceMobileAccess  AttendanceMobileAccess[]
 }
 
 model LineInvitation {
@@ -1084,6 +1086,11 @@ model User {
   active                           Int                              @default(1)
   Accomplishment                   Accomplishment[]
   headResponse                     AccomplishmentResponse[]         @relation("Head")
+  attendanceEventsCreated          AttendanceEvent[]                @relation("AttendanceEventCreatedBy")
+  attendanceRecords                AttendanceRecord[]               @relation("AttendanceRecordUser")
+  attendanceScanned                AttendanceRecord[]               @relation("AttendanceRecordScannedBy")
+  AttendanceMobileAccess           AttendanceMobileAccess[]         @relation("AttendanceMobileAccessUser")
+  AttendanceMobileAccessGranted    AttendanceMobileAccess[]         @relation("AttendanceMobileAccessGrantedBy")
   activityLogs                     ActivityLogs[]
   AdminInbox                       AdminInbox[]
   Announcement                     Announcement[]
@@ -2867,4 +2874,63 @@ model DispenseItem {
   record           DispenseRecord @relation(fields: [dispenseRecordId], references: [id], onDelete: Cascade)
 
   @@index([dispenseRecordId])
+}
+
+// ── Attendance (QR-scanned event/session attendance) ───────────────────────
+// HR creates an event and picks WHICH user props it captures (`fields`).
+// In the field, an HR/authorised user scans the employee's existing ID-card
+// QR (User.verifyCode) and confirms. Values are frozen into
+// AttendanceRecord.snapshot at scan time so later profile edits never
+// rewrite an attendance sheet that was already signed off.
+model AttendanceEvent {
+  id          String             @id @default(uuid())
+  lineId      String
+  title       String
+  description String?
+  location    String?
+  startAt     DateTime           @default(now())
+  endAt       DateTime?
+  status      String             @default("open") // open | closed
+  fields      String[] // AttendanceField keys, in HR's chosen column order
+  createdById String?
+  createdAt   DateTime           @default(now())
+  line        Line               @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  createdBy   User?              @relation("AttendanceEventCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  records     AttendanceRecord[]
+
+  @@index([lineId, startAt])
+  @@index([lineId, status])
+}
+
+model AttendanceRecord {
+  id          String          @id @default(uuid())
+  eventId     String
+  userId      String
+  scannedById String?
+  timestamp   DateTime        @default(now())
+  remarks     String?
+  snapshot    Json // { fieldKey: renderedValue } frozen at scan time
+  event       AttendanceEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user        User            @relation("AttendanceRecordUser", fields: [userId], references: [id], onDelete: Cascade)
+  scannedBy   User?           @relation("AttendanceRecordScannedBy", fields: [scannedById], references: [id], onDelete: SetNull)
+
+  // one attendance per person per event — makes re-scans idempotent
+  @@unique([eventId, userId])
+  @@index([eventId, timestamp])
+  @@index([userId])
+}
+
+// Who may run the attendance scanner in the mobile app (mirrors
+// DocumentMobileAccess / PharmacyMobileAccess).
+model AttendanceMobileAccess {
+  id          String   @id @default(uuid())
+  lineId      String
+  userId      String
+  grantedById String?
+  timestamp   DateTime @default(now())
+  line        Line     @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  user        User     @relation("AttendanceMobileAccessUser", fields: [userId], references: [id], onDelete: Cascade)
+  grantedBy   User?    @relation("AttendanceMobileAccessGrantedBy", fields: [grantedById], references: [id], onDelete: SetNull)
+
+  @@unique([lineId, userId])
 }

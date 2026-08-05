@@ -56,6 +56,7 @@ import { peso } from "./route/peso";
 import { provisional } from "./route/provisional";
 import { sync } from "./route/sync";
 import { chat } from "./route/chat";
+import { attendance } from "./route/attendance";
 
 import errorHandlerPlugin from "./plugin/errorHandlers";
 //
@@ -194,6 +195,7 @@ app.register(peso);
 app.register(provisional);
 app.register(sync);
 app.register(chat);
+app.register(attendance);
 io.on("connection", (socket) => {
   console.log("User connected: ", socket.id);
 
@@ -265,7 +267,7 @@ app.get("/test/ai", async (request: FastifyRequest, reply: FastifyReply) => {
 // Public build marker — lets anyone (including the assistant) CONFIRM which
 // build is actually serving, instead of trusting deploy timers. Bump the
 // tag with each meaningful deploy.
-const BUILD_TAG = "2026-07-30-portal-gasan-ph-cors";
+const BUILD_TAG = "2026-08-05-qr-attendance-offline";
 app.get("/health/build", async () => ({ status: "ok", build: BUILD_TAG }));
 
 app.listen({ port: 3000, host: "0.0.0.0" }, (err, address) => {
