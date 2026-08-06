@@ -15,10 +15,11 @@
 
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
 import { prisma, Prisma } from "../barrel/prisma";
-import { AppError, NotFoundError, ValidationError } from "../errors/errors";
+import { AppError, NotFoundError, ValidationError, UnauthorizedError } from "../errors/errors";
 import { createUserNotification } from "../service/notificationEvents";
 import { attestQueue, newSerial, seal } from "../service/documentSeal";
 import { tempURL } from "../service/url";
+import { callerUserId } from "../middleware/handler";
 
 // ── Outbox: disseminations created BY this room ────────────────────────
 export const disseminationOutbox = async (
@@ -1636,9 +1637,25 @@ export const signMine = async (req: FastifyRequest, res: FastifyReply) => {
     // Optional geolocation captured from the browser at click time.
     geo?: { lat: number; lng: number; accuracy?: number | null } | null;
   };
-  if (!body.queueRoomId || !body.userId) {
+  if (!body.queueRoomId) {
     throw new ValidationError("INVALID REQUIRED FIELDS");
   }
+
+  // SECURITY: the actor is whoever holds the token — never whoever the body
+  // claims. This previously trusted `body.userId`, so any authenticated user
+  // could name someone else's id and act as them. For signing in particular
+  // that meant applying ANOTHER PERSON'S signature to a document, which is the
+  // single worst thing an e-signature system can permit. A mismatch is refused
+  // outright rather than quietly corrected, so misuse is visible in the logs.
+  const actorId = await callerUserId(req);
+  if (!actorId) throw new UnauthorizedError("Not signed in");
+  if (body.userId && body.userId !== actorId) {
+    console.warn(
+      `[signMine] refused: user ${actorId} attempted to act as ${body.userId}`,
+    );
+    throw new UnauthorizedError("You can only act on your own behalf.");
+  }
+  body.userId = actorId;
   try {
     const result = await prisma.$transaction(async (tx) => {
       // Pull the queue WITH its from-room so we can grab the real lineId
@@ -1849,9 +1866,25 @@ export const archiveDissemination = async (
   res: FastifyReply,
 ) => {
   const body = req.body as { queueRoomId: string; userId: string };
-  if (!body.queueRoomId || !body.userId) {
+  if (!body.queueRoomId) {
     throw new ValidationError("INVALID REQUIRED FIELDS");
   }
+
+  // SECURITY: the actor is whoever holds the token — never whoever the body
+  // claims. This previously trusted `body.userId`, so any authenticated user
+  // could name someone else's id and act as them. For signing in particular
+  // that meant applying ANOTHER PERSON'S signature to a document, which is the
+  // single worst thing an e-signature system can permit. A mismatch is refused
+  // outright rather than quietly corrected, so misuse is visible in the logs.
+  const actorId = await callerUserId(req);
+  if (!actorId) throw new UnauthorizedError("Not signed in");
+  if (body.userId && body.userId !== actorId) {
+    console.warn(
+      `[archiveDissemination] refused: user ${actorId} attempted to act as ${body.userId}`,
+    );
+    throw new UnauthorizedError("You can only act on your own behalf.");
+  }
+  body.userId = actorId;
   try {
     const result = await prisma.$transaction(async (tx) => {
       const queue = await tx.signatureQueueRoom.findUnique({
@@ -2357,9 +2390,25 @@ export const cancelDispatchedDissemination = async (
     userId: string;
     reason?: string;
   };
-  if (!body.queueRoomId || !body.userId) {
+  if (!body.queueRoomId) {
     throw new ValidationError("INVALID REQUIRED FIELDS");
   }
+
+  // SECURITY: the actor is whoever holds the token — never whoever the body
+  // claims. This previously trusted `body.userId`, so any authenticated user
+  // could name someone else's id and act as them. For signing in particular
+  // that meant applying ANOTHER PERSON'S signature to a document, which is the
+  // single worst thing an e-signature system can permit. A mismatch is refused
+  // outright rather than quietly corrected, so misuse is visible in the logs.
+  const actorId = await callerUserId(req);
+  if (!actorId) throw new UnauthorizedError("Not signed in");
+  if (body.userId && body.userId !== actorId) {
+    console.warn(
+      `[cancelDispatchedDissemination] refused: user ${actorId} attempted to act as ${body.userId}`,
+    );
+    throw new UnauthorizedError("You can only act on your own behalf.");
+  }
+  body.userId = actorId;
 
   try {
     const result = await prisma.$transaction(async (tx) => {

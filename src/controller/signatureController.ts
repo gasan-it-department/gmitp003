@@ -9,6 +9,13 @@
 // Active rule: exactly one signature per user can be `active: true`. The
 // activate handler flips the chosen row on and clears the others.
 //
+// SECURITY: every handler here resolves the owner from the BEARER TOKEN and
+// ignores any userId supplied by the client. These endpoints previously
+// trusted a request-supplied userId, which let any authenticated user read,
+// activate, delete and QR-toggle another person's signature — including
+// downloading their signature IMAGE. Never reintroduce a client-provided
+// owner id here.
+//
 // Storage: signature blobs live on the Signature.signature `Bytes?`
 // column (PNG/JPEG/SVG, ideally a transparent PNG). The list response
 // returns each signature as a base64 data URL so the UI can show a
@@ -16,7 +23,8 @@
 
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
 import { prisma, Prisma } from "../barrel/prisma";
-import { AppError, NotFoundError, ValidationError } from "../errors/errors";
+import { AppError, NotFoundError, ValidationError, UnauthorizedError } from "../errors/errors";
+import { callerUserId } from "../middleware/handler";
 
 const ALLOWED_MIMES = new Set([
   "image/png",
@@ -77,13 +85,16 @@ export const listUserSignatures = async (
     limit?: string;
     query?: string;
   };
-  if (!params.id) throw new ValidationError("INVALID REQUIRED ID");
+  // `params.id` is ignored on purpose — see the SECURITY note above. A user
+  // may only ever list their own signatures.
+  const ownerId = await callerUserId(req);
+  if (!ownerId) throw new UnauthorizedError("Not signed in");
 
   try {
     const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
     const limit = params.limit ? parseInt(params.limit, 10) : 20;
 
-    const where: any = { userId: params.id };
+    const where: any = { userId: ownerId };
     if (params.query && params.query.trim()) {
       where.title = { contains: params.query.trim(), mode: "insensitive" };
     }
@@ -154,7 +165,11 @@ export const uploadUserSignature = async (
       }
     }
 
-    if (!userId) throw new ValidationError("userId is required");
+    // The multipart `userId` field is ignored — a signature always belongs to
+    // whoever is signed in, never to whoever the form claims.
+    const ownerId = await callerUserId(req);
+    if (!ownerId) throw new UnauthorizedError("Not signed in");
+    userId = ownerId;
     if (!fileBuffer) throw new ValidationError("No signature file uploaded");
     if (fileBuffer.length > MAX_SIGNATURE_BYTES) {
       throw new ValidationError(
@@ -220,19 +235,21 @@ export const activateUserSignature = async (
   req: FastifyRequest,
   res: FastifyReply,
 ) => {
-  const body = req.body as { id: string; userId: string };
-  if (!body.id || !body.userId) throw new ValidationError("INVALID REQUIRED ID");
+  const body = req.body as { id: string; userId?: string };
+  if (!body.id) throw new ValidationError("INVALID REQUIRED ID");
+  const ownerId = await callerUserId(req);
+  if (!ownerId) throw new UnauthorizedError("Not signed in");
 
   try {
     await prisma.$transaction(async (tx) => {
       const target = await tx.signature.findFirst({
-        where: { id: body.id, userId: body.userId },
+        where: { id: body.id, userId: ownerId },
       });
       if (!target) throw new NotFoundError("Signature not found");
 
       // Single-active invariant.
       await tx.signature.updateMany({
-        where: { userId: body.userId, active: true, NOT: { id: body.id } },
+        where: { userId: ownerId, active: true, NOT: { id: body.id } },
         data: { active: false },
       });
       await tx.signature.update({
@@ -255,14 +272,16 @@ export const deleteUserSignature = async (
   req: FastifyRequest,
   res: FastifyReply,
 ) => {
-  const params = req.query as { id: string; userId: string };
-  if (!params.id || !params.userId) {
+  const params = req.query as { id: string; userId?: string };
+  const ownerId = await callerUserId(req);
+  if (!ownerId) throw new UnauthorizedError("Not signed in");
+  if (!params.id) {
     throw new ValidationError("INVALID REQUIRED ID");
   }
 
   try {
     const target = await prisma.signature.findFirst({
-      where: { id: params.id, userId: params.userId },
+      where: { id: params.id, userId: ownerId },
     });
     if (!target) throw new NotFoundError("Signature not found");
 
@@ -275,7 +294,7 @@ export const deleteUserSignature = async (
       // remaining signature so the user still has something to sign with.
       if (wasActive) {
         const next = await tx.signature.findFirst({
-          where: { userId: params.userId },
+          where: { userId: ownerId },
           orderBy: { timestamp: "desc" },
         });
         if (next) {
@@ -306,15 +325,17 @@ export const setSignatureQr = async (
 ) => {
   const body = req.body as {
     id: string;
-    userId: string;
+    userId?: string;
     qrEnabled: boolean;
   };
-  if (!body.id || !body.userId || typeof body.qrEnabled !== "boolean") {
+  if (!body.id || typeof body.qrEnabled !== "boolean") {
     throw new ValidationError("INVALID REQUIRED FIELDS");
   }
+  const ownerId = await callerUserId(req);
+  if (!ownerId) throw new UnauthorizedError("Not signed in");
   try {
     const target = await prisma.signature.findFirst({
-      where: { id: body.id, userId: body.userId },
+      where: { id: body.id, userId: ownerId },
       select: { id: true },
     });
     if (!target) throw new NotFoundError("Signature not found");

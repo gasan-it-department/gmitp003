@@ -95,6 +95,32 @@ export const adminAuthenticated = async (
   }
 };
 
+/**
+ * The User id behind the bearer token — the ONLY trustworthy identity.
+ *
+ * A client-supplied `userId` in a query string or body is an assertion, not a
+ * fact. Endpoints that act on "my" data must resolve the actor from the token
+ * instead, or any authenticated user can name someone else's id and operate as
+ * them. (This is exactly how the e-signature endpoints were broken: they took
+ * `userId` from the request, so one user could read, activate, delete, and
+ * sign with another user's signature.)
+ *
+ * Impersonation still works as designed: the admin "Manage HR" flow mints a
+ * real session for the target line, so the token itself carries the effective
+ * identity.
+ */
+export const callerUserId = async (
+  request: FastifyRequest,
+): Promise<string | null> => {
+  const accountId = (request.user as { id?: string } | undefined)?.id;
+  if (!accountId) return null;
+  const account = await prisma.account.findUnique({
+    where: { id: accountId },
+    select: { User: { select: { id: true } } },
+  });
+  return account?.User?.id ?? null;
+};
+
 export const authenticated = async (
   request: FastifyRequest,
   reply: FastifyReply,
