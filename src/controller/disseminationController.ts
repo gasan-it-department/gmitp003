@@ -17,6 +17,8 @@ import { FastifyReply, FastifyRequest } from "../barrel/fastify";
 import { prisma, Prisma } from "../barrel/prisma";
 import { AppError, NotFoundError, ValidationError } from "../errors/errors";
 import { createUserNotification } from "../service/notificationEvents";
+import { attestQueue, newSerial, seal } from "../service/documentSeal";
+import { tempURL } from "../service/url";
 
 // ── Outbox: disseminations created BY this room ────────────────────────
 export const disseminationOutbox = async (
@@ -1764,10 +1766,26 @@ export const signMine = async (req: FastifyRequest, res: FastifyReply) => {
         });
       }
 
-      return { signed: pending.length, completed };
+      return { signed: pending.length, completed, signedAt: now };
     });
 
-    return res.code(200).send({ message: "OK", ...result });
+    // Cryptographic attestation runs AFTER the transaction commits, and is
+    // best-effort by design: the signature the user just made must never be
+    // rolled back because sealing had a problem. A missing attestation only
+    // degrades later verification to "unknown", which is honest — losing the
+    // signature itself would not be.
+    // `signedAt` is absent on the "nothing was pending" path — there is no
+    // signing event to attest to in that case.
+    const attested = result.signedAt
+      ? await attestQueue(
+          body.queueRoomId,
+          body.userId,
+          result.signedAt,
+          body.geo,
+        )
+      : 0;
+
+    return res.code(200).send({ message: "OK", ...result, attested });
   } catch (error) {
     if (error instanceof NotFoundError) throw error;
     if (error instanceof ValidationError) throw error;
@@ -2249,7 +2267,51 @@ export const downloadSignedDocument = async (
       }
     }
 
+    // ── Verification footer ────────────────────────────────────────────
+    // Stamped BEFORE save() so the serial is inside the bytes we hash —
+    // adding it afterwards would change the file and invalidate its own seal.
+    const serial = newSerial();
+    try {
+      const base = (tempURL() || "").replace(/\/+$/, "");
+      const footer = `Verify at ${base}/verify-document  ·  ${serial}`;
+      for (const pg of pdfDoc.getPages()) {
+        const { width } = pg.getSize();
+        const size = 6.5;
+        const w = dateFont.widthOfTextAtSize(footer, size);
+        pg.drawText(footer, {
+          x: Math.max(8, (width - w) / 2),
+          y: 8,
+          size,
+          font: dateFont,
+          color: rgb(0.45, 0.45, 0.45),
+        });
+      }
+    } catch (e) {
+      console.warn("[signedDoc] verification footer failed:", e);
+    }
+
     const out = await pdfDoc.save({ useObjectStreams: true });
+    const bytes = Buffer.from(out);
+
+    // Seal the EXACT bytes being sent. Hashing anything else would make every
+    // later verification report a false TAMPERED.
+    try {
+      const accountId = (req.user as { id?: string } | undefined)?.id;
+      const acct = accountId
+        ? await prisma.account.findUnique({
+            where: { id: accountId },
+            select: { User: { select: { id: true } } },
+          })
+        : null;
+      await seal(doc.id, bytes, serial, acct?.User?.id ?? null);
+    } catch (e) {
+      // Never block a download over sealing — the user still needs the file.
+      // It just won't be verifiable, which the verifier reports as UNKNOWN.
+      console.error(
+        "[signedDoc] sealing failed; document issued UNSEALED:",
+        e instanceof Error ? e.message : e,
+      );
+    }
 
     const filename =
       (doc.title || doc.file.fileName || "document")
@@ -2257,8 +2319,10 @@ export const downloadSignedDocument = async (
         .replace(/\.pdf$/i, "") + "-signed.pdf";
     res.header("Content-Type", "application/pdf");
     res.header("Content-Disposition", `attachment; filename="${filename}"`);
-    res.header("Content-Length", out.length.toString());
-    return res.code(200).send(Buffer.from(out));
+    res.header("Content-Length", bytes.length.toString());
+    res.header("X-Document-Serial", serial);
+    res.header("Access-Control-Expose-Headers", "X-Document-Serial");
+    return res.code(200).send(bytes);
   } catch (error) {
     if (error instanceof NotFoundError) throw error;
     if (error instanceof ValidationError) throw error;

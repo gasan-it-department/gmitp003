@@ -1,6 +1,11 @@
 import { FastifyInstance } from "../barrel/fastify";
 import { authenticated, documentMobileAuth } from "../middleware/handler";
 import {
+  verifyFile,
+  verifySeal,
+  verifyPublicKey,
+} from "../controller/documentVerifyController";
+import {
   documentReceiveSync,
   documentReceiveFind,
   documentReceiveCreate,
@@ -319,6 +324,13 @@ export const document = (fastify: FastifyInstance) => {
   // JSON route below.
   fastify.get("/document/verify/:id", verifySignaturePage);
   fastify.get("/document/verify-data/:id", verifySignatureData);
+
+  // ── Public document verification ──────────────────────────────────────
+  // No auth: an outside recipient must be able to check a document they were
+  // handed. None of these reveal document contents.
+  fastify.post("/document/verify-file", verifyFile);
+  fastify.get("/document/verify-seal/:serial", verifySeal);
+  fastify.get("/document/verify-key", verifyPublicKey);
   // Self-sign — single-user e-sign tool (no dissemination involved).
   fastify.post(
     "/document/self-sign/upload",

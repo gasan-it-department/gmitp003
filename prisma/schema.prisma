@@ -1086,6 +1086,9 @@ model User {
   active                           Int                              @default(1)
   Accomplishment                   Accomplishment[]
   headResponse                     AccomplishmentResponse[]         @relation("Head")
+  signingKeys                      SigningKey[]
+  signatureAttestations            SignatureAttestation[]
+  documentSealsIssued              DocumentSeal[]
   attendanceEventsCreated          AttendanceEvent[]                @relation("AttendanceEventCreatedBy")
   attendanceRecords                AttendanceRecord[]               @relation("AttendanceRecordUser")
   attendanceScanned                AttendanceRecord[]               @relation("AttendanceRecordScannedBy")
@@ -1888,6 +1891,8 @@ model Document {
   documentDuplicates   DocumentDuplicate[]
   pages                DocumentPage[]
   submittedDocuments   SubmittedDocument?
+  attestations         SignatureAttestation[]
+  seals                DocumentSeal[]
 }
 
 model SubmittedDocument {
@@ -2933,4 +2938,110 @@ model AttendanceMobileAccess {
   grantedBy   User?    @relation("AttendanceMobileAccessGrantedBy", fields: [grantedById], references: [id], onDelete: SetNull)
 
   @@unique([lineId, userId])
+}
+
+// ── Document cryptographic signing ─────────────────────────────────────────
+// Before this, an "e-signature" was a signature IMAGE stamped onto a PDF and a
+// QR that resolved to a database row. Nothing bound the two: edit an amount in
+// a signed PDF and the QR still reported it valid. These three models bind a
+// signature to the exact bytes of the document it was applied to.
+
+/// A signer's Ed25519 keypair. The private key is wrapped with AES-256-GCM
+/// (random salt + iv per key, auth tag verified on unwrap) — deliberately NOT
+/// the app's older aes-192-cbc/static-salt EncryptionService, which is
+/// unauthenticated and therefore malleable.
+///
+/// Custody note: the server can unwrap these, so an attestation proves "the
+/// Gasan system attests this user signed", not "only this user could have
+/// produced it". That is the accepted trust boundary for an internal LGU
+/// workflow where the server already holds every document and account.
+model SigningKey {
+  id         String    @id @default(uuid())
+  /// "user" = a signer's personal key. "org" = the Municipality's seal, which
+  /// belongs to no user, hence the nullable userId. An earlier draft faked the
+  /// org key with a sentinel userId and the foreign key (correctly) rejected it.
+  scope      String    @default("user")
+  userId     String?
+  /// Raw Ed25519 public key, base64. Published — verification needs it.
+  publicKey  String
+  /// AES-256-GCM ciphertext of the PKCS#8 private key, base64.
+  privateKey String
+  salt       String
+  iv         String
+  authTag    String
+  algorithm  String    @default("ed25519")
+  /// Rotation: only one active key per user; old keys are kept so signatures
+  /// made with them still verify.
+  active     Boolean   @default(true)
+  revokedAt  DateTime?
+  revokeNote String?
+  createdAt  DateTime  @default(now())
+  user       User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  attestations SignatureAttestation[]
+
+  @@index([userId, active])
+  @@index([scope, active])
+}
+
+/// One signer's cryptographic attestation, created the moment they sign.
+///
+/// `payload` is the canonical JSON that was signed; `signature` is that
+/// payload signed with the signer's key. `prevHash` chains each attestation to
+/// the one before it, so removing or reordering signatures is detectable —
+/// content hashing alone would not catch that.
+model SignatureAttestation {
+  id           String   @id @default(uuid())
+  documentId   String
+  userId       String
+  signingKeyId String
+  /// Position in the signatory order (SignatoryArrangement.index).
+  slot         Int      @default(0)
+  /// Canonical JSON actually signed. Stored verbatim: re-deriving it later
+  /// from live rows would break verification the moment any field changes.
+  payload      String
+  signature    String
+  /// sha256 of the previous attestation's signature; null for the first.
+  prevHash     String?
+  signedAt     DateTime @default(now())
+  document     Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  signingKey   SigningKey @relation(fields: [signingKeyId], references: [id])
+
+  @@unique([documentId, userId, slot])
+  @@index([documentId, slot])
+}
+
+/// One ISSUED copy of a signed document.
+///
+/// Created when the signed PDF is generated for download: `sha256` is the hash
+/// of the exact bytes handed to the user, and `orgSignature` is that hash
+/// signed with the Municipality's key. Verification recomputes the hash of a
+/// file and looks for a matching seal.
+///
+/// Deliberately one row PER DOWNLOAD rather than per document — PDF generation
+/// is not byte-stable across runs, and giving every issued copy its own serial
+/// means a leaked or altered copy can be traced to a specific issuance.
+model DocumentSeal {
+  id           String   @id @default(uuid())
+  /// Short human-readable code printed on the PDF and encoded in its QR.
+  serial       String   @unique
+  documentId   String
+  /// sha256 (hex) of the final emitted PDF bytes.
+  sha256       String
+  /// The hash signed with the organization key, base64.
+  orgSignature String
+  /// Which org key signed it, so rotation doesn't invalidate old seals.
+  orgKeyId     String
+  /// Frozen roster of who had signed at issue time — shown by the verifier
+  /// even if a user is later renamed or archived.
+  signers      Json
+  issuedById   String?
+  issuedAt     DateTime @default(now())
+  byteSize     Int      @default(0)
+  document     Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  issuedBy     User?    @relation(fields: [issuedById], references: [id], onDelete: SetNull)
+
+  @@index([documentId, issuedAt])
+  @@index([sha256])
 }
