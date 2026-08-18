@@ -1358,7 +1358,7 @@ export const positionRegister = async (
       // ---- Provisional hire: no plantilla slot ----
       if (invite?.provisionalPositionId) {
         const empStatus =
-          invite.provisionalPosition?.empType ||
+          invite.provisionalPosition?.empType?.trim() ||
           invite.empType?.trim() ||
           "Provisional";
         const months = invite.provisionalPosition?.termMonths ?? 0;

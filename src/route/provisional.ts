@@ -5,6 +5,7 @@ import {
   provisionalPositions,
   provisionalInvite,
   provisionalPersonnel,
+  provisionalPositionPersonnel,
   provisionalPersonnelExcel,
   provisionalTransfer,
   provisionalRemove,
@@ -38,6 +39,11 @@ export const provisional = (fastify: FastifyInstance) => {
     "/provisional/personnel",
     { preHandler: authenticated },
     provisionalPersonnel,
+  );
+  fastify.get(
+    "/provisional/position/personnel",
+    { preHandler: authenticated },
+    provisionalPositionPersonnel,
   );
   fastify.get(
     "/provisional/personnel/excel",

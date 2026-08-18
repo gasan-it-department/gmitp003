@@ -26,16 +26,52 @@ const decryptUserEmail = async (
   }
 };
 
-// Employment categories used for provisional (non-plantilla) staff. A User with
-// one of these in `status` is shown only in Provisional > Personnel, not the
-// plantilla Employees list. The create form offers exactly these.
-export const PROVISIONAL_STATUSES = [
+// The specific CSC employment categories HR can assign to a person. These are
+// what the personnel edit form offers.
+export const PROVISIONAL_EMP_TYPES = [
   "Job Order",
   "Contract of Service",
   "Casual",
   "Contractual",
   "Temporary",
 ];
+
+/**
+ * Every `User.status` value that means "non-plantilla".
+ *
+ * This is deliberately WIDER than the assignable list above, because the hire
+ * paths write placeholders that nobody ever picked from a form:
+ *
+ *   "Non-Plantilla"  the provisional position UI stores this as empType (it
+ *                    stopped asking for a type per position), and registration
+ *                    copies empType straight onto the user's status
+ *   "Provisional"    quick-register on a non-plantilla slot, and the full-PDS
+ *                    fallback when an invite carries no employment type
+ *
+ * Both were missing here, so anyone hired through the ordinary flow vanished
+ * from Non-Plantilla > Personnel AND showed up in the plantilla Employees list
+ * (which excludes exactly this set). Widening the list heals the existing rows
+ * without a migration; HR can still narrow a person to a real category later.
+ */
+export const PROVISIONAL_STATUSES = [
+  ...PROVISIONAL_EMP_TYPES,
+  "Non-Plantilla",
+  "Provisional",
+];
+
+/**
+ * Matches any non-plantilla status regardless of case or stray whitespace.
+ * `empType` is free text on the position, so "job order" and "Job Order " both
+ * reach the user row; an exact `in` filter silently drops them.
+ */
+export const provisionalStatusFilter = (): Prisma.UserWhereInput => ({
+  OR: PROVISIONAL_STATUSES.map((s) => ({
+    // `contains` rather than `equals` so a stored " Job Order " still matches.
+    // The categories are distinctive enough that this cannot pull in a
+    // plantilla status by accident.
+    status: { contains: s, mode: "insensitive" as const },
+  })),
+});
 
 // POST /provisional/position  { title, empType, termMonths, slots, description, lineId, userId }
 // Create a provisional position (carries the employment type + term in months).
@@ -120,17 +156,37 @@ export const provisionalPositions = async (
       },
     });
 
-    const list = rows.map((p) => {
-      const filled = p.invitations.filter(
-        (i) => i.concludedReason === "accepted",
-      ).length;
-      const pending = p.invitations.filter(
-        (i) => !i.concluded && i.concludedReason !== "accepted",
-      ).length;
-      const { invitations, ...rest } = p;
-      void invitations;
-      return { ...rest, filled, pending, open: Math.max(0, p.slots - filled) };
-    });
+    /**
+     * `filled` counts PEOPLE actually holding the post, not invitation rows.
+     *
+     * It used to count invitations tagged "accepted", which drifts from
+     * reality: provisionalRemove re-tags to "ended" to free the slot, but a
+     * person archived through any other path (general archive, manual status
+     * change) left their invitation saying "accepted" forever, so the position
+     * showed as full and Select-applicant stayed disabled with nobody in it.
+     */
+    const list = await Promise.all(
+      rows.map(async (p) => {
+        const filled = await prisma.user.count({
+          where: positionOccupantWhere(p.id, params.id),
+        });
+        const pending = p.invitations.filter(
+          (i) => !i.concluded && i.concludedReason !== "accepted",
+        ).length;
+        const { invitations, ...rest } = p;
+        void invitations;
+        const open = Math.max(0, p.slots - filled);
+        return {
+          ...rest,
+          filled,
+          pending,
+          open,
+          // Outstanding invitations can exceed the seats left. HR needs to see
+          // that before sending another one.
+          overCommitted: Math.max(0, pending - open),
+        };
+      }),
+    );
 
     const lastCursor = list.length > 0 ? list[list.length - 1].id : null;
     const hasMore = rows.length === limit;
@@ -535,13 +591,14 @@ const buildPersonnelWhere = (params: {
   const q = (params.query ?? "").trim();
   const tags = (params.tags ?? []).filter((t) => typeof t === "string" && t);
 
-  // Employment-type filter: only accept known provisional categories, else
-  // fall back to "all provisional".
+  // Employment-type filter: one known category, else every non-plantilla
+  // status. Matching is case/whitespace tolerant either way — see
+  // provisionalStatusFilter.
   const status = (params.status ?? "").trim();
-  const statusFilter =
-    status && PROVISIONAL_STATUSES.includes(status)
-      ? status
-      : { in: PROVISIONAL_STATUSES };
+  const statusCond: Prisma.UserWhereInput =
+    status && PROVISIONAL_STATUSES.some((s) => s.toLowerCase() === status.toLowerCase())
+      ? { status: { contains: status, mode: "insensitive" } }
+      : provisionalStatusFilter();
 
   // Contract end-date (User.term) filter.
   //   active   → no end date OR ends in the future
@@ -558,7 +615,7 @@ const buildPersonnelWhere = (params: {
     termCond = { OR: [{ term: null }, { term: { gte: now } }] };
   else if (termSel === "none") termCond = { term: null };
 
-  const and: Prisma.UserWhereInput[] = [];
+  const and: Prisma.UserWhereInput[] = [statusCond];
   if (q) {
     and.push({
       OR: [
@@ -586,10 +643,43 @@ const buildPersonnelWhere = (params: {
 
   return {
     lineId: params.id,
-    status: statusFilter,
-    ...(and.length ? { AND: and } : {}),
+    // Ended engagements are archived; they belong on the Archived page, not
+    // here. Previously this leaned on "Ended" not being a provisional status,
+    // which stops being true the moment the list widens.
+    archivedAt: null,
+    AND: and,
   };
 };
+
+/**
+ * A person currently occupying a provisional position.
+ *
+ * The link is User -> SubmittedApplication -> FillPositionInvitation, and the
+ * invitation must still be tagged "accepted" (provisionalRemove re-tags it to
+ * "ended" to free the slot). Archived people never count.
+ */
+export const positionOccupantWhere = (
+  positionId: string,
+  lineId?: string,
+): Prisma.UserWhereInput => ({
+  ...(lineId ? { lineId } : {}),
+  archivedAt: null,
+  AND: [
+    provisionalStatusFilter(),
+    {
+      submittedApplications: {
+        is: {
+          fillPositionInvitations: {
+            is: {
+              provisionalPositionId: positionId,
+              concludedReason: "accepted",
+            },
+          },
+        },
+      },
+    },
+  ],
+});
 
 // GET /provisional/personnel?id=<lineId>&query&lastCursor&limit&status&term
 // Provisional employees = Users whose status is a provisional category. Shows
@@ -614,7 +704,10 @@ export const provisionalPersonnel = async (
       cursor,
       take: limit,
       skip: cursor ? 1 : 0,
-      orderBy: { createdAt: "desc" },
+      // `id` breaks ties: ordering by createdAt alone is not deterministic when
+      // people share a timestamp, and a cursor over a non-deterministic order
+      // silently skips rows between pages.
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       select: personnelSelect,
     });
 
@@ -626,6 +719,81 @@ export const provisionalPersonnel = async (
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw dbError(error);
     }
+    throw error;
+  }
+};
+
+/**
+ * GET /provisional/position/personnel?id=<lineId>&positionId&query&lastCursor&limit
+ *
+ * The people hired into ONE provisional position. Cursor-paginated for the
+ * infinite-scroll list, and returns the position alongside so the page can
+ * render its header without a second round-trip.
+ */
+export const provisionalPositionPersonnel = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const params = req.query as PagingProps & { positionId?: string };
+  if (!params.id || !params.positionId) {
+    throw new ValidationError("id and positionId are required");
+  }
+
+  try {
+    const position = await prisma.provisionalPosition.findFirst({
+      where: { id: params.positionId, lineId: params.id },
+      include: { salaryGrade: { select: { id: true, grade: true, amount: true } } },
+    });
+    if (!position) throw new NotFoundError("Position not found");
+
+    const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
+    const limit = params.limit ? parseInt(params.limit, 10) : 20;
+    const q = (params.query ?? "").trim();
+
+    const where: Prisma.UserWhereInput = {
+      ...positionOccupantWhere(position.id, params.id),
+      ...(q
+        ? {
+            OR: [
+              { firstName: { contains: q, mode: "insensitive" } },
+              { lastName: { contains: q, mode: "insensitive" } },
+              { middleName: { contains: q, mode: "insensitive" } },
+              { username: { contains: q, mode: "insensitive" } },
+            ],
+          }
+        : {}),
+    };
+
+    const list = await prisma.user.findMany({
+      where,
+      cursor,
+      take: limit,
+      skip: cursor ? 1 : 0,
+      // `id` breaks ties so the cursor can never skip or repeat a person when
+      // several were hired in the same instant.
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      select: personnelSelect,
+    });
+
+    const filled = await prisma.user.count({
+      where: positionOccupantWhere(position.id, params.id),
+    });
+
+    return res.code(200).send({
+      position: {
+        ...position,
+        filled,
+        open: Math.max(0, position.slots - filled),
+      },
+      list,
+      lastCursor: list.length ? list[list.length - 1].id : null,
+      hasMore: list.length === limit,
+    });
+  } catch (error) {
+    if (error instanceof NotFoundError || error instanceof ValidationError) {
+      throw error;
+    }
+    if (error instanceof Prisma.PrismaClientKnownRequestError) throw dbError(error);
     throw error;
   }
 };
