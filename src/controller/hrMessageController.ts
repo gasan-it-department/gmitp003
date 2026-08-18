@@ -26,10 +26,15 @@ import {
  *
  * Lifecycle:
  *   draft    nothing dispatched yet - message and recipients fully editable
- *   sending  at least one wave out, some still pending - message is LOCKED
- *            (two people under one batch must not receive different text),
- *            but more recipients may still be added and sent
- *   sent     nothing pending - a finished record; retry is all that remains
+ *   sending  at least one wave out, some still pending
+ *   sent     nobody is waiting right now
+ *
+ * "sent" is a resting state, NOT a closed one. More people can be added at
+ * any time, and anyone already contacted can be deliberately messaged again
+ * (a reminder, a correction to a bad number). What stays frozen for good is
+ * the message TEXT once the first wave leaves: two people under one batch
+ * must never receive different wording, or the record of what went out stops
+ * being true. A different message means a new batch.
  */
 
 /**
@@ -445,7 +450,7 @@ export const updateBatch = async (req: FastifyRequest, res: FastifyReply) => {
   // must never receive different messages.
   if (batch.status !== "draft")
     throw new ValidationError(
-      "Part of this batch has already gone out, so the message can no longer be changed.",
+      "This message has already gone out, so the wording can no longer be changed. Create a new batch to send something different.",
     );
 
   const channel =
@@ -574,13 +579,8 @@ export const addRecipients = async (req: FastifyRequest, res: FastifyReply) => {
   const { id } = req.params as { id: string };
   const b = req.body as { userIds?: string[] };
   const { batch, lineId } = await ownedBatch(req, id);
-  // More people may still be added while waves are going out; only a fully
-  // finished batch is closed.
-  if (batch.status === "sent")
-    throw new ValidationError(
-      "Every recipient on this batch has been contacted. Create a new batch to message more people.",
-    );
-
+  // People can be added at any point in a batch's life, including after
+  // everyone currently on it has been contacted.
   const ids = [...new Set(Array.isArray(b.userIds) ? b.userIds : [])];
   if (!ids.length) throw new ValidationError("Pick at least one employee");
 
@@ -725,8 +725,6 @@ export const sendBatch = async (req: FastifyRequest, res: FastifyReply) => {
   const { id } = req.params as { id: string };
   const b = (req.body ?? {}) as { recipientIds?: string[] };
   const { batch } = await ownedBatch(req, id);
-  if (batch.status === "sent")
-    throw new ValidationError("Everyone on this batch has already been contacted.");
   if (!batch.body.trim()) throw new ValidationError("The message is empty");
   if (batch.channel === "email" && !(batch.subject || "").trim())
     throw new ValidationError("Email needs a subject");
@@ -737,13 +735,16 @@ export const sendBatch = async (req: FastifyRequest, res: FastifyReply) => {
       `You can send to at most ${MAX_PER_SEND} people at a time. Send this wave, then select the next ${MAX_PER_SEND}.`,
     );
 
-  // Only ever pending rows: an explicit selection cannot resurrect someone
-  // who already received the message.
+  /**
+   * Without a selection this takes ONLY people still waiting, so the plain
+   * "send next" button can never re-message someone by accident. With an
+   * explicit selection any row is fair game: ticking a name that already
+   * received this is how HR sends a reminder or retries a corrected number.
+   */
   const wave = await prisma.hrMessageRecipient.findMany({
     where: {
       batchId: id,
-      status: "pending",
-      ...(picked ? { id: { in: picked } } : {}),
+      ...(picked ? { id: { in: picked } } : { status: "pending" }),
     },
     orderBy: [{ name: "asc" }],
     take: MAX_PER_SEND,
@@ -751,9 +752,10 @@ export const sendBatch = async (req: FastifyRequest, res: FastifyReply) => {
   if (!wave.length)
     throw new ValidationError(
       picked
-        ? "Those recipients have already been contacted."
-        : "Add at least one recipient",
+        ? "Those recipients are no longer on this batch."
+        : "Everyone here has been contacted. Tick the people you want to message again, or add more recipients.",
     );
+  const resent = wave.filter((r) => r.status !== "pending").length;
 
   for (const r of wave) {
     const rendered = await renderFor(batch.body, r.userId);
@@ -782,8 +784,8 @@ export const sendBatch = async (req: FastifyRequest, res: FastifyReply) => {
   }
 
   const counts = await syncCounts(id);
-  // "sent" means nothing is waiting. While people remain the batch is
-  // "sending": the message is locked but more waves can still go out.
+  // "sent" just means nobody is waiting right now — the batch stays open to
+  // more recipients and to a deliberate re-send.
   await prisma.hrMessageBatch.update({
     where: { id },
     data: {
@@ -795,6 +797,7 @@ export const sendBatch = async (req: FastifyRequest, res: FastifyReply) => {
   return res.code(200).send({
     batchId: id,
     dispatched: wave.length,
+    resent,
     ...counts,
     done: counts.pending === 0,
   });

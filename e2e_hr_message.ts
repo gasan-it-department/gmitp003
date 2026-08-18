@@ -365,21 +365,37 @@ const reqAs = (accountId: string, extra: any = {}) =>
     ok("a sent batch cannot be deleted",
       !!(await threwWith(() =>
         deleteBatch(reqAs(HR.accountId, { params: { id: batch.id } }), mockRes()))));
-    ok("recipients cannot be added to a sent batch",
-      !!(await threwWith(() =>
-        addRecipients(
-          reqAs(HR.accountId, { params: { id: batch.id }, body: { userIds: [HR.userId] } }),
-          mockRes(),
-        ))));
+    // A finished batch is a resting state, not a closed one.
+    res = mockRes();
+    await addRecipients(
+      reqAs(HR.accountId, { params: { id: batch.id }, body: { userIds: [HR.userId] } }),
+      res,
+    );
+    ok("someone can still be added to a finished batch", res._body?.added === 1);
+    const lateRow = await prisma.hrMessageRecipient.findFirst({
+      where: { batchId: batch.id, userId: HR.userId },
+    });
+    ok("the late addition is waiting, not silently marked sent",
+      lateRow?.status === "pending");
+    res = mockRes();
+    await removeRecipient(
+      reqAs(HR.accountId, { params: { id: batch.id, recipientId: lateRow!.id } }),
+      res,
+    );
+    ok("and can be taken off again while still waiting", res._code === 200);
     ok("a contacted recipient cannot be removed",
       !!(await threwWith(() =>
         removeRecipient(
           reqAs(HR.accountId, { params: { id: batch.id, recipientId: recips[0].id } }),
           mockRes(),
         ))));
-    ok("it cannot be sent twice",
-      !!(await threwWith(() =>
-        sendBatch(reqAs(HR.accountId, { params: { id: batch.id } }), mockRes()))));
+    // The plain "send next" button must still refuse to re-message anyone,
+    // because that is the accidental case.
+    const blindResend = await threwWith(() =>
+      sendBatch(reqAs(HR.accountId, { params: { id: batch.id }, body: {} }), mockRes()),
+    );
+    ok("sending with no selection will NOT quietly message people again",
+      !!blindResend, blindResend || "NO THROW");
 
     // -- 11. Retry touches ONLY the failed rows ---------------------------
     // Flip one row to "sent" by hand: a retry must leave it completely alone,
@@ -518,21 +534,36 @@ const reqAs = (accountId: string, extra: any = {}) =>
           mockRes(),
         ))));
 
-    // Already-contacted people must not be re-sent by a later wave.
+    // Ticking someone who already received it is how HR sends a reminder.
+    // It must work, and it must be recorded as another attempt.
     const contacted = await prisma.hrMessageRecipient.findMany({
       where: { batchId: wb.id, status: { not: "pending" } },
-      select: { id: true },
+      select: { id: true, attempts: true },
       take: 3,
     });
-    ok("naming already-contacted people in a wave is refused",
-      !!(await threwWith(() =>
-        sendBatch(
-          reqAs(HR.accountId, {
-            params: { id: wb.id },
-            body: { recipientIds: contacted.map((c) => c.id) },
-          }),
-          mockRes(),
-        ))));
+    res = mockRes();
+    await sendBatch(
+      reqAs(HR.accountId, {
+        params: { id: wb.id },
+        body: { recipientIds: contacted.map((c) => c.id) },
+      }),
+      res,
+    );
+    ok("ticking already-contacted people DOES message them again",
+      res._body?.dispatched === contacted.length, JSON.stringify(res._body));
+    ok("and the response says how many of those were re-sends",
+      res._body?.resent === contacted.length);
+
+    const afterResend = await prisma.hrMessageRecipient.findMany({
+      where: { id: { in: contacted.map((c) => c.id) } },
+      select: { id: true, attempts: true },
+    });
+    const byId = new Map(contacted.map((c) => [c.id, c.attempts]));
+    ok("each re-sent person records another attempt",
+      afterResend.every((r) => r.attempts === (byId.get(r.id) ?? 0) + 1),
+      JSON.stringify(afterResend.map((r) => r.attempts)));
+    ok("a re-send does not duplicate the recipient row",
+      afterResend.length === contacted.length);
 
     // More people can still be added mid-run.
     const LATE = await mkUser("latecomer");
@@ -556,20 +587,39 @@ const reqAs = (accountId: string, extra: any = {}) =>
     res = mockRes();
     await batchDetail(reqAs(HR.accountId, { params: { id: wb.id }, query: {} }), res);
     ok('a finished batch reads as "sent"', res._body?.batch?.status === "sent");
-    ok("every recipient was contacted exactly once",
+    ok("every recipient is accounted for",
       res._body?.counts?.total === WAVE_TOTAL + 1);
-    const allOnce = await prisma.hrMessageRecipient.findMany({
+    // Exactly the people we deliberately re-sent to should carry a second
+    // attempt. Everyone else must have been messaged once and once only.
+    const resentIds = new Set(contacted.map((c) => c.id));
+    const allRows = await prisma.hrMessageRecipient.findMany({
       where: { batchId: wb.id },
-      select: { attempts: true },
+      select: { id: true, attempts: true },
     });
-    ok("nobody was messaged twice",
-      allOnce.every((r) => r.attempts === 1),
-      JSON.stringify(allOnce.map((r) => r.attempts)));
+    ok("the deliberately re-sent people carry a second attempt",
+      allRows.filter((r) => resentIds.has(r.id)).every((r) => r.attempts === 2));
+    ok("EVERYONE else was messaged exactly once",
+      allRows.filter((r) => !resentIds.has(r.id)).every((r) => r.attempts === 1),
+      JSON.stringify(allRows.filter((r) => !resentIds.has(r.id)).map((r) => r.attempts)));
 
-    ok("a finished batch takes no more recipients",
+    // A finished batch reopens the moment someone new is added.
+    res = mockRes();
+    await addRecipients(
+      reqAs(HR.accountId, { params: { id: wb.id }, body: { userIds: [HR.userId] } }),
+      res,
+    );
+    ok("a finished batch accepts more recipients", res._body?.added === 1);
+    res = mockRes();
+    await sendBatch(reqAs(HR.accountId, { params: { id: wb.id }, body: {} }), res);
+    ok("and the plain send picks up only that new person",
+      res._body?.dispatched === 1 && res._body?.resent === 0,
+      JSON.stringify(res._body));
+
+    // The wording is still frozen, whatever else changes.
+    ok("the message text stays locked even on a reopened batch",
       !!(await threwWith(() =>
-        addRecipients(
-          reqAs(HR.accountId, { params: { id: wb.id }, body: { userIds: [HR.userId] } }),
+        updateBatch(
+          reqAs(HR.accountId, { params: { id: wb.id }, body: { body: "new words" } }),
           mockRes(),
         ))));
 
@@ -579,8 +629,9 @@ const reqAs = (accountId: string, extra: any = {}) =>
       reqAs(HR.accountId, { params: { id: wb.id }, query: { page: "0" } }),
       res,
     );
+    // 23 originals + the latecomer + the one added after it finished.
     ok("the recipient list reports its own pagination",
-      typeof res._body?.pages === "number" && res._body?.matching === WAVE_TOTAL + 1,
+      typeof res._body?.pages === "number" && res._body?.matching === WAVE_TOTAL + 2,
       JSON.stringify({ pages: res._body?.pages, matching: res._body?.matching }));
 
     // -- 13. Batch list ----------------------------------------------------
