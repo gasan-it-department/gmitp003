@@ -121,6 +121,89 @@ const applyCells = (xml: string, cells: Record<string, unknown>): string => {
   return xml;
 };
 
+/**
+ * Cells the 2026 template ships with a grey background that should be plain
+ * white: the residential CITY/MUNICIPALITY (I24:K24) and PROVINCE (L24:N24)
+ * input boxes on sheet C1.
+ *
+ * The 2025 template had these white; the 2026 revision shades them, so the
+ * template swap made every export come out grey in that one block. Every
+ * other input box on the form is white, this one included in the printed
+ * original, so it reads as a defect rather than a design.
+ *
+ * Fixed here rather than by editing the template binary, so that dropping in
+ * a fresh copy of the official file does not silently bring the shading back.
+ */
+export const WHITE_CELLS: Record<string, string[]> = {
+  "xl/worksheets/sheet1.xml": ["I24", "J24", "K24", "L24", "M24", "N24"],
+};
+
+/**
+ * Repoints the given cells at a style identical to their current one but with
+ * no fill, appending the new styles to `cellXfs`. Borders, font and alignment
+ * are untouched — only the background changes.
+ *
+ * Returns the rewritten sheet + styles XML.
+ */
+export const clearCellFills = (
+  sheetXml: string,
+  stylesXml: string,
+  refs: string[],
+): { sheet: string; styles: string } => {
+  const block = stylesXml.match(/<cellXfs[^>]*>([\s\S]*?)<\/cellXfs>/);
+  if (!block) return { sheet: sheetXml, styles: stylesXml };
+
+  const xfs = [...block[1].matchAll(/<xf\b[^>]*?\/>|<xf\b[^>]*?>[\s\S]*?<\/xf>/g)].map(
+    (m) => m[0],
+  );
+  const added: string[] = [];
+  // Same source style used by several cells → reuse the one twin we make.
+  const twinOf = new Map<number, number>();
+
+  const indexFor = (sIdx: number): number | null => {
+    const xf = xfs[sIdx];
+    if (!xf) return null;
+    const fill = xf.match(/fillId="(\d+)"/);
+    if (!fill || fill[1] === "0") return null; // already unfilled
+    const cached = twinOf.get(sIdx);
+    if (cached !== undefined) return cached;
+
+    let twin = xf
+      .replace(/\sfillId="\d+"/, ' fillId="0"')
+      .replace(/\sapplyFill="[^"]*"/, ' applyFill="0"');
+    if (!/applyFill=/.test(twin)) {
+      twin = twin.replace(/^<xf\b/, '<xf applyFill="0"');
+    }
+    const at = xfs.length + added.length;
+    added.push(twin);
+    twinOf.set(sIdx, at);
+    return at;
+  };
+
+  let sheet = sheetXml;
+  for (const ref of refs) {
+    const re = new RegExp(`<c r="${ref}"([^>]*?)(/>|>)`);
+    const m = sheet.match(re);
+    if (!m) continue;
+    const sAttr = m[1].match(/\bs="(\d+)"/);
+    const next = indexFor(sAttr ? Number(sAttr[1]) : 0);
+    if (next === null) continue;
+    const attrs = sAttr
+      ? m[1].replace(/\bs="\d+"/, `s="${next}"`)
+      : `${m[1]} s="${next}"`;
+    sheet = sheet.replace(re, `<c r="${ref}"${attrs}${m[2]}`);
+  }
+
+  if (!added.length) return { sheet, styles: stylesXml };
+
+  const styles = stylesXml.replace(
+    /<cellXfs([^>]*)count="\d+"([^>]*)>([\s\S]*?)<\/cellXfs>/,
+    (_all, a, b, body) =>
+      `<cellXfs${a}count="${xfs.length + added.length}"${b}>${body}${added.join("")}</cellXfs>`,
+  );
+  return { sheet, styles };
+};
+
 // ── Form-control checkboxes ────────────────────────────────────────────────
 // Several PDS options are real Excel checkboxes (drawn in VML, state stored per
 // control in xl/ctrlProps/*). They must be TICKED, not typed as words. A Box
@@ -528,6 +611,20 @@ export const exportPdsExcel = async (
     if (!entry) continue;
     const xml = await entry.async("string");
     zip.file(file, applyCells(xml, cells));
+  }
+
+  // Strip the grey background the 2026 template puts on a few input boxes.
+  const stylesEntry = zip.file("xl/styles.xml");
+  if (stylesEntry) {
+    let stylesXml = await stylesEntry.async("string");
+    for (const [file, refs] of Object.entries(WHITE_CELLS)) {
+      const entry = zip.file(file);
+      if (!entry) continue;
+      const out = clearCellFills(await entry.async("string"), stylesXml, refs);
+      zip.file(file, out.sheet);
+      stylesXml = out.styles;
+    }
+    zip.file("xl/styles.xml", stylesXml);
   }
 
   // Append the "If YES, give details" answers onto their label cells (sheet 4).
