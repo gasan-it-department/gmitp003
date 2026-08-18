@@ -83,6 +83,8 @@ model Line {
   payslips                Payslip[]
   payrollDeductions       PayrollDeduction[]
   complaints              Complaint[]
+  hrMessageTemplates      HrMessageTemplate[]
+  hrMessageBatches        HrMessageBatch[]
   attendanceEvents        AttendanceEvent[]
   AttendanceMobileAccess  AttendanceMobileAccess[]
 }
@@ -1086,6 +1088,9 @@ model User {
   active                           Int                              @default(1)
   Accomplishment                   Accomplishment[]
   headResponse                     AccomplishmentResponse[]         @relation("Head")
+  hrMessageTemplates               HrMessageTemplate[]              @relation("HrMessageTemplateCreatedBy")
+  hrMessageBatches                 HrMessageBatch[]                 @relation("HrMessageBatchCreatedBy")
+  hrMessagesReceived               HrMessageRecipient[]             @relation("HrMessageRecipientUser")
   signingKeys                      SigningKey[]
   signatureAttestations            SignatureAttestation[]
   documentSealsIssued              DocumentSeal[]
@@ -3044,4 +3049,78 @@ model DocumentSeal {
 
   @@index([documentId, issuedAt])
   @@index([sha256])
+}
+
+// ── HR Message Queue ───────────────────────────────────────────────────────
+// HR composes an SMS or Gmail message from a template with {{placeholders}},
+// picks up to 20 recipients, and sends. Every send is recorded per-recipient
+// so a failure can be retried without re-sending to everyone.
+
+model HrMessageTemplate {
+  id           String         @id @default(uuid())
+  lineId       String
+  name         String
+  /// "sms" | "email"
+  channel      String         @default("sms")
+  /// Email only; ignored for SMS.
+  subject      String?
+  body         String
+  /// Placeholder keys the body uses, e.g. ["Fullname","address"]. Stored so
+  /// the editor can show them as chips without re-parsing the body.
+  placeholders String[]
+  createdById  String?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  line         Line           @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  createdBy    User?          @relation("HrMessageTemplateCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  batches      HrMessageBatch[]
+
+  @@index([lineId, createdAt])
+}
+
+/// One send action. The body/subject are COPIED here rather than referenced,
+/// so editing a template later never rewrites the history of what was sent.
+model HrMessageBatch {
+  id          String             @id @default(uuid())
+  lineId      String
+  templateId  String?
+  channel     String
+  subject     String?
+  body        String
+  /// "plantilla" | "non-plantilla" | "custom"
+  audience    String             @default("custom")
+  total       Int                @default(0)
+  sentCount   Int                @default(0)
+  failedCount Int                @default(0)
+  createdById String?
+  createdAt   DateTime           @default(now())
+  line        Line               @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  template    HrMessageTemplate?   @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  createdBy   User?              @relation("HrMessageBatchCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  recipients  HrMessageRecipient[]
+
+  @@index([lineId, createdAt])
+}
+
+/// Per-recipient outcome. `toAddress` and `renderedBody` are frozen at send
+/// time: if someone later changes their phone number or name, the record must
+/// still show what was actually sent, and a retry must go to the same place.
+model HrMessageRecipient {
+  id           String       @id @default(uuid())
+  batchId      String
+  userId       String
+  name         String
+  toAddress    String
+  renderedBody String
+  /// "pending" | "sent" | "failed"
+  status       String       @default("pending")
+  error        String?
+  attempts     Int          @default(0)
+  sentAt       DateTime?
+  batch        HrMessageBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  user         User         @relation("HrMessageRecipientUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  // One row per person per batch — a retry updates, never duplicates.
+  @@unique([batchId, userId])
+  @@index([batchId, status])
 }
