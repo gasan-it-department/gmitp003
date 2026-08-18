@@ -1,4 +1,4 @@
-// Fills the OFFICIAL CS Form 212 (Revised 2025) template with a person's PDS
+// Fills the OFFICIAL CS Form 212 (Revised 2026) template with a person's PDS
 // data and returns it as .xlsx. To keep the template byte-for-byte intact
 // (logo, lines, form-control boxes, fonts, print areas) we DO NOT round-trip
 // through a spreadsheet library — that drops drawings/VML and effectively
@@ -149,7 +149,7 @@ const SHEET1_BOXES: Record<string, Box> = {
 
 // Sheet 4: disclosure questionnaire #34-40 — one YES/NO pair per question.
 const DISCLOSURE_BOXES: Record<string, { yes: Box; no: Box }> = {
-  relatedThirdDegree: { yes: B4("ctrlProp13.xml", "_x0000_t201"), no: B4("ctrlProp14.xml", "Check_x0020_Box_x0020_2") },
+  relatedThirdDegree: { yes: B4("ctrlProp13.xml", "Check_x0020_Box_x0020_1"), no: B4("ctrlProp14.xml", "Check_x0020_Box_x0020_2") },
   relatedFourthDegree: { yes: B4("ctrlProp15.xml", "Check_x0020_Box_x0020_3"), no: B4("ctrlProp16.xml", "Check_x0020_Box_x0020_4") },
   guiltyAdmin: { yes: B4("ctrlProp17.xml", "Check_x0020_Box_x0020_5"), no: B4("ctrlProp18.xml", "Check_x0020_Box_x0020_6") },
   criminallyCharged: { yes: B4("ctrlProp19.xml", "Check_x0020_Box_x0020_7"), no: B4("ctrlProp20.xml", "Check_x0020_Box_x0020_8") },
@@ -182,11 +182,22 @@ const tickBoxes = async (zip: any, boxes: Box[]) => {
     if (!vmlFile) continue;
     let vml: string = await vmlFile.async("string");
     for (const b of boxes.filter((x) => x.vmlFile === vf)) {
-      if (new RegExp(`<v:shape id="${b.vmlId}"[\\s\\S]*?<x:Checked>`).test(vml)) continue;
-      vml = vml.replace(
-        new RegExp(`(<v:shape id="${b.vmlId}"[\\s\\S]*?<x:ClientData ObjectType="Checkbox">)`),
-        `$1<x:Checked>Checked</x:Checked>`,
-      );
+      // Index-based insertion, deliberately NOT a regex. A lazy match spanning
+      // the ~650 characters between a shape's id and its <x:ClientData> does
+      // not reliably match this VML — verified against the real template — so
+      // the previous version silently left EVERY box unticked in the legacy
+      // view while the ctrlProps claimed "Checked". Walk the shape's own span.
+      const start = vml.indexOf(`<v:shape id="${b.vmlId}"`);
+      if (start === -1) continue;
+      const end = vml.indexOf("</v:shape>", start);
+      if (end === -1) continue;
+      const shape = vml.slice(start, end);
+      if (shape.includes("<x:Checked>")) continue; // already ticked
+      const TAG = '<x:ClientData ObjectType="Checkbox">';
+      const anchor = shape.indexOf(TAG);
+      if (anchor === -1) continue;
+      const at = start + anchor + TAG.length;
+      vml = vml.slice(0, at) + "<x:Checked>Checked</x:Checked>" + vml.slice(at);
     }
     zip.file(vf, vml);
   }
@@ -351,9 +362,6 @@ export const exportPdsExcel = async (
   } catch {
     children = [];
   }
-  const cityProv = (c: string, p: string) =>
-    `${c || ""}${p ? (c ? ", " : "") + p : ""}`;
-
   // ── Build the per-sheet cell maps ─────────────────────────────────────
   const c1: Record<string, unknown> = {
     D10: app.lastname,
@@ -376,12 +384,19 @@ export const exportPdsExcel = async (
     L19: resStreet,
     I22: resSub,
     L22: resBarangay,
-    I24: cityProv(resCity, resProvince),
+    // City and Province are SEPARATE cells. The 2025 template merged
+    // I24:N24 into one box, so both had to be crammed into a single
+    // string; the 2026 revision splits it into I24:K24 + L24:N24.
+    I24: resCity,
+    L24: resProvince,
     I27: permaHouse,
     L27: permaStreet,
     I29: permaSub,
     L29: permaBarangay,
-    I31: cityProv(permaCity, permaProvince),
+    // I31:K31 / L31:N31 were ALREADY separate cells in the 2025
+    // template — cramming them here also left Province blank.
+    I31: permaCity,
+    L31: permaProvince,
     I32: app.teleNo,
     I33: mobileNo,
     I34: email,
@@ -426,8 +441,9 @@ export const exportPdsExcel = async (
       c2[`F${r}`] = el?.rating;
       c2[`G${r}`] = fmtDate(el?.dateExami);
       c2[`I${r}`] = el?.placeOfExam;
-      c2[`J${r}`] = el?.licenceNumber;
-      c2[`K${r}`] = fmtDate(el?.licenceValidity);
+      // 2026: the LICENSE block moved right two columns (J/K -> L/M).
+      c2[`L${r}`] = el?.licenceNumber;
+      c2[`M${r}`] = fmtDate(el?.licenceValidity);
     });
   arr(app.experience)
     .slice(0, 28)
@@ -437,8 +453,11 @@ export const exportPdsExcel = async (
       c2[`C${r}`] = w?.to;
       c2[`D${r}`] = w?.position;
       c2[`G${r}`] = w?.department;
-      c2[`J${r}`] = w?.status;
-      c2[`K${r}`] = w?.govService ? "Y" : "N";
+      // 2026 inserted MONTHLY SALARY (J) and SALARY/JOB/PAY GRADE & STEP
+      // INCREMENT (K), pushing the old columns right by two. The PDS form
+      // captures no salary today, so J/K are left for the employee to fill.
+      c2[`L${r}`] = w?.status;
+      c2[`M${r}`] = w?.govService ? "Y" : "N";
     });
 
   const c3: Record<string, unknown> = {};
