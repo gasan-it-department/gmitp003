@@ -25,7 +25,8 @@ import {
   removeRecipient,
   sendBatch,
   retryBatch,
-  MAX_RECIPIENTS,
+  MAX_PER_SEND,
+  MAX_BATCH_RECIPIENTS,
 } from "./src/controller/hrMessageController";
 
 const TS = Date.now();
@@ -194,7 +195,11 @@ const reqAs = (accountId: string, extra: any = {}) =>
       list.some((r: any) => r.id === PLANT.userId));
     ok("Plantilla filter EXCLUDES the job order",
       !list.some((r: any) => r.id === NONPLANT.userId));
-    ok("the cap is advertised to the UI", res._body?.max === MAX_RECIPIENTS);
+    ok("the per-send cap is advertised to the UI",
+      res._body?.maxPerSend === MAX_PER_SEND);
+    ok("the per-batch cap is advertised too, and is far larger",
+      res._body?.maxPerBatch === MAX_BATCH_RECIPIENTS &&
+        MAX_BATCH_RECIPIENTS > MAX_PER_SEND);
     ok("nobody is marked as already added yet",
       list.every((r: any) => r.added === false));
 
@@ -286,16 +291,38 @@ const reqAs = (accountId: string, extra: any = {}) =>
     );
     ok("and added back", res._body?.total === 2);
 
-    // -- 7. The cap is enforced SERVER-side ------------------------------
+    // -- 7. 20 is a PER-SEND cap, not a per-batch cap --------------------
     const capMsg = await threwWith(() =>
-      addRecipients(
+      sendBatch(
         reqAs(HR.accountId, {
           params: { id: batch.id },
-          body: { userIds: Array.from({ length: MAX_RECIPIENTS, }, (_, i) => `fake-${i}`) },
+          body: {
+            recipientIds: Array.from(
+              { length: MAX_PER_SEND + 1 },
+              (_, i) => `fake-${i}`,
+            ),
+          },
         }),
         mockRes(),
       ));
-    ok(`going past ${MAX_RECIPIENTS} recipients is refused`, !!capMsg, capMsg || "NO THROW");
+    ok(`asking to send to ${MAX_PER_SEND + 1} people at once is refused`,
+      !!capMsg, capMsg || "NO THROW");
+
+    const overBatch = await threwWith(() =>
+      addRecipients(
+        reqAs(HR.accountId, {
+          params: { id: batch.id },
+          body: {
+            userIds: Array.from(
+              { length: MAX_BATCH_RECIPIENTS + 1 },
+              (_, i) => `fake-${i}`,
+            ),
+          },
+        }),
+        mockRes(),
+      ));
+    ok(`but a batch may hold well past ${MAX_PER_SEND} (refused only past ${MAX_BATCH_RECIPIENTS})`,
+      !!overBatch, overBatch || "NO THROW");
 
     // -- 8. Editing the draft --------------------------------------------
     res = mockRes();
@@ -432,6 +459,130 @@ const reqAs = (accountId: string, extra: any = {}) =>
       console.log("SKIP  line isolation (only one line in this DB)");
     }
 
+    // -- 12b. WAVES: 20 at a time, over a batch far bigger than 20 --------
+    // This is the whole point of the per-send cap: one batch, many waves,
+    // and an indicator that fills in as each wave lands.
+    const WAVE_TOTAL = 23;
+    const waveUsers: string[] = [];
+    for (let i = 0; i < WAVE_TOTAL; i++) {
+      const u = await mkUser(`w${String(i).padStart(2, "0")}`);
+      waveUsers.push(u.userId);
+    }
+
+    res = mockRes();
+    await createBatch(
+      reqAs(HR.accountId, { body: { name: `QA batch ${TS} waves`, channel: "sms" } }),
+      res,
+    );
+    const wb = res._body;
+    made.batchIds.push(wb.id);
+
+    res = mockRes();
+    await addRecipients(
+      reqAs(HR.accountId, { params: { id: wb.id }, body: { userIds: waveUsers } }),
+      res,
+    );
+    ok(`a batch holds all ${WAVE_TOTAL} recipients, well past the ${MAX_PER_SEND} per-send cap`,
+      res._body?.total === WAVE_TOTAL, JSON.stringify(res._body));
+
+    res = mockRes();
+    await updateBatch(
+      reqAs(HR.accountId, { params: { id: wb.id }, body: { body: "Hello {{fullName}}." } }),
+      res,
+    );
+
+    // Wave one.
+    res = mockRes();
+    await sendBatch(reqAs(HR.accountId, { params: { id: wb.id }, body: {} }), res);
+    ok(`wave 1 dispatches exactly ${MAX_PER_SEND}`,
+      res._body?.dispatched === MAX_PER_SEND, JSON.stringify(res._body));
+    ok("the rest are still waiting",
+      res._body?.pending === WAVE_TOTAL - MAX_PER_SEND);
+    ok("the batch is not finished yet", res._body?.done === false);
+
+    res = mockRes();
+    await batchDetail(reqAs(HR.accountId, { params: { id: wb.id }, query: {} }), res);
+    ok('a part-sent batch reads as "sending", not "sent"',
+      res._body?.batch?.status === "sending", res._body?.batch?.status);
+    ok("the indicator shows who is done and who is not",
+      res._body?.counts?.failed === MAX_PER_SEND &&
+        res._body?.counts?.pending === WAVE_TOTAL - MAX_PER_SEND,
+      JSON.stringify(res._body?.counts));
+
+    // The message is frozen the moment the first wave leaves, so wave 2
+    // cannot receive different words than wave 1.
+    ok("the message is LOCKED once the first wave has gone out",
+      !!(await threwWith(() =>
+        updateBatch(
+          reqAs(HR.accountId, { params: { id: wb.id }, body: { body: "different text" } }),
+          mockRes(),
+        ))));
+
+    // Already-contacted people must not be re-sent by a later wave.
+    const contacted = await prisma.hrMessageRecipient.findMany({
+      where: { batchId: wb.id, status: { not: "pending" } },
+      select: { id: true },
+      take: 3,
+    });
+    ok("naming already-contacted people in a wave is refused",
+      !!(await threwWith(() =>
+        sendBatch(
+          reqAs(HR.accountId, {
+            params: { id: wb.id },
+            body: { recipientIds: contacted.map((c) => c.id) },
+          }),
+          mockRes(),
+        ))));
+
+    // More people can still be added mid-run.
+    const LATE = await mkUser("latecomer");
+    res = mockRes();
+    await addRecipients(
+      reqAs(HR.accountId, { params: { id: wb.id }, body: { userIds: [LATE.userId] } }),
+      res,
+    );
+    ok("more recipients can be added while waves are still going out",
+      res._body?.total === WAVE_TOTAL + 1);
+
+    // Wave two clears the remainder.
+    res = mockRes();
+    await sendBatch(reqAs(HR.accountId, { params: { id: wb.id }, body: {} }), res);
+    ok("wave 2 dispatches only what is left",
+      res._body?.dispatched === WAVE_TOTAL + 1 - MAX_PER_SEND,
+      JSON.stringify(res._body));
+    ok("nothing is pending afterwards", res._body?.pending === 0);
+    ok("the batch closes itself once nobody is waiting", res._body?.done === true);
+
+    res = mockRes();
+    await batchDetail(reqAs(HR.accountId, { params: { id: wb.id }, query: {} }), res);
+    ok('a finished batch reads as "sent"', res._body?.batch?.status === "sent");
+    ok("every recipient was contacted exactly once",
+      res._body?.counts?.total === WAVE_TOTAL + 1);
+    const allOnce = await prisma.hrMessageRecipient.findMany({
+      where: { batchId: wb.id },
+      select: { attempts: true },
+    });
+    ok("nobody was messaged twice",
+      allOnce.every((r) => r.attempts === 1),
+      JSON.stringify(allOnce.map((r) => r.attempts)));
+
+    ok("a finished batch takes no more recipients",
+      !!(await threwWith(() =>
+        addRecipients(
+          reqAs(HR.accountId, { params: { id: wb.id }, body: { userIds: [HR.userId] } }),
+          mockRes(),
+        ))));
+
+    // The recipient list paginates rather than dumping 24 rows in one page.
+    res = mockRes();
+    await batchDetail(
+      reqAs(HR.accountId, { params: { id: wb.id }, query: { page: "0" } }),
+      res,
+    );
+    ok("the recipient list reports its own pagination",
+      typeof res._body?.pages === "number" && res._body?.matching === WAVE_TOTAL + 1,
+      JSON.stringify({ pages: res._body?.pages, matching: res._body?.matching }));
+
     // -- 13. Batch list ----------------------------------------------------
     res = mockRes();
     await listBatches(reqAs(HR.accountId, { query: {} }), res);
@@ -441,9 +592,16 @@ const reqAs = (accountId: string, extra: any = {}) =>
 
     res = mockRes();
     await listBatches(reqAs(HR.accountId, { query: { search: `QA batch ${TS}` } }), res);
-    ok("the batch list is searchable by name",
+    ok("a partial name matches every batch sharing it",
+      (res._body?.batches ?? []).length === 2 &&
+        (res._body.batches ?? []).some((x: any) => x.id === batch.id),
+      JSON.stringify((res._body?.batches ?? []).map((x: any) => x.name)));
+
+    res = mockRes();
+    await listBatches(reqAs(HR.accountId, { query: { search: `${TS} waves` } }), res);
+    ok("a more specific search narrows to the one batch",
       (res._body?.batches ?? []).length === 1 &&
-        res._body.batches[0].id === batch.id);
+        res._body.batches[0].id === wb.id);
 
     res = mockRes();
     await listBatches(reqAs(HR.accountId, { query: { search: `nope-${TS}` } }), res);

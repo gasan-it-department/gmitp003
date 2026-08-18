@@ -18,15 +18,28 @@ import {
 /**
  * HR Message Queue.
  *
- * A BATCH is the unit of work. HR creates one, writes the message on it,
- * adds up to 20 recipients (each becomes a row at status "pending"), then
- * sends. On send every pending row is dispatched and flips to "sent" or
- * "failed", so the same list that was the recipient picker becomes the
- * delivery report. Only a draft can be edited; a sent batch is a record.
+ * A BATCH is the unit of work. HR creates one, writes the message on it, and
+ * adds recipients (each becomes a row at status "pending"). Sending goes out
+ * in waves of at most 20: each dispatched row flips to "sent" or "failed", so
+ * the same list that was the recipient picker becomes the delivery report and
+ * HR can see exactly who is still waiting.
+ *
+ * Lifecycle:
+ *   draft    nothing dispatched yet - message and recipients fully editable
+ *   sending  at least one wave out, some still pending - message is LOCKED
+ *            (two people under one batch must not receive different text),
+ *            but more recipients may still be added and sent
+ *   sent     nothing pending - a finished record; retry is all that remains
  */
 
-/** Hard ceiling, enforced HERE and not only in the UI. */
-export const MAX_RECIPIENTS = 20;
+/**
+ * 20 is how many go out in ONE send, not how many a batch may hold. A batch
+ * can carry the whole office; HR dispatches it in waves of 20 and watches the
+ * indicator fill in. Both ceilings are enforced HERE, not only in the UI.
+ */
+export const MAX_PER_SEND = 20;
+/** Sanity bound on one batch, so a mis-click cannot queue the entire database. */
+export const MAX_BATCH_RECIPIENTS = 1000;
 
 const dec = async (d?: string | null, iv?: string | null) => {
   if (!d) return "";
@@ -318,7 +331,11 @@ export const searchEmployees = async (
   }
 
   out.sort((a, b) => String(a.name).localeCompare(String(b.name)));
-  return res.code(200).send({ employees: out, max: MAX_RECIPIENTS });
+  return res.code(200).send({
+    employees: out,
+    maxPerSend: MAX_PER_SEND,
+    maxPerBatch: MAX_BATCH_RECIPIENTS,
+  });
 };
 
 // -- Batches ---------------------------------------------------------------
@@ -424,9 +441,11 @@ export const updateBatch = async (req: FastifyRequest, res: FastifyReply) => {
     audience?: string;
   };
   const { batch } = await ownedBatch(req, id);
+  // Once one wave is out the text is frozen: two people under the same batch
+  // must never receive different messages.
   if (batch.status !== "draft")
     throw new ValidationError(
-      "This batch has already been sent and cannot be edited.",
+      "Part of this batch has already gone out, so the message can no longer be changed.",
     );
 
   const channel =
@@ -498,20 +517,33 @@ export const deleteBatch = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const batchDetail = async (req: FastifyRequest, res: FastifyReply) => {
   const { id } = req.params as { id: string };
-  const q = req.query as { search?: string; status?: string };
+  const q = req.query as {
+    search?: string;
+    status?: string;
+    page?: string;
+  };
   const { batch } = await ownedBatch(req, id);
   const term = (q.search || "").trim();
+  const page = Math.max(0, Number(q.page ?? 0) || 0);
+  const take = 50;
 
-  const recipients = await prisma.hrMessageRecipient.findMany({
-    where: {
-      batchId: id,
-      ...(q.status === "sent" || q.status === "failed" || q.status === "pending"
-        ? { status: q.status }
-        : {}),
-      ...(term ? { name: { contains: term, mode: "insensitive" } } : {}),
-    },
-    orderBy: [{ status: "asc" }, { name: "asc" }],
-  });
+  const where: Prisma.HrMessageRecipientWhereInput = {
+    batchId: id,
+    ...(q.status === "sent" || q.status === "failed" || q.status === "pending"
+      ? { status: q.status }
+      : {}),
+    ...(term ? { name: { contains: term, mode: "insensitive" } } : {}),
+  };
+
+  const [recipients, matching] = await Promise.all([
+    prisma.hrMessageRecipient.findMany({
+      where,
+      orderBy: [{ status: "asc" }, { name: "asc" }],
+      skip: page * take,
+      take,
+    }),
+    prisma.hrMessageRecipient.count({ where }),
+  ]);
 
   // Counts describe the WHOLE batch, not the filtered view, so searching
   // never makes it look like recipients disappeared.
@@ -529,7 +561,11 @@ export const batchDetail = async (req: FastifyRequest, res: FastifyReply) => {
     batch,
     recipients,
     counts: { pending, sent, failed, total: pending + sent + failed },
-    max: MAX_RECIPIENTS,
+    matching,
+    page,
+    pages: Math.ceil(matching / take),
+    maxPerSend: MAX_PER_SEND,
+    maxPerBatch: MAX_BATCH_RECIPIENTS,
   });
 };
 
@@ -538,8 +574,12 @@ export const addRecipients = async (req: FastifyRequest, res: FastifyReply) => {
   const { id } = req.params as { id: string };
   const b = req.body as { userIds?: string[] };
   const { batch, lineId } = await ownedBatch(req, id);
-  if (batch.status !== "draft")
-    throw new ValidationError("This batch has already been sent.");
+  // More people may still be added while waves are going out; only a fully
+  // finished batch is closed.
+  if (batch.status === "sent")
+    throw new ValidationError(
+      "Every recipient on this batch has been contacted. Create a new batch to message more people.",
+    );
 
   const ids = [...new Set(Array.isArray(b.userIds) ? b.userIds : [])];
   if (!ids.length) throw new ValidationError("Pick at least one employee");
@@ -547,9 +587,9 @@ export const addRecipients = async (req: FastifyRequest, res: FastifyReply) => {
   const existing = await prisma.hrMessageRecipient.count({
     where: { batchId: id },
   });
-  if (existing + ids.length > MAX_RECIPIENTS)
+  if (existing + ids.length > MAX_BATCH_RECIPIENTS)
     throw new ValidationError(
-      `A batch can hold at most ${MAX_RECIPIENTS} recipients. This one already has ${existing}.`,
+      `A batch can hold at most ${MAX_BATCH_RECIPIENTS} recipients. This one already has ${existing}.`,
     );
 
   let added = 0;
@@ -615,8 +655,9 @@ export const removeRecipient = async (
     where: { id: recipientId, batchId: id },
   });
   if (!row) throw new NotFoundError("Recipient not found");
-  // A sent or failed row is evidence; only a not-yet-sent one can be dropped.
-  if (batch.status !== "draft" || row.status !== "pending")
+  // A sent or failed row is evidence; only a not-yet-contacted one can be
+  // dropped, and that stays true while later waves are still going out.
+  if (row.status !== "pending")
     throw new ValidationError("This recipient has already been contacted.");
   await prisma.hrMessageRecipient.delete({ where: { id: recipientId } });
   const total = await prisma.hrMessageRecipient.count({
@@ -672,25 +713,49 @@ const syncCounts = async (batchId: string) => {
   return { pending, sent, failed };
 };
 
+/**
+ * POST /hr/message/batch/:id/send   { recipientIds?: string[] }
+ *
+ * Dispatches ONE WAVE of at most MAX_PER_SEND. Pass recipientIds to send to a
+ * specific selection, or omit it to take the next pending people in list
+ * order. Call it again for the next wave; the batch closes itself once
+ * nothing is left pending.
+ */
 export const sendBatch = async (req: FastifyRequest, res: FastifyReply) => {
   const { id } = req.params as { id: string };
+  const b = (req.body ?? {}) as { recipientIds?: string[] };
   const { batch } = await ownedBatch(req, id);
-  if (batch.status !== "draft")
-    throw new ValidationError("This batch has already been sent.");
+  if (batch.status === "sent")
+    throw new ValidationError("Everyone on this batch has already been contacted.");
   if (!batch.body.trim()) throw new ValidationError("The message is empty");
   if (batch.channel === "email" && !(batch.subject || "").trim())
     throw new ValidationError("Email needs a subject");
 
-  const pending = await prisma.hrMessageRecipient.findMany({
-    where: { batchId: id, status: "pending" },
-  });
-  if (!pending.length) throw new ValidationError("Add at least one recipient");
-  if (pending.length > MAX_RECIPIENTS)
+  const picked = Array.isArray(b.recipientIds) ? [...new Set(b.recipientIds)] : null;
+  if (picked && picked.length > MAX_PER_SEND)
     throw new ValidationError(
-      `You can send to at most ${MAX_RECIPIENTS} people at a time.`,
+      `You can send to at most ${MAX_PER_SEND} people at a time. Send this wave, then select the next ${MAX_PER_SEND}.`,
     );
 
-  for (const r of pending) {
+  // Only ever pending rows: an explicit selection cannot resurrect someone
+  // who already received the message.
+  const wave = await prisma.hrMessageRecipient.findMany({
+    where: {
+      batchId: id,
+      status: "pending",
+      ...(picked ? { id: { in: picked } } : {}),
+    },
+    orderBy: [{ name: "asc" }],
+    take: MAX_PER_SEND,
+  });
+  if (!wave.length)
+    throw new ValidationError(
+      picked
+        ? "Those recipients have already been contacted."
+        : "Add at least one recipient",
+    );
+
+  for (const r of wave) {
     const rendered = await renderFor(batch.body, r.userId);
     const out = r.toAddress
       ? await deliver(batch.channel, r.toAddress, batch.subject, rendered)
@@ -717,11 +782,22 @@ export const sendBatch = async (req: FastifyRequest, res: FastifyReply) => {
   }
 
   const counts = await syncCounts(id);
+  // "sent" means nothing is waiting. While people remain the batch is
+  // "sending": the message is locked but more waves can still go out.
   await prisma.hrMessageBatch.update({
     where: { id },
-    data: { status: "sent", sentAt: new Date() },
+    data: {
+      status: counts.pending === 0 ? "sent" : "sending",
+      sentAt: new Date(),
+    },
   });
-  return res.code(200).send({ batchId: id, ...counts });
+
+  return res.code(200).send({
+    batchId: id,
+    dispatched: wave.length,
+    ...counts,
+    done: counts.pending === 0,
+  });
 };
 
 /** Retries ONLY the failed rows of a batch, reusing the frozen address/body. */
