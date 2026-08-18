@@ -2,67 +2,53 @@ import { FastifyInstance } from "../barrel/fastify";
 import { authenticated } from "../middleware/handler";
 import {
   placeholderCatalogue,
+  previewMessage,
   listTemplates,
   saveTemplate,
   deleteTemplate,
-  searchRecipients,
+  searchEmployees,
+  listBatches,
+  createBatch,
+  updateBatch,
+  deleteBatch,
+  batchDetail,
+  addRecipients,
+  removeRecipient,
   sendBatch,
   retryBatch,
-  listBatches,
-  batchDetail,
-  previewMessage,
 } from "../controller/hrMessageController";
 
 export const hrMessage = (fastify: FastifyInstance) => {
-  fastify.get(
-    "/hr/message/placeholders",
-    { preHandler: authenticated },
-    placeholderCatalogue,
-  );
+  const auth = { preHandler: authenticated };
 
-  fastify.post(
-    "/hr/message/preview",
-    { preHandler: authenticated },
-    previewMessage,
-  );
+  // Composing aids
+  fastify.get("/hr/message/placeholders", auth, placeholderCatalogue);
+  fastify.post("/hr/message/preview", auth, previewMessage);
 
   // Templates
-  fastify.get(
-    "/hr/message/templates",
-    { preHandler: authenticated },
-    listTemplates,
-  );
-  fastify.post(
-    "/hr/message/template",
-    { preHandler: authenticated },
-    saveTemplate,
-  );
+  fastify.get("/hr/message/templates", auth, listTemplates);
+  fastify.post("/hr/message/template", auth, saveTemplate);
+  fastify.delete("/hr/message/template/:id", auth, deleteTemplate);
+
+  // Employee directory, for adding recipients to a draft
+  fastify.get("/hr/message/employees", auth, searchEmployees);
+
+  // Batches
+  fastify.get("/hr/message/batches", auth, listBatches);
+  fastify.post("/hr/message/batch", auth, createBatch);
+  fastify.get("/hr/message/batch/:id", auth, batchDetail);
+  fastify.patch("/hr/message/batch/:id", auth, updateBatch);
+  fastify.delete("/hr/message/batch/:id", auth, deleteBatch);
+
+  // Recipients on a draft
+  fastify.post("/hr/message/batch/:id/recipients", auth, addRecipients);
   fastify.delete(
-    "/hr/message/template/:id",
-    { preHandler: authenticated },
-    deleteTemplate,
+    "/hr/message/batch/:id/recipient/:recipientId",
+    auth,
+    removeRecipient,
   );
 
-  // Recipients
-  fastify.get(
-    "/hr/message/recipients",
-    { preHandler: authenticated },
-    searchRecipients,
-  );
-
-  // Send / retry
-  fastify.post("/hr/message/send", { preHandler: authenticated }, sendBatch);
-  fastify.post("/hr/message/retry", { preHandler: authenticated }, retryBatch);
-
-  // History
-  fastify.get(
-    "/hr/message/batches",
-    { preHandler: authenticated },
-    listBatches,
-  );
-  fastify.get(
-    "/hr/message/batch/:id",
-    { preHandler: authenticated },
-    batchDetail,
-  );
+  // Dispatch
+  fastify.post("/hr/message/batch/:id/send", auth, sendBatch);
+  fastify.post("/hr/message/batch/:id/retry", auth, retryBatch);
 };

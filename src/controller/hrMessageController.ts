@@ -18,10 +18,11 @@ import {
 /**
  * HR Message Queue.
  *
- * HR writes a template with {{placeholders}}, picks up to 20 people, and sends
- * by SMS (Semaphore) or Gmail. Every recipient gets its own row recording what
- * was actually sent, so one failure can be retried without re-sending to the
- * whole list.
+ * A BATCH is the unit of work. HR creates one, writes the message on it,
+ * adds up to 20 recipients (each becomes a row at status "pending"), then
+ * sends. On send every pending row is dispatched and flips to "sent" or
+ * "failed", so the same list that was the recipient picker becomes the
+ * delivery report. Only a draft can be edited; a sent batch is a record.
  */
 
 /** Hard ceiling, enforced HERE and not only in the UI. */
@@ -54,6 +55,17 @@ const isNonPlantilla = (status: string) =>
 
 /** Gmail-only, as specified. */
 const isGmail = (e: string) => /^[^@\s]+@gmail\.com$/i.test((e || "").trim());
+
+/** Resolves a batch the caller is actually allowed to touch. */
+const ownedBatch = async (req: FastifyRequest, id: string) => {
+  const lineId = await callerLine(req);
+  if (!lineId) throw new UnauthorizedError("No line for this account");
+  const batch = await prisma.hrMessageBatch.findFirst({
+    where: { id, lineId },
+  });
+  if (!batch) throw new NotFoundError("Batch not found");
+  return { batch, lineId };
+};
 
 // -- Placeholders ----------------------------------------------------------
 // Reuses the attendance field catalogue so there is ONE definition of what a
@@ -100,7 +112,10 @@ export const renderFor = async (body: string, userId: string) => {
  * Renders the message for ONE real employee so the compose screen shows the
  * exact text that will be sent, not an approximation built in the browser.
  */
-export const previewMessage = async (req: FastifyRequest, res: FastifyReply) => {
+export const previewMessage = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
   const b = req.body as { body?: string; userId?: string };
   const lineId = await callerLine(req);
   if (!lineId) throw new UnauthorizedError("No line for this account");
@@ -111,7 +126,9 @@ export const previewMessage = async (req: FastifyRequest, res: FastifyReply) => 
   });
   if (!u) throw new NotFoundError("Employee not found");
   const rendered = await renderFor(b.body || "", b.userId);
-  const unresolved = [...new Set([...rendered.matchAll(TOKEN)].map((m) => m[1]))];
+  const unresolved = [
+    ...new Set([...rendered.matchAll(TOKEN)].map((m) => m[1])),
+  ];
   return res.code(200).send({ rendered, unresolved });
 };
 
@@ -165,22 +182,25 @@ export const saveTemplate = async (req: FastifyRequest, res: FastifyReply) => {
       if (!owned) throw new NotFoundError("Template not found");
       return res
         .code(200)
-        .send(await prisma.hrMessageTemplate.update({ where: { id: b.id }, data }));
+        .send(
+          await prisma.hrMessageTemplate.update({ where: { id: b.id }, data }),
+        );
     }
-    return res
-      .code(201)
-      .send(
-        await prisma.hrMessageTemplate.create({
-          data: { ...data, createdById: userId },
-        }),
-      );
+    return res.code(201).send(
+      await prisma.hrMessageTemplate.create({
+        data: { ...data, createdById: userId },
+      }),
+    );
   } catch (e) {
     if (e instanceof Prisma.PrismaClientKnownRequestError) throw dbError(e);
     throw e;
   }
 };
 
-export const deleteTemplate = async (req: FastifyRequest, res: FastifyReply) => {
+export const deleteTemplate = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
   const { id } = req.params as { id: string };
   const lineId = await callerLine(req);
   const owned = await prisma.hrMessageTemplate.findFirst({
@@ -192,22 +212,40 @@ export const deleteTemplate = async (req: FastifyRequest, res: FastifyReply) => 
   return res.code(200).send({ message: "OK" });
 };
 
-// -- Recipient search ------------------------------------------------------
+// -- Employee search (for adding recipients) -------------------------------
 /**
- * GET /hr/message/recipients?audience=&query=&channel=
+ * GET /hr/message/employees?audience=&query=&channel=&batchId=
  *
  * `status` is encrypted at rest, so Plantilla / Non-Plantilla CANNOT be a SQL
  * filter — rows are decrypted and partitioned in memory.
  */
-export const searchRecipients = async (
+export const searchEmployees = async (
   req: FastifyRequest,
   res: FastifyReply,
 ) => {
-  const q = req.query as { audience?: string; query?: string; channel?: string };
+  const q = req.query as {
+    audience?: string;
+    query?: string;
+    channel?: string;
+    batchId?: string;
+  };
   const lineId = await callerLine(req);
   if (!lineId) throw new UnauthorizedError("No line for this account");
   const channel = q.channel === "email" ? "email" : "sms";
   const term = (q.query || "").trim().toLowerCase();
+
+  // Anyone already on the batch is marked so the picker shows them as added
+  // rather than offering them a second time.
+  const already = q.batchId
+    ? new Set(
+        (
+          await prisma.hrMessageRecipient.findMany({
+            where: { batchId: q.batchId },
+            select: { userId: true },
+          })
+        ).map((r) => r.userId),
+      )
+    : new Set<string>();
 
   const users = await prisma.user.findMany({
     where: { lineId, active: 1, archivedAt: null },
@@ -274,12 +312,318 @@ export const searchRecipients = async (
       to,
       sendable: !reason,
       reason,
+      added: already.has(u.id),
     });
     if (out.length >= 300) break;
   }
 
   out.sort((a, b) => String(a.name).localeCompare(String(b.name)));
-  return res.code(200).send({ recipients: out, max: MAX_RECIPIENTS });
+  return res.code(200).send({ employees: out, max: MAX_RECIPIENTS });
+};
+
+// -- Batches ---------------------------------------------------------------
+export const listBatches = async (req: FastifyRequest, res: FastifyReply) => {
+  const q = req.query as { page?: string; search?: string; status?: string };
+  const lineId = await callerLine(req);
+  if (!lineId) throw new UnauthorizedError("No line for this account");
+  const page = Math.max(0, Number(q.page ?? 0) || 0);
+  const take = 20;
+  const search = (q.search || "").trim();
+
+  const where: Prisma.HrMessageBatchWhereInput = {
+    lineId,
+    ...(q.status === "draft" || q.status === "sent" ? { status: q.status } : {}),
+    ...(search
+      ? {
+          OR: [
+            { name: { contains: search, mode: "insensitive" } },
+            { subject: { contains: search, mode: "insensitive" } },
+            { body: { contains: search, mode: "insensitive" } },
+          ],
+        }
+      : {}),
+  };
+
+  const [rows, total] = await Promise.all([
+    prisma.hrMessageBatch.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      skip: page * take,
+      take,
+      include: { createdBy: { select: { firstName: true, lastName: true } } },
+    }),
+    prisma.hrMessageBatch.count({ where }),
+  ]);
+
+  return res.code(200).send({
+    batches: rows.map((r) => ({
+      ...r,
+      createdByName: r.createdBy
+        ? `${r.createdBy.firstName} ${r.createdBy.lastName}`.trim()
+        : null,
+    })),
+    total,
+    page,
+    pages: Math.ceil(total / take),
+  });
+};
+
+export const createBatch = async (req: FastifyRequest, res: FastifyReply) => {
+  const b = req.body as {
+    name?: string;
+    channel?: string;
+    templateId?: string;
+  };
+  const lineId = await callerLine(req);
+  const actorId = await callerUserId(req);
+  if (!lineId) throw new UnauthorizedError("No line for this account");
+
+  const channel = b.channel === "email" ? "email" : "sms";
+  let subject: string | null = null;
+  let body = "";
+
+  // Starting from a template pre-fills the draft — the whole point of having
+  // templates in the first place.
+  if (b.templateId) {
+    const t = await prisma.hrMessageTemplate.findFirst({
+      where: { id: b.templateId, lineId },
+    });
+    if (t) {
+      subject = t.subject;
+      body = t.body;
+    }
+  }
+
+  try {
+    const batch = await prisma.hrMessageBatch.create({
+      data: {
+        lineId,
+        name: (b.name || "").trim() || null,
+        templateId: b.templateId || null,
+        channel,
+        subject,
+        body,
+        status: "draft",
+        createdById: actorId,
+      },
+    });
+    return res.code(201).send(batch);
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError) throw dbError(e);
+    throw e;
+  }
+};
+
+export const updateBatch = async (req: FastifyRequest, res: FastifyReply) => {
+  const { id } = req.params as { id: string };
+  const b = req.body as {
+    name?: string;
+    channel?: string;
+    subject?: string;
+    body?: string;
+    audience?: string;
+  };
+  const { batch } = await ownedBatch(req, id);
+  if (batch.status !== "draft")
+    throw new ValidationError(
+      "This batch has already been sent and cannot be edited.",
+    );
+
+  const channel =
+    b.channel === undefined
+      ? batch.channel
+      : b.channel === "email"
+        ? "email"
+        : "sms";
+
+  const data: Prisma.HrMessageBatchUpdateInput = {};
+  if (b.name !== undefined) data.name = b.name.trim() || null;
+  if (b.channel !== undefined) data.channel = channel;
+  if (b.body !== undefined) data.body = b.body;
+  if (b.subject !== undefined)
+    data.subject = channel === "email" ? b.subject : null;
+  if (b.audience !== undefined)
+    data.audience =
+      b.audience === "plantilla" || b.audience === "non-plantilla"
+        ? b.audience
+        : "custom";
+  // Switching to SMS drops a subject that no longer applies.
+  if (b.channel === "sms") data.subject = null;
+
+  const updated = await prisma.hrMessageBatch.update({ where: { id }, data });
+
+  // Changing channel changes which contact detail is used, so every pending
+  // recipient's address is re-resolved. Rows already sent keep their frozen
+  // address — that is the record of where the message actually went.
+  if (b.channel !== undefined && b.channel !== batch.channel) {
+    const pending = await prisma.hrMessageRecipient.findMany({
+      where: { batchId: id, status: "pending" },
+      select: { id: true, userId: true },
+    });
+    for (const r of pending) {
+      const u = await prisma.user.findUnique({
+        where: { id: r.userId },
+        select: {
+          email: true,
+          emailIv: true,
+          phoneNumber: true,
+          phoneNumberIv: true,
+        },
+      });
+      const to =
+        channel === "email"
+          ? await dec(u?.email, u?.emailIv)
+          : phNumberFormat(await dec(u?.phoneNumber, u?.phoneNumberIv));
+      await prisma.hrMessageRecipient.update({
+        where: { id: r.id },
+        data: { toAddress: to || "" },
+      });
+    }
+  }
+
+  return res.code(200).send(updated);
+};
+
+export const deleteBatch = async (req: FastifyRequest, res: FastifyReply) => {
+  const { id } = req.params as { id: string };
+  const { batch } = await ownedBatch(req, id);
+  // A sent batch is the only proof of who was contacted; deleting it would
+  // erase that record.
+  if (batch.status !== "draft")
+    throw new ValidationError("A sent batch cannot be deleted.");
+  await prisma.hrMessageRecipient.deleteMany({ where: { batchId: id } });
+  await prisma.hrMessageBatch.delete({ where: { id } });
+  return res.code(200).send({ message: "OK" });
+};
+
+export const batchDetail = async (req: FastifyRequest, res: FastifyReply) => {
+  const { id } = req.params as { id: string };
+  const q = req.query as { search?: string; status?: string };
+  const { batch } = await ownedBatch(req, id);
+  const term = (q.search || "").trim();
+
+  const recipients = await prisma.hrMessageRecipient.findMany({
+    where: {
+      batchId: id,
+      ...(q.status === "sent" || q.status === "failed" || q.status === "pending"
+        ? { status: q.status }
+        : {}),
+      ...(term ? { name: { contains: term, mode: "insensitive" } } : {}),
+    },
+    orderBy: [{ status: "asc" }, { name: "asc" }],
+  });
+
+  // Counts describe the WHOLE batch, not the filtered view, so searching
+  // never makes it look like recipients disappeared.
+  const [pending, sent, failed] = await Promise.all([
+    prisma.hrMessageRecipient.count({
+      where: { batchId: id, status: "pending" },
+    }),
+    prisma.hrMessageRecipient.count({ where: { batchId: id, status: "sent" } }),
+    prisma.hrMessageRecipient.count({
+      where: { batchId: id, status: "failed" },
+    }),
+  ]);
+
+  return res.code(200).send({
+    batch,
+    recipients,
+    counts: { pending, sent, failed, total: pending + sent + failed },
+    max: MAX_RECIPIENTS,
+  });
+};
+
+// -- Recipients on a draft -------------------------------------------------
+export const addRecipients = async (req: FastifyRequest, res: FastifyReply) => {
+  const { id } = req.params as { id: string };
+  const b = req.body as { userIds?: string[] };
+  const { batch, lineId } = await ownedBatch(req, id);
+  if (batch.status !== "draft")
+    throw new ValidationError("This batch has already been sent.");
+
+  const ids = [...new Set(Array.isArray(b.userIds) ? b.userIds : [])];
+  if (!ids.length) throw new ValidationError("Pick at least one employee");
+
+  const existing = await prisma.hrMessageRecipient.count({
+    where: { batchId: id },
+  });
+  if (existing + ids.length > MAX_RECIPIENTS)
+    throw new ValidationError(
+      `A batch can hold at most ${MAX_RECIPIENTS} recipients. This one already has ${existing}.`,
+    );
+
+  let added = 0;
+  for (const uid of ids) {
+    // Scoped to the caller's line — a batch can never cross a line boundary.
+    const u = await prisma.user.findFirst({
+      where: { id: uid, lineId },
+      select: {
+        id: true,
+        firstName: true,
+        firstNameIv: true,
+        lastName: true,
+        lastNameIv: true,
+        email: true,
+        emailIv: true,
+        phoneNumber: true,
+        phoneNumberIv: true,
+      },
+    });
+    if (!u) continue;
+
+    const name =
+      `${await dec(u.lastName, u.lastNameIv)}, ${await dec(u.firstName, u.firstNameIv)}`
+        .replace(/^,\s*|,\s*$/g, "")
+        .trim() || "Unnamed";
+    const to =
+      batch.channel === "email"
+        ? await dec(u.email, u.emailIv)
+        : phNumberFormat(await dec(u.phoneNumber, u.phoneNumberIv));
+
+    await prisma.hrMessageRecipient.upsert({
+      where: { batchId_userId: { batchId: id, userId: uid } },
+      update: { toAddress: to || "" },
+      create: {
+        batchId: id,
+        userId: uid,
+        name,
+        toAddress: to || "",
+        renderedBody: "",
+        status: "pending",
+      },
+    });
+    added++;
+  }
+
+  const total = await prisma.hrMessageRecipient.count({
+    where: { batchId: id },
+  });
+  await prisma.hrMessageBatch.update({ where: { id }, data: { total } });
+  return res.code(200).send({ added, total });
+};
+
+export const removeRecipient = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const { id, recipientId } = req.params as {
+    id: string;
+    recipientId: string;
+  };
+  const { batch } = await ownedBatch(req, id);
+  const row = await prisma.hrMessageRecipient.findFirst({
+    where: { id: recipientId, batchId: id },
+  });
+  if (!row) throw new NotFoundError("Recipient not found");
+  // A sent or failed row is evidence; only a not-yet-sent one can be dropped.
+  if (batch.status !== "draft" || row.status !== "pending")
+    throw new ValidationError("This recipient has already been contacted.");
+  await prisma.hrMessageRecipient.delete({ where: { id: recipientId } });
+  const total = await prisma.hrMessageRecipient.count({
+    where: { batchId: id },
+  });
+  await prisma.hrMessageBatch.update({ where: { id }, data: { total } });
+  return res.code(200).send({ message: "OK", total });
 };
 
 // -- Sending ---------------------------------------------------------------
@@ -310,144 +654,85 @@ const deliver = async (
   }
 };
 
-export const sendBatch = async (req: FastifyRequest, res: FastifyReply) => {
-  const b = req.body as {
-    templateId?: string;
-    channel?: string;
-    subject?: string;
-    body?: string;
-    audience?: string;
-    userIds?: string[];
-  };
-  const lineId = await callerLine(req);
-  const actorId = await callerUserId(req);
-  if (!lineId) throw new UnauthorizedError("No line for this account");
+/** Recomputes the batch counters from the rows themselves. */
+const syncCounts = async (batchId: string) => {
+  const [pending, sent, failed] = await Promise.all([
+    prisma.hrMessageRecipient.count({ where: { batchId, status: "pending" } }),
+    prisma.hrMessageRecipient.count({ where: { batchId, status: "sent" } }),
+    prisma.hrMessageRecipient.count({ where: { batchId, status: "failed" } }),
+  ]);
+  await prisma.hrMessageBatch.update({
+    where: { id: batchId },
+    data: {
+      sentCount: sent,
+      failedCount: failed,
+      total: pending + sent + failed,
+    },
+  });
+  return { pending, sent, failed };
+};
 
-  const ids = [...new Set(Array.isArray(b.userIds) ? b.userIds : [])];
-  if (!ids.length) throw new ValidationError("Pick at least one recipient");
-  if (ids.length > MAX_RECIPIENTS)
+export const sendBatch = async (req: FastifyRequest, res: FastifyReply) => {
+  const { id } = req.params as { id: string };
+  const { batch } = await ownedBatch(req, id);
+  if (batch.status !== "draft")
+    throw new ValidationError("This batch has already been sent.");
+  if (!batch.body.trim()) throw new ValidationError("The message is empty");
+  if (batch.channel === "email" && !(batch.subject || "").trim())
+    throw new ValidationError("Email needs a subject");
+
+  const pending = await prisma.hrMessageRecipient.findMany({
+    where: { batchId: id, status: "pending" },
+  });
+  if (!pending.length) throw new ValidationError("Add at least one recipient");
+  if (pending.length > MAX_RECIPIENTS)
     throw new ValidationError(
       `You can send to at most ${MAX_RECIPIENTS} people at a time.`,
     );
 
-  const channel = b.channel === "email" ? "email" : "sms";
-  const body = (b.body || "").trim();
-  if (!body) throw new ValidationError("The message body is empty");
-  const subject = channel === "email" ? (b.subject || "").trim() : null;
-  if (channel === "email" && !subject)
-    throw new ValidationError("Email needs a subject");
+  for (const r of pending) {
+    const rendered = await renderFor(batch.body, r.userId);
+    const out = r.toAddress
+      ? await deliver(batch.channel, r.toAddress, batch.subject, rendered)
+      : {
+          ok: false,
+          error:
+            batch.channel === "email"
+              ? "No email on file"
+              : "No mobile number on file",
+        };
 
-  try {
-    const batch = await prisma.hrMessageBatch.create({
+    // renderedBody is frozen here: a later profile edit cannot rewrite what
+    // was sent, and a retry reuses the exact same words and address.
+    await prisma.hrMessageRecipient.update({
+      where: { id: r.id },
       data: {
-        lineId,
-        templateId: b.templateId || null,
-        channel,
-        subject,
-        body,
-        audience:
-          b.audience === "plantilla" || b.audience === "non-plantilla"
-            ? b.audience
-            : "custom",
-        total: ids.length,
-        createdById: actorId,
+        renderedBody: rendered,
+        status: out.ok ? "sent" : "failed",
+        error: out.ok ? null : (out.error ?? "Send failed"),
+        attempts: { increment: 1 },
+        sentAt: out.ok ? new Date() : null,
       },
     });
-
-    let sent = 0;
-    let failed = 0;
-
-    for (const uid of ids) {
-      // Scoped to the caller's line — never message across a line boundary.
-      const u = await prisma.user.findFirst({
-        where: { id: uid, lineId },
-        select: {
-          id: true,
-          firstName: true,
-          firstNameIv: true,
-          lastName: true,
-          lastNameIv: true,
-          email: true,
-          emailIv: true,
-          phoneNumber: true,
-          phoneNumberIv: true,
-        },
-      });
-      if (!u) {
-        failed++;
-        continue;
-      }
-
-      const name =
-        `${await dec(u.lastName, u.lastNameIv)}, ${await dec(u.firstName, u.firstNameIv)}`
-          .replace(/^,\s*|,\s*$/g, "")
-          .trim() || "Unnamed";
-      const to =
-        channel === "email"
-          ? await dec(u.email, u.emailIv)
-          : phNumberFormat(await dec(u.phoneNumber, u.phoneNumberIv));
-      const rendered = await renderFor(body, uid);
-
-      const r = to
-        ? await deliver(channel, to, subject, rendered)
-        : {
-            ok: false,
-            error:
-              channel === "email"
-                ? "No email on file"
-                : "No mobile number on file",
-          };
-
-      // Frozen: toAddress + renderedBody are what was ACTUALLY sent, so a
-      // later profile edit cannot rewrite history and a retry goes to the
-      // same place with the same words.
-      await prisma.hrMessageRecipient.upsert({
-        where: { batchId_userId: { batchId: batch.id, userId: uid } },
-        update: {},
-        create: {
-          batchId: batch.id,
-          userId: uid,
-          name,
-          toAddress: to || "",
-          renderedBody: rendered,
-          status: r.ok ? "sent" : "failed",
-          error: r.ok ? null : (r.error ?? "Send failed"),
-          attempts: 1,
-          sentAt: r.ok ? new Date() : null,
-        },
-      });
-
-      if (r.ok) sent++;
-      else failed++;
-    }
-
-    await prisma.hrMessageBatch.update({
-      where: { id: batch.id },
-      data: { sentCount: sent, failedCount: failed },
-    });
-    return res
-      .code(200)
-      .send({ batchId: batch.id, total: ids.length, sent, failed });
-  } catch (e) {
-    if (e instanceof Prisma.PrismaClientKnownRequestError) throw dbError(e);
-    throw e;
   }
+
+  const counts = await syncCounts(id);
+  await prisma.hrMessageBatch.update({
+    where: { id },
+    data: { status: "sent", sentAt: new Date() },
+  });
+  return res.code(200).send({ batchId: id, ...counts });
 };
 
 /** Retries ONLY the failed rows of a batch, reusing the frozen address/body. */
 export const retryBatch = async (req: FastifyRequest, res: FastifyReply) => {
-  const b = req.body as { batchId?: string; recipientIds?: string[] };
-  const lineId = await callerLine(req);
-  if (!b.batchId) throw new ValidationError("batchId is required");
-
-  const batch = await prisma.hrMessageBatch.findFirst({
-    where: { id: b.batchId, lineId: lineId ?? "" },
-  });
-  if (!batch) throw new NotFoundError("Batch not found");
+  const { id } = req.params as { id: string };
+  const b = (req.body ?? {}) as { recipientIds?: string[] };
+  const { batch } = await ownedBatch(req, id);
 
   const rows = await prisma.hrMessageRecipient.findMany({
     where: {
-      batchId: batch.id,
+      batchId: id,
       // Never re-send to someone who already received it.
       status: "failed",
       ...(Array.isArray(b.recipientIds) && b.recipientIds.length
@@ -455,15 +740,18 @@ export const retryBatch = async (req: FastifyRequest, res: FastifyReply) => {
         : {}),
     },
   });
+  if (!rows.length) throw new ValidationError("Nothing to retry");
 
   let fixed = 0;
   for (const r of rows) {
+    const rendered = r.renderedBody || (await renderFor(batch.body, r.userId));
     const out = r.toAddress
-      ? await deliver(batch.channel, r.toAddress, batch.subject, r.renderedBody)
+      ? await deliver(batch.channel, r.toAddress, batch.subject, rendered)
       : { ok: false, error: "No contact detail on file" };
     await prisma.hrMessageRecipient.update({
       where: { id: r.id },
       data: {
+        renderedBody: rendered,
         status: out.ok ? "sent" : "failed",
         error: out.ok ? null : (out.error ?? "Send failed"),
         attempts: { increment: 1 },
@@ -473,66 +761,6 @@ export const retryBatch = async (req: FastifyRequest, res: FastifyReply) => {
     if (out.ok) fixed++;
   }
 
-  const [sent, failed] = await Promise.all([
-    prisma.hrMessageRecipient.count({
-      where: { batchId: batch.id, status: "sent" },
-    }),
-    prisma.hrMessageRecipient.count({
-      where: { batchId: batch.id, status: "failed" },
-    }),
-  ]);
-  await prisma.hrMessageBatch.update({
-    where: { id: batch.id },
-    data: { sentCount: sent, failedCount: failed },
-  });
-
-  return res
-    .code(200)
-    .send({ retried: rows.length, nowSent: fixed, sent, failed });
-};
-
-// -- History ---------------------------------------------------------------
-export const listBatches = async (req: FastifyRequest, res: FastifyReply) => {
-  const q = req.query as { page?: string };
-  const lineId = await callerLine(req);
-  if (!lineId) throw new UnauthorizedError("No line for this account");
-  const page = Math.max(0, Number(q.page ?? 0) || 0);
-  const take = 20;
-
-  const [rows, total] = await Promise.all([
-    prisma.hrMessageBatch.findMany({
-      where: { lineId },
-      orderBy: { createdAt: "desc" },
-      skip: page * take,
-      take,
-      include: { createdBy: { select: { firstName: true, lastName: true } } },
-    }),
-    prisma.hrMessageBatch.count({ where: { lineId } }),
-  ]);
-
-  return res.code(200).send({
-    batches: rows.map((r) => ({
-      ...r,
-      createdByName: r.createdBy
-        ? `${r.createdBy.firstName} ${r.createdBy.lastName}`.trim()
-        : null,
-    })),
-    total,
-    page,
-    pages: Math.ceil(total / take),
-  });
-};
-
-export const batchDetail = async (req: FastifyRequest, res: FastifyReply) => {
-  const { id } = req.params as { id: string };
-  const lineId = await callerLine(req);
-  const batch = await prisma.hrMessageBatch.findFirst({
-    where: { id, lineId: lineId ?? "" },
-  });
-  if (!batch) throw new NotFoundError("Batch not found");
-  const recipients = await prisma.hrMessageRecipient.findMany({
-    where: { batchId: id },
-    orderBy: [{ status: "asc" }, { name: "asc" }],
-  });
-  return res.code(200).send({ batch, recipients });
+  const counts = await syncCounts(id);
+  return res.code(200).send({ retried: rows.length, nowSent: fixed, ...counts });
 };

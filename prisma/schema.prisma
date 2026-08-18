@@ -3089,6 +3089,11 @@ model HrMessageBatch {
   body        String
   /// "plantilla" | "non-plantilla" | "custom"
   audience    String             @default("custom")
+  /// A batch is built up as a "draft" (recipients sit at status "pending")
+  /// and becomes "sent" the moment it is dispatched. Only drafts are editable.
+  status      String             @default("draft")
+  name        String?
+  sentAt      DateTime?
   total       Int                @default(0)
   sentCount   Int                @default(0)
   failedCount Int                @default(0)
