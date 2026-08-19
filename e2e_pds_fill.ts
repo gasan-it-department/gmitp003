@@ -10,7 +10,9 @@
  * Run: npx ts-node --transpile-only e2e_pds_fill.ts */
 import fs from "fs";
 import path from "path";
-import JSZip from "jszip";
+// jszip ships no type declarations — same typed require the exporter uses.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const JSZip = require("jszip");
 import {
   WHITE_CELLS,
   clearCellFills,

@@ -7,7 +7,9 @@
  * delivered workbook.
  *
  * Run: npx ts-node --transpile-only e2e_pds_export_fill.ts */
-import JSZip from "jszip";
+// jszip ships no type declarations — same typed require the exporter uses.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const JSZip = require("jszip");
 import { prisma } from "./src/barrel/prisma";
 import { exportPdsExcel } from "./src/controller/pdsExportController";
 
