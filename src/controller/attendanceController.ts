@@ -77,6 +77,58 @@ export const extractVerifyCode = (raw: string): string | null => {
 };
 
 // ── field catalogue ────────────────────────────────────────────────────────
+/** The label a sheet falls back to when HR did not define any entries. */
+export const DEFAULT_ENTRY = "Attendance";
+/** More than a working day's worth of segments is a data-entry mistake. */
+const MAX_ENTRIES = 8;
+
+/**
+ * Cleans HR's scan-entry list: trimmed, de-duplicated case-insensitively,
+ * order preserved, capped. An empty list becomes the single default entry, so
+ * a sheet always has at least one thing to scan into.
+ */
+export const sanitizeEntries = (raw: unknown): string[] => {
+  const arr = Array.isArray(raw) ? raw : [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const v of arr) {
+    const label = String(v ?? "").trim().slice(0, 40);
+    if (!label) continue;
+    const key = label.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(label);
+    if (out.length >= MAX_ENTRIES) break;
+  }
+  return out.length ? out : [DEFAULT_ENTRY];
+};
+
+/**
+ * Resolves which entry a scan belongs to.
+ *
+ * Matching is case-insensitive so a scanner sending "am in" lands on "AM In".
+ * With one entry defined the argument is optional — a single-scan sheet should
+ * not force every caller to name it. With several, an unknown or missing entry
+ * is an error rather than a silent write into the first one: putting someone's
+ * PM Out under AM In would be worse than refusing.
+ */
+export const resolveEntry = (entries: string[], wanted?: string | null): string => {
+  const list = entries.length ? entries : [DEFAULT_ENTRY];
+  const want = (wanted ?? "").trim();
+  if (!want) {
+    if (list.length === 1) return list[0];
+    throw new ValidationError(
+      `This sheet records ${list.length} entries (${list.join(", ")}). Say which one this scan is for.`,
+    );
+  }
+  const hit = list.find((e) => e.toLowerCase() === want.toLowerCase());
+  if (!hit)
+    throw new ValidationError(
+      `"${want}" is not an entry on this sheet. Expected one of: ${list.join(", ")}.`,
+    );
+  return hit;
+};
+
 // GET /attendance/fields — drives the web column picker.
 export const attendanceFields = async (
   _req: FastifyRequest,
@@ -112,12 +164,16 @@ export const createAttendanceEvent = async (
   const fields = sanitizeAttendanceFields(body.fields);
   if (!fields.length)
     throw new ValidationError("Pick at least one column to capture");
+  // HR decides the scan entries per sheet: one for a simple headcount, or
+  // AM In / AM Out / PM In / PM Out for a full day.
+  const entries = sanitizeEntries((body as { entries?: unknown }).entries);
 
   try {
     const event = await prisma.attendanceEvent.create({
       data: {
         lineId,
         title,
+        entries,
         description: body.description?.trim() || null,
         location: body.location?.trim() || null,
         startAt: body.startAt ? new Date(body.startAt) : new Date(),
@@ -323,6 +379,8 @@ export interface RecordFilters {
   dateTo?: string;
   departmentId?: string;
   search?: string;
+  /** One of the sheet's scan entries, e.g. "AM Out". */
+  entry?: string;
 }
 
 /**
@@ -351,6 +409,8 @@ const recordWhere = (
     };
   }
   if (f.departmentId) where.user = { departmentId: f.departmentId };
+  // Narrow to one scan entry, e.g. show only who has tapped "AM Out".
+  if (f.entry) where.entry = f.entry;
   return where;
 };
 
@@ -421,6 +481,7 @@ export const attendanceRecords = async (
     }
 
     return res.code(200).send({
+      entries: event.entries,
       columns: event.fields.map((k) => ({
         key: k,
         label: attendanceFieldLabel(k),
@@ -431,6 +492,7 @@ export const attendanceRecords = async (
       records: pageRows.map((r) => ({
         id: r.id,
         userId: r.userId,
+        entry: r.entry,
         timestamp: r.timestamp,
         remarks: r.remarks,
         profilePicture: r.user?.profilePicture ?? null,
@@ -533,8 +595,11 @@ export const resolveAttendanceScan = async (
   const resolved = await resolveAttendanceUser(target.id, event.fields);
   if (!resolved) throw new NotFoundError("Employee record unavailable.");
 
+  const entry = resolveEntry(event.entries, (body as { entry?: string }).entry);
   const existing = await prisma.attendanceRecord.findUnique({
-    where: { eventId_userId: { eventId: event.id, userId: target.id } },
+    where: {
+      eventId_userId_entry: { eventId: event.id, userId: target.id, entry },
+    },
     select: { id: true, timestamp: true },
   });
 
@@ -551,6 +616,8 @@ export const resolveAttendanceScan = async (
       label: attendanceFieldLabel(k),
       value: resolved.values[k] ?? "",
     })),
+    entry,
+    entries: event.entries,
     alreadyRecorded: !!existing,
     recordedAt: existing?.timestamp ?? null,
   });
@@ -563,10 +630,17 @@ export const resolveAttendanceScan = async (
  * it happened at the door, not the time the phone got signal back.
  */
 const recordAttendance = async (
-  event: { id: string; lineId: string; status: string; fields: string[] },
+  event: {
+    id: string;
+    lineId: string;
+    status: string;
+    fields: string[];
+    entries: string[];
+  },
   opts: {
     userId?: string;
     code?: string;
+    entry?: string | null;
     scannedById: string | null;
     scannedAt?: string | number | null;
     remarks?: string | null;
@@ -609,17 +683,29 @@ const recordAttendance = async (
       stamp = d;
   }
 
+  // Which segment of the day this scan belongs to. A person may appear once
+  // per entry, so AM Out after AM In is a new row, not a duplicate.
+  const entry = resolveEntry(event.entries, opts.entry);
+
   const existing = await prisma.attendanceRecord.findUnique({
-    where: { eventId_userId: { eventId: event.id, userId: target.id } },
+    where: {
+      eventId_userId_entry: { eventId: event.id, userId: target.id, entry },
+    },
     select: { id: true, userId: true, timestamp: true },
   });
   if (existing)
-    return { record: existing, fullName: resolved.fullName, duplicate: true };
+    return {
+      record: existing,
+      fullName: resolved.fullName,
+      entry,
+      duplicate: true,
+    };
 
   const record = await prisma.attendanceRecord.create({
     data: {
       eventId: event.id,
       userId: target.id,
+      entry,
       scannedById: opts.scannedById,
       remarks: opts.remarks?.trim() || null,
       snapshot: resolved.values as Prisma.InputJsonObject,
@@ -627,7 +713,7 @@ const recordAttendance = async (
     },
     select: { id: true, userId: true, timestamp: true },
   });
-  return { record, fullName: resolved.fullName, duplicate: false };
+  return { record, fullName: resolved.fullName, entry, duplicate: false };
 };
 
 /**
@@ -644,6 +730,7 @@ export const confirmAttendance = async (
     eventId?: string;
     userId?: string;
     code?: string;
+    entry?: string;
     scannedAt?: string;
     remarks?: string;
   };
@@ -658,18 +745,27 @@ export const confirmAttendance = async (
     const out = await recordAttendance(event, {
       userId: body.userId,
       code: body.code,
+      entry: body.entry,
       scannedById,
       scannedAt: body.scannedAt,
       remarks: body.remarks,
     });
-    const attendees = await prisma.attendanceRecord.count({
-      where: { eventId: event.id },
-    });
+    // Counted for the entry that was just scanned, not the whole sheet — on a
+    // four-entry sheet a single total would tell HR nothing about whether
+    // everyone has tapped out.
+    const [attendees, entryCount] = await Promise.all([
+      prisma.attendanceRecord.count({ where: { eventId: event.id } }),
+      prisma.attendanceRecord.count({
+        where: { eventId: event.id, entry: out.entry },
+      }),
+    ]);
     return res.code(200).send({
       record: out.record,
       fullName: out.fullName,
+      entry: out.entry,
       duplicate: out.duplicate,
       attendees,
+      entryCount,
     });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError)
@@ -736,6 +832,7 @@ export const confirmAttendanceBulk = async (
         throw new ValidationError(eventErr.get(row.eventId) as string);
 
       const out = await recordAttendance(eventCache.get(row.eventId), {
+        entry: (row as { entry?: string }).entry,
         userId: row.userId,
         code: row.code,
         scannedById,
@@ -789,9 +886,13 @@ export const exportAttendance = async (
     workbook.creator = "Municipality of Gasan";
     const ws = workbook.addWorksheet("Attendance");
 
+    // A sheet with several scan entries needs the entry named per row, or the
+    // export is just an unexplained list of repeated names.
+    const multiEntry = (event.entries?.length ?? 0) > 1;
     const columns = [
       { key: "no", label: "No." },
       ...event.fields.map((k) => ({ key: k, label: attendanceFieldLabel(k) })),
+      ...(multiEntry ? [{ key: "__entry", label: "Entry" }] : []),
       { key: "__time", label: "Time recorded" },
     ];
     const lastCol = columns.length;
@@ -833,6 +934,7 @@ export const exportAttendance = async (
       const row = ws.addRow([
         i + 1,
         ...event.fields.map((f) => r.values[f] || ""),
+        ...(multiEntry ? [r.entry] : []),
         new Date(r.timestamp).toLocaleString("en-PH"),
       ]);
       row.getCell(1).alignment = { horizontal: "center" };

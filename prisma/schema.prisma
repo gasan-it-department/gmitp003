@@ -2902,6 +2902,11 @@ model AttendanceEvent {
   endAt       DateTime?
   status      String             @default("open") // open | closed
   fields      String[] // AttendanceField keys, in HR's chosen column order
+  /// The scan entries this sheet collects, in order — e.g. ["AM In","AM Out",
+  /// "PM In","PM Out"], or just ["Attendance"] for a single scan. HR decides
+  /// per sheet. A person may be recorded ONCE PER ENTRY, so a four-entry sheet
+  /// holds up to four rows for them.
+  entries     String[]           @default(["Attendance"])
   createdById String?
   createdAt   DateTime           @default(now())
   line        Line               @relation(fields: [lineId], references: [id], onDelete: Cascade)
@@ -2917,6 +2922,9 @@ model AttendanceRecord {
   eventId     String
   userId      String
   scannedById String?
+  /// Which of the event's `entries` this scan is for. Defaults to the legacy
+  /// single-entry label so rows written before sessions existed stay valid.
+  entry       String          @default("Attendance")
   timestamp   DateTime        @default(now())
   remarks     String?
   snapshot    Json // { fieldKey: renderedValue } frozen at scan time
@@ -2924,8 +2932,9 @@ model AttendanceRecord {
   user        User            @relation("AttendanceRecordUser", fields: [userId], references: [id], onDelete: Cascade)
   scannedBy   User?           @relation("AttendanceRecordScannedBy", fields: [scannedById], references: [id], onDelete: SetNull)
 
-  // one attendance per person per event — makes re-scans idempotent
-  @@unique([eventId, userId])
+  // One attendance per person PER ENTRY — re-scanning the same entry is
+  // idempotent, while AM Out after AM In is a separate legitimate row.
+  @@unique([eventId, userId, entry])
   @@index([eventId, timestamp])
   @@index([userId])
 }
