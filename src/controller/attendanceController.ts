@@ -558,6 +558,9 @@ export const mobileAttendanceEvents = async (
       endAt: e.endAt,
       attendees: e._count.records,
       fields: e.fields,
+      // The phone needs these to offer a segment picker; without them a
+      // multi-entry sheet would refuse every scan it sends.
+      entries: e.entries,
     })),
   });
 };
