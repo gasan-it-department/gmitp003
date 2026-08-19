@@ -9,6 +9,7 @@ import {
   adminSetAccountStatus,
   adminDeleteAccount,
 } from "../controller/accountController";
+import { selfDeleteAccount } from "../controller/accountSelfDeleteController";
 export const accounts = (fastify: FastifyInstance) => {
   fastify.get(
     "/accounts",
@@ -27,4 +28,12 @@ export const accounts = (fastify: FastifyInstance) => {
   // Admin-panel account management (open, like /accounts).
   fastify.patch("/account/status", adminSetAccountStatus);
   fastify.delete("/account/delete", adminDeleteAccount);
+  // Self-service deletion, required by App Store Review 5.1.1(v). Distinct
+  // from the admin route above: it acts on the CALLER's own account and
+  // re-checks their password first.
+  fastify.post(
+    "/account/self-delete",
+    { preHandler: authenticated },
+    selfDeleteAccount,
+  );
 };
