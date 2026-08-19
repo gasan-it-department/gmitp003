@@ -87,6 +87,14 @@ import {
   selfSignArchive,
   selfSignRemove,
 } from "../controller/selfSignController";
+import {
+  roomConfig,
+  roomCandidates,
+  updateRoomConfig,
+  addRoomMembers,
+  updateRoomMember,
+  removeRoomMember,
+} from "../controller/roomConfigController";
 
 export const document = (fastify: FastifyInstance) => {
   fastify.post("/document/create", { preHandler: authenticated }, addDocument);
@@ -123,6 +131,37 @@ export const document = (fastify: FastifyInstance) => {
   );
   fastify.get("/document/archives", { preHandler: authenticated }, archives);
   fastify.post("/document/archive/file", archiveFile);
+  // ── Room configuration (rename, address, signatories/receivers) ────────
+  fastify.get(
+    "/document/room/config",
+    { preHandler: authenticated },
+    roomConfig,
+  );
+  fastify.get(
+    "/document/room/config/candidates",
+    { preHandler: authenticated },
+    roomCandidates,
+  );
+  fastify.patch(
+    "/document/room/config",
+    { preHandler: authenticated },
+    updateRoomConfig,
+  );
+  fastify.post(
+    "/document/room/config/members",
+    { preHandler: authenticated },
+    addRoomMembers,
+  );
+  fastify.patch(
+    "/document/room/config/member",
+    { preHandler: authenticated },
+    updateRoomMember,
+  );
+  fastify.delete(
+    "/document/room/config/member",
+    { preHandler: authenticated },
+    removeRoomMember,
+  );
   fastify.get("/document/rooms", { preHandler: authenticated }, rooms);
   fastify.get("/document/room", { preHandler: authenticated }, room);
   fastify.patch(
