@@ -110,5 +110,12 @@
     /* Completeness */
     // "skipDefaultLibCheck": true,                      /* Skip type checking .d.ts files that are included with TypeScript. */
     "skipLibCheck": true /* Skip type checking all .d.ts files. */
-  }
+  },
+  /* The root-level e2e_*.ts scripts are developer harnesses run with ts-node,
+     not application code. Compiling them into dist did nothing useful and put
+     the whole repo through tsc in one pass, which overran Node's default heap
+     on Railway (exit 134, "Reached heap limit") and silently blocked every
+     deploy. They are still typechecked on demand:
+       npx tsc --noEmit e2e_whatever.ts                                       */
+  "exclude": ["node_modules", "dist", "generated", "e2e_*.ts", "*_tmp.*"]
 }
