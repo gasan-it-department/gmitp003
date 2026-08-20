@@ -58,6 +58,31 @@ const callerOf = async (req: FastifyRequest): Promise<Caller> => {
   };
 };
 
+/**
+ * Resolves which line a request may act on.
+ *
+ * Every attendance endpoint used to do `body.lineId || callerLine`, which
+ * trusts a value the CLIENT sends: passing another office's lineId in the
+ * query string returned that office's attendance sheets, and on the write
+ * paths created sheets and granted scanner access inside it. The caller's own
+ * line is the only line they get, and a super-admin — who legitimately drives
+ * other lines from the admin panel — is the single exception.
+ */
+const lineForCaller = async (
+  req: FastifyRequest,
+  requested?: string | null,
+): Promise<string> => {
+  const { userId, lineId } = await callerOf(req);
+  const want = (requested || "").trim();
+  if (!want || want === lineId) {
+    if (!lineId) throw new ValidationError("lineId is required");
+    return lineId;
+  }
+  const sup = userId ? await isSuperAdmin(userId) : false;
+  if (!sup) throw new UnauthorizedError("Not your line");
+  return want;
+};
+
 /** Resolves the event and refuses to serve it across a line boundary. */
 const eventForCaller = async (eventId: string, req: FastifyRequest) => {
   const event = await prisma.attendanceEvent.findUnique({
@@ -169,9 +194,8 @@ export const createAttendanceEvent = async (
   const title = (body.title || "").trim();
   if (!title) throw new ValidationError("Title is required");
 
-  const { userId, lineId: callerLine } = await callerOf(req);
-  const lineId = body.lineId || callerLine;
-  if (!lineId) throw new ValidationError("lineId is required");
+  const { userId } = await callerOf(req);
+  const lineId = await lineForCaller(req, body.lineId);
 
   const fields = sanitizeAttendanceFields(body.fields);
   if (!fields.length)
@@ -213,9 +237,7 @@ export const listAttendanceEvents = async (
     search?: string;
     status?: string;
   };
-  const { lineId: callerLine } = await callerOf(req);
-  const lineId = q.lineId || callerLine;
-  if (!lineId) throw new ValidationError("lineId is required");
+  const lineId = await lineForCaller(req, q.lineId);
 
   const page = Math.max(0, Number(q.page ?? 0) || 0);
   const take = 20;
@@ -1072,9 +1094,7 @@ export const listAttendanceAccess = async (
   res: FastifyReply,
 ) => {
   const q = req.query as { lineId?: string };
-  const { lineId: callerLine } = await callerOf(req);
-  const lineId = q.lineId || callerLine;
-  if (!lineId) throw new ValidationError("lineId is required");
+  const lineId = await lineForCaller(req, q.lineId);
   const rows = await prisma.attendanceMobileAccess.findMany({
     where: { lineId },
     orderBy: { timestamp: "desc" },
@@ -1112,9 +1132,8 @@ export const grantAttendanceAccess = async (
   res: FastifyReply,
 ) => {
   const body = req.body as { lineId?: string; userId?: string };
-  const { userId: actorId, lineId: callerLine } = await callerOf(req);
-  const lineId = body.lineId || callerLine;
-  if (!lineId) throw new ValidationError("lineId is required");
+  const { userId: actorId } = await callerOf(req);
+  const lineId = await lineForCaller(req, body.lineId);
   if (!body.userId) throw new ValidationError("userId is required");
 
   const target = await prisma.user.findUnique({
