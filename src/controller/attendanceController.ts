@@ -15,6 +15,18 @@ import {
   sanitizeAttendanceFields,
 } from "../service/attendanceFields";
 import { isSuperAdmin } from "./storageAccessController";
+import { EncryptionService } from "../service/encryption";
+
+/** Decrypts a PII column, tolerating rows written before encryption. */
+const dec = async (d?: string | null, iv?: string | null) => {
+  if (!d) return "";
+  if (!iv) return d;
+  try {
+    return (await EncryptionService.decrypt(d, iv)) ?? "";
+  } catch {
+    return d;
+  }
+};
 
 /**
  * QR attendance.
@@ -443,7 +455,15 @@ export const attendanceRecords = async (
             department: { select: { id: true, name: true } },
           },
         },
-        scannedBy: { select: { firstName: true, lastName: true } },
+        scannedBy: {
+          select: {
+            id: true,
+            firstName: true,
+            firstNameIv: true,
+            lastName: true,
+            lastNameIv: true,
+          },
+        },
       },
     });
 
@@ -480,6 +500,49 @@ export const attendanceRecords = async (
       else facet.set(d.id, { id: d.id, name: d.name ?? "Unnamed", count: 1 });
     }
 
+    /**
+     * The ATTENDEE's name, always — independent of which columns HR chose to
+     * capture. A sheet that captures only, say, office and position has no
+     * name anywhere on the row, which left "scanned by <operator>" as the only
+     * human name in sight and made every row look like it belonged to the
+     * operator. The row must state who it is FOR.
+     */
+    const attendeeNames = new Map<string, string>();
+    {
+      const cache = new Map<string, string>();
+      for (const r of pageRows) {
+        let name = cache.get(r.userId);
+        if (name === undefined) {
+          const snap = snapshotOf(r);
+          // Prefer the frozen snapshot: it is what was true at scan time.
+          name =
+            (snap.fullName || "").trim() ||
+            (await resolveAttendanceUser(r.userId, ["fullName"]))?.fullName ||
+            "";
+          cache.set(r.userId, name);
+        }
+        if (name) attendeeNames.set(r.id, name);
+      }
+    }
+
+    // One decrypt per distinct operator on this page, not per row.
+    const scannedByNames = new Map<string, string>();
+    {
+      const cache = new Map<string, string>();
+      for (const r of pageRows) {
+        const sb = r.scannedBy;
+        if (!sb) continue;
+        let name = cache.get(sb.id);
+        if (name === undefined) {
+          const f = await dec(sb.firstName, sb.firstNameIv);
+          const l = await dec(sb.lastName, sb.lastNameIv);
+          name = `${f} ${l}`.trim();
+          cache.set(sb.id, name);
+        }
+        if (name) scannedByNames.set(r.id, name);
+      }
+    }
+
     return res.code(200).send({
       entries: event.entries,
       columns: event.fields.map((k) => ({
@@ -492,14 +555,19 @@ export const attendanceRecords = async (
       records: pageRows.map((r) => ({
         id: r.id,
         userId: r.userId,
+        /** Who this row is FOR. Always present, whatever columns HR picked. */
+        attendee: attendeeNames.get(r.id) ?? "Unnamed employee",
         entry: r.entry,
         timestamp: r.timestamp,
         remarks: r.remarks,
         profilePicture: r.user?.profilePicture ?? null,
         office: r.user?.department?.name ?? null,
-        scannedBy: r.scannedBy
-          ? `${r.scannedBy.firstName} ${r.scannedBy.lastName}`.trim()
-          : null,
+        // Decrypted. Concatenating the raw columns emitted ciphertext for
+        // anyone whose name is encrypted at rest, and — worse — a readable
+        // OTHER PERSON's name for anyone whose is not, right next to the
+        // attendee's own row.
+        scannedBy: scannedByNames.get(r.id) ?? null,
+        scannedById: r.scannedBy?.id ?? null,
         values: r.values,
       })),
       total,
