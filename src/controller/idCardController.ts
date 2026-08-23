@@ -683,11 +683,16 @@ export const idExportBatch = async (req: FastifyRequest, res: FastifyReply) => {
 };
 
 /**
- * GET /user/my-verify-qr — the logged-in employee's identity-QR payload for
- * the mobile app's profile screen. Returns the SAME verify URL the printed
- * ID cards encode (`{base}/verify-id?code=<verifyCode>`), generating and
- * persisting the user's verifyCode on first use. The mobile caches the URL
- * locally and renders the QR fully offline afterwards.
+ * GET /user/my-verify-qr[?png=1] — the logged-in employee's identity-QR
+ * payload. Returns the SAME verify URL the printed ID cards encode
+ * (`{base}/verify-id?code=<verifyCode>`), generating and persisting the
+ * user's verifyCode on first use.
+ *
+ * The mobile app takes the URL alone and draws the QR itself, offline. The
+ * web profile cannot: the browser bundle carries jsQR, which only DECODES.
+ * So the web asks for `png=1` and gets the rendered image back. It is opt-in
+ * rather than always-on so mobile does not pay for ~25KB of base64 on every
+ * profile open only to discard it.
  */
 export const myVerifyQr = async (req: FastifyRequest, res: FastifyReply) => {
   const accountId = (req.user as { id?: string } | undefined)?.id;
@@ -710,5 +715,15 @@ export const myVerifyQr = async (req: FastifyRequest, res: FastifyReply) => {
   }
 
   const base = (tempURL() || "").replace(/\/+$/, "");
-  return res.code(200).send({ code, url: `${base}/verify-id?code=${code}` });
+  const url = `${base}/verify-id?code=${code}`;
+
+  const q = (req.query ?? {}) as { png?: string };
+  const wantPng = q.png === "1" || q.png === "true";
+  // 1024px so the download is still sharp when someone prints it on a card
+  // or a lanyard tag rather than only ever showing it on a screen.
+  const qr = wantPng
+    ? await QRCode.toDataURL(url, { margin: 1, width: 1024 })
+    : undefined;
+
+  return res.code(200).send({ code, url, ...(qr ? { qr } : {}) });
 };
