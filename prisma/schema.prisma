@@ -2932,9 +2932,13 @@ model AttendanceRecord {
   user        User            @relation("AttendanceRecordUser", fields: [userId], references: [id], onDelete: Cascade)
   scannedBy   User?           @relation("AttendanceRecordScannedBy", fields: [scannedById], references: [id], onDelete: SetNull)
 
-  // One attendance per person PER ENTRY — re-scanning the same entry is
-  // idempotent, while AM Out after AM In is a separate legitimate row.
-  @@unique([eventId, userId, entry])
+  // Re-scanning the same entry is allowed, but only after a cool-down (see
+  // SCAN_COOLDOWN_MS): a person genuinely re-tapping ten minutes later is a
+  // real second row, while the same badge read twice in the same moment is
+  // the accident the cool-down exists to catch. That is a time rule, not a
+  // uniqueness rule, so there is no @@unique here — the index below is what
+  // makes the "any row for this person in this entry, recently" lookup cheap.
+  @@index([eventId, userId, entry, timestamp])
   @@index([eventId, timestamp])
   @@index([userId])
 }

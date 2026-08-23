@@ -116,6 +116,18 @@ export const extractVerifyCode = (raw: string): string | null => {
 // ── field catalogue ────────────────────────────────────────────────────────
 /** The label a sheet falls back to when HR did not define any entries. */
 export const DEFAULT_ENTRY = "Attendance";
+
+/**
+ * How long a person must wait before the same entry accepts them again.
+ *
+ * A sheet used to allow exactly one row per person per entry, so a second
+ * tap was silently swallowed forever. That is wrong in both directions: it
+ * blocks someone who legitimately re-taps later in the shift, and it hides
+ * the fact that a badge was scanned twice at all. A cool-down catches the
+ * accident — a badge left in front of the lens, an operator tapping twice —
+ * without pretending the person can only ever appear once.
+ */
+export const SCAN_COOLDOWN_MS = 3 * 60_000;
 /** More than a working day's worth of segments is a data-entry mistake. */
 const MAX_ENTRIES = 8;
 
@@ -270,10 +282,11 @@ export const listAttendanceEvents = async (
       }),
       prisma.attendanceEvent.count({ where }),
     ]);
+    const people = await peoplePerEvent(rows.map((e) => e.id));
     return res.code(200).send({
       events: rows.map((e) => ({
         ...e,
-        attendees: e._count.records,
+        attendees: people.get(e.id) ?? 0,
       })),
       total,
       page,
@@ -293,7 +306,7 @@ export const attendanceEventDetail = async (
 ) => {
   const { eventId } = req.params as { eventId: string };
   const event = await eventForCaller(eventId, req);
-  const attendees = await prisma.attendanceRecord.count({ where: { eventId } });
+  const attendees = await countPeople({ eventId });
   return res.code(200).send({
     ...event,
     attendees,
@@ -639,6 +652,7 @@ export const mobileAttendanceEvents = async (
     take: 50,
     include: { _count: { select: { records: true } } },
   });
+  const people = await peoplePerEvent(rows.map((e) => e.id));
   return res.code(200).send({
     events: rows.map((e) => ({
       id: e.id,
@@ -646,7 +660,7 @@ export const mobileAttendanceEvents = async (
       location: e.location,
       startAt: e.startAt,
       endAt: e.endAt,
-      attendees: e._count.records,
+      attendees: people.get(e.id) ?? 0,
       fields: e.fields,
       // The phone needs these to offer a segment picker; without them a
       // multi-entry sheet would refuse every scan it sends.
@@ -689,12 +703,16 @@ export const resolveAttendanceScan = async (
   if (!resolved) throw new NotFoundError("Employee record unavailable.");
 
   const entry = resolveEntry(event.entries, (body as { entry?: string }).entry);
-  const existing = await prisma.attendanceRecord.findUnique({
-    where: {
-      eventId_userId_entry: { eventId: event.id, userId: target.id, entry },
-    },
+  // The last time this person landed on this entry, and whether that was
+  // recent enough that scanning right now would be refused. "Ever recorded"
+  // would flag someone all day for a tap they made at 8am.
+  const last = await prisma.attendanceRecord.findFirst({
+    where: { eventId: event.id, userId: target.id, entry },
+    orderBy: { timestamp: "desc" },
     select: { id: true, timestamp: true },
   });
+  const cooling =
+    !!last && Date.now() - last.timestamp.getTime() < SCAN_COOLDOWN_MS;
 
   return res.code(200).send({
     event: { id: event.id, title: event.title },
@@ -711,9 +729,37 @@ export const resolveAttendanceScan = async (
     })),
     entry,
     entries: event.entries,
-    alreadyRecorded: !!existing,
-    recordedAt: existing?.timestamp ?? null,
+    /** Within the cool-down — confirming now would be refused as a duplicate. */
+    alreadyRecorded: cooling,
+    recordedAt: last?.timestamp ?? null,
+    nextAllowedAt: last
+      ? new Date(last.timestamp.getTime() + SCAN_COOLDOWN_MS)
+      : null,
+    cooldownMs: SCAN_COOLDOWN_MS,
   });
+};
+
+/**
+ * How many DISTINCT people are on a sheet (or in one entry of it).
+ *
+ * Rows stopped being one-per-person when the cool-down replaced the unique
+ * constraint, so a plain row count would report three scans by one person as
+ * three attendees. HR reads this number to answer "has everyone tapped out",
+ * which is a question about people, so it stays a question about people.
+ */
+const countPeople = async (where: Prisma.AttendanceRecordWhereInput) =>
+  (await prisma.attendanceRecord.groupBy({ by: ["userId"], where })).length;
+
+/** Same, for many sheets at once — one query, not one per sheet. */
+const peoplePerEvent = async (eventIds: string[]) => {
+  const out = new Map<string, number>();
+  if (!eventIds.length) return out;
+  const rows = await prisma.attendanceRecord.groupBy({
+    by: ["eventId", "userId"],
+    where: { eventId: { in: eventIds } },
+  });
+  for (const r of rows) out.set(r.eventId, (out.get(r.eventId) ?? 0) + 1);
+  return out;
 };
 
 /**
@@ -776,22 +822,40 @@ const recordAttendance = async (
       stamp = d;
   }
 
-  // Which segment of the day this scan belongs to. A person may appear once
-  // per entry, so AM Out after AM In is a new row, not a duplicate.
+  // Which segment of the day this scan belongs to. AM Out after AM In is a
+  // different entry, so it is never measured against AM In's cool-down.
   const entry = resolveEntry(event.entries, opts.entry);
 
-  const existing = await prisma.attendanceRecord.findUnique({
+  /**
+   * Anything already on this entry within the cool-down of THIS scan's own
+   * moment. Compared against the scan timestamp rather than "now" so a batch
+   * of offline scans flushed hours later is judged by when it happened at
+   * the door — and checked as a window on both sides, because a queued flush
+   * can arrive out of order and an earlier scan must not be waved through
+   * just because a later one landed first.
+   */
+  const at = stamp ?? new Date();
+  const near = await prisma.attendanceRecord.findFirst({
     where: {
-      eventId_userId_entry: { eventId: event.id, userId: target.id, entry },
+      eventId: event.id,
+      userId: target.id,
+      entry,
+      timestamp: {
+        gt: new Date(at.getTime() - SCAN_COOLDOWN_MS),
+        lt: new Date(at.getTime() + SCAN_COOLDOWN_MS),
+      },
     },
+    orderBy: { timestamp: "desc" },
     select: { id: true, userId: true, timestamp: true },
   });
-  if (existing)
+  if (near)
     return {
-      record: existing,
+      record: near,
       fullName: resolved.fullName,
       entry,
       duplicate: true,
+      /** When this person may scan into this entry again. */
+      nextAllowedAt: new Date(near.timestamp.getTime() + SCAN_COOLDOWN_MS),
     };
 
   const record = await prisma.attendanceRecord.create({
@@ -806,7 +870,13 @@ const recordAttendance = async (
     },
     select: { id: true, userId: true, timestamp: true },
   });
-  return { record, fullName: resolved.fullName, entry, duplicate: false };
+  return {
+    record,
+    fullName: resolved.fullName,
+    entry,
+    duplicate: false,
+    nextAllowedAt: new Date(record.timestamp.getTime() + SCAN_COOLDOWN_MS),
+  };
 };
 
 /**
@@ -845,12 +915,11 @@ export const confirmAttendance = async (
     });
     // Counted for the entry that was just scanned, not the whole sheet — on a
     // four-entry sheet a single total would tell HR nothing about whether
-    // everyone has tapped out.
+    // everyone has tapped out. People, not rows: one person tapping three
+    // times is still one person present.
     const [attendees, entryCount] = await Promise.all([
-      prisma.attendanceRecord.count({ where: { eventId: event.id } }),
-      prisma.attendanceRecord.count({
-        where: { eventId: event.id, entry: out.entry },
-      }),
+      countPeople({ eventId: event.id }),
+      countPeople({ eventId: event.id, entry: out.entry }),
     ]);
     return res.code(200).send({
       record: out.record,
@@ -859,6 +928,10 @@ export const confirmAttendance = async (
       duplicate: out.duplicate,
       attendees,
       entryCount,
+      // So the scanner can hold the same badge off until it would count,
+      // instead of re-warning about it every few seconds.
+      nextAllowedAt: out.nextAllowedAt,
+      cooldownMs: SCAN_COOLDOWN_MS,
     });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError)
