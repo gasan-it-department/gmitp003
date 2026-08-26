@@ -2026,6 +2026,31 @@ model Signature {
   // Per-signature toggle: when true, downloaded signed PDFs stamp a
   // verification QR beside any box that used THIS signature.
   qrEnabled            Boolean             @default(false)
+
+  // ── How this signature is STAMPED ────────────────────────────────────
+  // A signature used to be fitted into whatever box the placement editor
+  // drew and centred there. That is wrong for a real signature: the file is
+  // mostly empty space with the writing in the middle and a long tail
+  // sweeping down, so the mark floated high in the box and the tail ran
+  // straight through the printed name underneath.
+  //
+  // These three settings say how big the writing should print and where its
+  // WRITING LINE is, so the stamp can sit the mark on the line like a pen
+  // would and let the tail hang below. Null height keeps the old fit-to-box
+  // behaviour, so nothing changes until the owner sets a size.
+  /// Printed height of the ink itself, in PDF points. Null = fit to the box.
+  inkHeightPt          Float?
+  /// 0-100. Where the writing line sits inside the ink, measured from its
+  /// top. 100 = the very bottom of the ink (nothing hangs below the line).
+  baselinePct          Int                 @default(100)
+  /// The ink's bounding box inside the image file, as 0-1 fractions, y from
+  /// the TOP. Measured once when the file is uploaded, so stamping never has
+  /// to decode the image. Null = treat the whole file as ink.
+  inkX0                Float?
+  inkY0                Float?
+  inkX1                Float?
+  inkY1                Float?
+
   roomAuthorizedUser   RoomAuthorizedUser? @relation(fields: [roomAuthorizedUserId], references: [id])
   user                 User                @relation(fields: [userId], references: [id])
   arrangements         SignatoryArrangement[]

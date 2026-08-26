@@ -119,6 +119,14 @@ export const listUserSignatures = async (
         timestamp: r.timestamp,
         roomAuthorizedUserId: r.roomAuthorizedUserId,
         qrEnabled: r.qrEnabled,
+        // How this one stamps: null height means it still fits to whatever
+        // box was drawn on the page (the old behaviour).
+        inkHeightPt: r.inkHeightPt,
+        baselinePct: r.baselinePct,
+        ink:
+          r.inkX0 === null || r.inkY0 === null || r.inkX1 === null || r.inkY1 === null
+            ? null
+            : { x0: r.inkX0, y0: r.inkY0, x1: r.inkX1, y1: r.inkY1 },
         // base64 data URL so the UI can <img src={preview}> directly.
         preview: toDataUrl(buf, mime),
         size: buf?.length ?? 0,
@@ -150,6 +158,7 @@ export const uploadUserSignature = async (
     let title = "";
     let userId = "";
     let setActive = false;
+    let ink = "";
 
     for await (const part of req.parts()) {
       if (part.type === "file") {
@@ -162,6 +171,11 @@ export const uploadUserSignature = async (
         if (part.fieldname === "title") title = v;
         else if (part.fieldname === "userId") userId = v;
         else if (part.fieldname === "active") setActive = v === "true";
+        // The browser already decoded the image to show a preview, so it
+        // measures where the ink actually is and sends it along. The server
+        // has no image decoder and does not need one for this; the value is
+        // cosmetic geometry, and it is clamped before it is stored.
+        else if (part.fieldname === "ink") ink = v;
       }
     }
 
@@ -211,6 +225,7 @@ export const uploadUserSignature = async (
           title: finalTitle,
           signature: fileBuffer,
           active: shouldBeActive,
+          ...inkFields(ink),
         },
         select: {
           id: true,
@@ -319,6 +334,96 @@ export const deleteUserSignature = async (
 // ─── Per-signature QR toggle ──────────────────────────────────────────
 // Each Signature row carries its own `qrEnabled` flag — users can keep
 // QR ON for their formal signature and OFF for a casual one.
+/** 0-1, or undefined when the value is missing or nonsense. */
+const frac = (v: unknown): number | undefined => {
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 && n <= 1 ? n : undefined;
+};
+
+/**
+ * `{"x0":..,"y0":..,"x1":..,"y1":..}` → columns, or nothing.
+ *
+ * A box that is inverted or smaller than 1% of the file is thrown away
+ * rather than stored: stamping divides by its height, and "the whole file"
+ * is a safe answer where a broken measurement is not.
+ */
+const inkFields = (raw: string) => {
+  if (!raw) return {};
+  try {
+    const o = JSON.parse(raw);
+    const x0 = frac(o.x0), y0 = frac(o.y0), x1 = frac(o.x1), y1 = frac(o.y1);
+    if (x0 === undefined || y0 === undefined || x1 === undefined || y1 === undefined)
+      return {};
+    if (x1 - x0 < 0.01 || y1 - y0 < 0.01) return {};
+    return { inkX0: x0, inkY0: y0, inkX1: x1, inkY1: y1 };
+  } catch {
+    return {};
+  }
+};
+
+/**
+ * POST /document/user/signatures/placement
+ * { id, inkHeightPt, baselinePct, ink? }
+ *
+ * How big this signature prints and where its writing line is. Sending a
+ * null/0 height puts it back to fitting whatever box was drawn on the page.
+ */
+export const setSignaturePlacement = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as {
+    id?: string;
+    inkHeightPt?: number | null;
+    baselinePct?: number | null;
+    ink?: { x0?: number; y0?: number; x1?: number; y1?: number } | null;
+  };
+  if (!body.id) throw new ValidationError("INVALID REQUIRED FIELDS");
+
+  const ownerId = await callerUserId(req);
+  if (!ownerId) throw new UnauthorizedError("Not signed in");
+
+  const target = await prisma.signature.findFirst({
+    where: { id: body.id, userId: ownerId },
+    select: { id: true },
+  });
+  if (!target) throw new NotFoundError("Signature not found");
+
+  // A signature taller than a page, or a hairline, is a typo rather than an
+  // intention. 4pt-288pt covers everything from an initial to a full page-
+  // width flourish.
+  const h = Number(body.inkHeightPt);
+  const inkHeightPt =
+    body.inkHeightPt === null || !Number.isFinite(h) || h <= 0
+      ? null
+      : Math.min(288, Math.max(4, h));
+
+  const b = Number(body.baselinePct);
+  const baselinePct = Number.isFinite(b)
+    ? Math.min(100, Math.max(0, Math.round(b)))
+    : 100;
+
+  const updated = await prisma.signature.update({
+    where: { id: body.id },
+    data: {
+      inkHeightPt,
+      baselinePct,
+      ...(body.ink ? inkFields(JSON.stringify(body.ink)) : {}),
+    },
+    select: {
+      id: true,
+      inkHeightPt: true,
+      baselinePct: true,
+      inkX0: true,
+      inkY0: true,
+      inkX1: true,
+      inkY1: true,
+    },
+  });
+
+  return res.code(200).send({ message: "OK", signature: updated });
+};
+
 export const setSignatureQr = async (
   req: FastifyRequest,
   res: FastifyReply,

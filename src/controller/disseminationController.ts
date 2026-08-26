@@ -20,6 +20,7 @@ import { createUserNotification } from "../service/notificationEvents";
 import { attestQueue, newSerial, seal } from "../service/documentSeal";
 import { tempURL } from "../service/url";
 import { callerUserId } from "../middleware/handler";
+import { placeSignature } from "../service/signaturePlacement";
 
 // ── Outbox: disseminations created BY this room ────────────────────────
 export const disseminationOutbox = async (
@@ -2046,6 +2047,13 @@ export const downloadSignedDocument = async (
             signature: true,
             qrEnabled: true,
             active: true,
+            // How the owner wants this one stamped.
+            inkHeightPt: true,
+            baselinePct: true,
+            inkX0: true,
+            inkY0: true,
+            inkX1: true,
+            inkY1: true,
           },
         })
       : [];
@@ -2067,14 +2075,37 @@ export const downloadSignedDocument = async (
       return raw;
     };
 
+    /** The owner's chosen size and writing line, keyed the same way the
+     *  bytes are, so a stamp can never take one signature's picture with
+     *  another signature's placement. */
+    type SigPlacement = {
+      inkHeightPt: number | null;
+      baselinePct: number | null;
+      ink: { x0: number | null; y0: number | null; x1: number | null; y1: number | null };
+    };
+    const placementOf = (r: {
+      inkHeightPt: number | null;
+      baselinePct: number | null;
+      inkX0: number | null;
+      inkY0: number | null;
+      inkX1: number | null;
+      inkY1: number | null;
+    }): SigPlacement => ({
+      inkHeightPt: r.inkHeightPt,
+      baselinePct: r.baselinePct,
+      ink: { x0: r.inkX0, y0: r.inkY0, x1: r.inkX1, y1: r.inkY1 },
+    });
+
     const sigByUser = new Map<string, Buffer>();
     const sigQrByUser = new Map<string, boolean>();
+    const sigPlaceByUser = new Map<string, SigPlacement>();
     const sigIdByUser = new Map<string, string>(); // for logging
     for (const r of sigRows) {
       if (!r.userId || !r.signature) continue;
       if (sigByUser.has(r.userId)) continue;
       sigByUser.set(r.userId, decodeSigBytes(r.signature as Uint8Array));
       sigQrByUser.set(r.userId, !!r.qrEnabled);
+      sigPlaceByUser.set(r.userId, placementOf(r));
       sigIdByUser.set(r.userId, r.id);
     }
 
@@ -2085,15 +2116,27 @@ export const downloadSignedDocument = async (
     );
     const sigById = new Map<string, Buffer>();
     const sigQrById = new Map<string, boolean>();
+    const sigPlaceById = new Map<string, SigPlacement>();
     if (chosenIds.length > 0) {
       const chosenRows = await prisma.signature.findMany({
         where: { id: { in: chosenIds } },
-        select: { id: true, signature: true, qrEnabled: true },
+        select: {
+          id: true,
+          signature: true,
+          qrEnabled: true,
+          inkHeightPt: true,
+          baselinePct: true,
+          inkX0: true,
+          inkY0: true,
+          inkX1: true,
+          inkY1: true,
+        },
       });
       for (const r of chosenRows) {
         if (!r.signature) continue;
         sigById.set(r.id, decodeSigBytes(r.signature as Uint8Array));
         sigQrById.set(r.id, !!r.qrEnabled);
+        sigPlaceById.set(r.id, placementOf(r));
       }
     }
     console.log(
@@ -2177,16 +2220,30 @@ export const downloadSignedDocument = async (
 
       const sig = await embedSig(s);
       if (sig) {
-        const ar = sig.width / sig.height;
-        let drawW = boxW;
-        let drawH = boxW / ar;
-        if (drawH > boxH) {
-          drawH = boxH;
-          drawW = boxH * ar;
-        }
-        const dx = boxX + (boxW - drawW) / 2;
-        const dy = boxY + (boxH - drawH) / 2;
-        page.drawImage(sig, { x: dx, y: dy, width: drawW, height: drawH });
+        // Where the owner said this signature should sit. Without a chosen
+        // size this returns the old fit-and-centre rect, so signatures
+        // nobody has configured stamp exactly as they always did.
+        const useChosen = !!(s.signatureId && sigById.has(s.signatureId));
+        const place =
+          (useChosen
+            ? sigPlaceById.get(s.signatureId!)
+            : sigPlaceByUser.get(s.userId)) ?? null;
+        const rect = placeSignature(
+          { x: boxX, y: boxY, width: boxW, height: boxH },
+          sig.width,
+          sig.height,
+          {
+            inkHeightPt: place?.inkHeightPt ?? null,
+            baselinePct: place?.baselinePct ?? null,
+            ink: place?.ink ?? null,
+          },
+        );
+        page.drawImage(sig, {
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height,
+        });
       } else {
         page.drawRectangle({
           x: boxX,

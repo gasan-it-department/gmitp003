@@ -49,6 +49,7 @@ import {
   activateUserSignature,
   deleteUserSignature,
   setSignatureQr,
+  setSignaturePlacement,
 } from "../controller/signatureController";
 import {
   disseminationOutbox,
@@ -240,6 +241,11 @@ export const document = (fastify: FastifyInstance) => {
     "/document/user/signatures/qr",
     { preHandler: authenticated },
     setSignatureQr,
+  );
+  fastify.patch(
+    "/document/user/signatures/placement",
+    { preHandler: authenticated },
+    setSignaturePlacement,
   );
 
   // ── Dissemination (signature queue rooms) ──────────────────────
