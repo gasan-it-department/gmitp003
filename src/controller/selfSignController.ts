@@ -527,18 +527,46 @@ export const selfSignDetail = async (
     // round-trip. The signature chosen at sign time wins; otherwise
     // active preferred, falling back to most recent.
     let signatureDataUrl: string | null = null;
-    let sigRow: { signature: Uint8Array | null } | null = null;
+    // The editor draws the stamp inside signed boxes on screen. Without the
+    // owner's boundary and size it draws them the OLD way — the whole file
+    // squeezed into the box — so the preview and the downloaded PDF end up
+    // showing two different things. Same row, same numbers, both places.
+    let sigRow: {
+      signature: Uint8Array | null;
+      inkHeightPt: number | null;
+      baselinePct: number;
+      inkX0: number | null;
+      inkY0: number | null;
+      inkX1: number | null;
+      inkY1: number | null;
+    } | null = null;
     if (arrangement?.signatureId) {
       sigRow = await prisma.signature.findFirst({
         where: { id: arrangement.signatureId, userId: params.userId },
-        select: { signature: true },
+        select: {
+          signature: true,
+          inkHeightPt: true,
+          baselinePct: true,
+          inkX0: true,
+          inkY0: true,
+          inkX1: true,
+          inkY1: true,
+        },
       });
     }
     if (!sigRow) {
       sigRow = await prisma.signature.findFirst({
         where: { userId: params.userId },
         orderBy: [{ active: "desc" }, { timestamp: "desc" }],
-        select: { signature: true },
+        select: {
+          signature: true,
+          inkHeightPt: true,
+          baselinePct: true,
+          inkX0: true,
+          inkY0: true,
+          inkX1: true,
+          inkY1: true,
+        },
       });
     }
     if (sigRow?.signature) {
@@ -575,7 +603,29 @@ export const selfSignDetail = async (
 
     return res
       .code(200)
-      .send({ document: doc, arrangement, signatureDataUrl });
+      .send({
+        document: doc,
+        arrangement,
+        signatureDataUrl,
+        signaturePlacement: sigRow
+          ? {
+              inkHeightPt: sigRow.inkHeightPt,
+              baselinePct: sigRow.baselinePct,
+              ink:
+                sigRow.inkX0 === null ||
+                sigRow.inkY0 === null ||
+                sigRow.inkX1 === null ||
+                sigRow.inkY1 === null
+                  ? null
+                  : {
+                      x0: sigRow.inkX0,
+                      y0: sigRow.inkY0,
+                      x1: sigRow.inkX1,
+                      y1: sigRow.inkY1,
+                    },
+            }
+          : null,
+      });
   } catch (error) {
     if (error instanceof NotFoundError) throw error;
     if (error instanceof ValidationError) throw error;

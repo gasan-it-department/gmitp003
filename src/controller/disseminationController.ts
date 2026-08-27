@@ -1498,7 +1498,20 @@ export const viewDissemination = async (
     );
     let signaturesByUser: Record<
       string,
-      { id: string; title: string | null; mime: string; dataUrl: string }
+      {
+        id: string;
+        title: string | null;
+        mime: string;
+        dataUrl: string;
+        /** The owner's boundary and size. The viewer draws the stamp on
+         *  screen; without these it draws it the OLD way and the preview
+         *  stops matching the PDF that comes out of the same page. */
+        placement: {
+          inkHeightPt: number | null;
+          baselinePct: number;
+          ink: { x0: number; y0: number; x1: number; y1: number } | null;
+        };
+      }
     > = {};
     console.log("[view] signedUserIds:", signedUserIds);
     if (signedUserIds.length > 0) {
@@ -1507,7 +1520,18 @@ export const viewDissemination = async (
       // arrangement gets an image we can stamp into the box.
       let sigs = await prisma.signature.findMany({
         where: { userId: { in: signedUserIds }, active: true },
-        select: { id: true, userId: true, title: true, signature: true },
+        select: {
+          id: true,
+          userId: true,
+          title: true,
+          signature: true,
+          inkHeightPt: true,
+          baselinePct: true,
+          inkX0: true,
+          inkY0: true,
+          inkX1: true,
+          inkY1: true,
+        },
       });
       console.log("[view] active sigs found:", sigs.length);
       const usersWithSig = new Set(sigs.map((s) => s.userId));
@@ -1516,7 +1540,18 @@ export const viewDissemination = async (
         const fallback = await prisma.signature.findMany({
           where: { userId: { in: missing } },
           orderBy: { timestamp: "desc" },
-          select: { id: true, userId: true, title: true, signature: true },
+          select: {
+            id: true,
+            userId: true,
+            title: true,
+            signature: true,
+            inkHeightPt: true,
+            baselinePct: true,
+            inkX0: true,
+            inkY0: true,
+            inkX1: true,
+            inkY1: true,
+          },
         });
         console.log(
           "[view] fallback sigs for missing users:",
@@ -1608,6 +1643,14 @@ export const viewDissemination = async (
           title: s.title ?? null,
           mime,
           dataUrl,
+          placement: {
+            inkHeightPt: s.inkHeightPt,
+            baselinePct: s.baselinePct,
+            ink:
+              s.inkX0 === null || s.inkY0 === null || s.inkX1 === null || s.inkY1 === null
+                ? null
+                : { x0: s.inkX0, y0: s.inkY0, x1: s.inkX1, y1: s.inkY1 },
+          },
         };
       }
     }
