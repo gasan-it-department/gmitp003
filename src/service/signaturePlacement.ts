@@ -95,9 +95,15 @@ export const placeSignature = (
 ): DrawRect => {
   const ratio = imgW > 0 && imgH > 0 ? imgW / imgH : 1;
   const height = Number(settings.inkHeightPt ?? 0);
+  const ink = normalizeInk(settings.ink);
+  const inkW = ink.x1 - ink.x0;
+  const inkH = ink.y1 - ink.y0;
+  /** Did someone actually mark out part of the file, or is it the lot? */
+  const bounded = inkW < 0.995 || inkH < 0.995;
 
-  // No chosen size → the original behaviour, untouched.
-  if (!(height > 0)) {
+  // Nothing said about this signature at all: the original behaviour, so a
+  // signature nobody has touched keeps stamping exactly as it always did.
+  if (!(height > 0) && !bounded) {
     let width = box.width;
     let h = box.width / ratio;
     if (h > box.height) {
@@ -113,15 +119,32 @@ export const placeSignature = (
     };
   }
 
-  const ink = normalizeInk(settings.ink);
-  const inkW = ink.x1 - ink.x0;
-  const inkH = ink.y1 - ink.y0;
+  /**
+   * How tall the marked-out writing prints.
+   *
+   * An explicit height wins. Otherwise the BOUNDARY is what gets fitted to
+   * the box — not the file. That distinction is the entire point of drawing
+   * one: fitting the file means the tail and the empty margins eat the box
+   * and the writing comes out small and floating, which is what it did
+   * before and what drawing a boundary is supposed to stop.
+   */
+  let inkPt: number;
+  if (height > 0) {
+    inkPt = height;
+  } else {
+    // Aspect ratio of the boundary itself, not of the file.
+    const boundedRatio = ratio * (inkW / inkH);
+    inkPt = box.width / boundedRatio;
+    if (inkPt > box.height) inkPt = box.height;
+  }
 
-  // Scale the whole file so that the INK comes out `height` points tall.
-  const drawH = height / inkH;
+  // Scale the whole file so the marked-out part comes out `inkPt` tall.
+  const drawH = inkPt / inkH;
   const drawW = drawH * ratio;
 
   // The writing line, as a fraction measured down from the image's top.
+  // With a boundary and the default 100, that is the boundary's bottom edge
+  // — so whatever was deliberately left outside it hangs below the line.
   const baseline = clamp(Number(settings.baselinePct ?? 100), 0, 100) / 100;
   const lineFromTop = ink.y0 + baseline * inkH;
 
@@ -130,7 +153,7 @@ export const placeSignature = (
   // it — which is exactly what lets the tail hang past the box.
   const y = box.y - (1 - lineFromTop) * drawH;
 
-  // Centre the ink — not the file — across the box.
+  // Centre the marked-out part — not the file — across the box.
   const x = box.x + box.width / 2 - (ink.x0 + inkW / 2) * drawW;
 
   return { x, y, width: drawW, height: drawH, sized: true };

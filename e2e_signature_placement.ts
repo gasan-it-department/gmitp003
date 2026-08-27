@@ -62,6 +62,44 @@ const mockRes = () => {
     ok("…which is exactly the problem: it cannot reach past the box",
       old.y >= box.y - 0.01);
 
+    // ── A BOUNDARY ON ITS OWN must change the stamp ─────────────────────
+    // The reported bug: someone drew a boundary at upload, never opened the
+    // size panel, and the document came out exactly as before. The height
+    // was null, so the old fit-the-whole-FILE branch ran and the boundary
+    // was thrown away.
+    const bounded = placeSignature(box, IMG.w, IMG.h, { ink });
+    ok("a boundary alone is honoured, with no height set", bounded.sized === true);
+    ok("…it is not the old fit-the-file rect",
+      Math.abs(bounded.height - old.height) > 0.5 ||
+      Math.abs(bounded.y - old.y) > 0.5,
+      `${bounded.height.toFixed(2)} vs ${old.height.toFixed(2)}`);
+
+    // The BOUNDARY fills the box, so the writing is as big as the box allows
+    // instead of being shrunk by the file's empty margins and its tail.
+    const bInkW = (ink.x1 - ink.x0) * bounded.width;
+    const bInkH = (ink.y1 - ink.y0) * bounded.height;
+    ok("the boundary fills the box's width or its height",
+      Math.abs(bInkW - box.width) < 0.1 || Math.abs(bInkH - box.height) < 0.1,
+      `${bInkW.toFixed(2)}x${bInkH.toFixed(2)} in ${box.width}x${box.height}`);
+    ok("…without spilling out of it sideways", bInkW <= box.width + 0.1);
+    ok("…and the writing is BIGGER than the old fit made it",
+      bInkH > (ink.y1 - ink.y0) * old.height + 0.5,
+      `${bInkH.toFixed(2)} vs ${((ink.y1 - ink.y0) * old.height).toFixed(2)}`);
+
+    // Its bottom edge is the line, so what was left outside hangs below.
+    const bBottom = bounded.y + (1 - ink.y1) * bounded.height;
+    ok("the boundary's bottom edge lands on the box's line",
+      near(bounded.y + (1 - (ink.y0 + (ink.y1 - ink.y0))) * bounded.height, box.y, 0.05),
+      `${bBottom.toFixed(2)} vs ${box.y}`);
+    ok("…and the file below it hangs past the box",
+      bounded.y < box.y - 0.5, `${bounded.y.toFixed(2)}`);
+
+    // A boundary that IS the whole file changes nothing — no boundary drawn.
+    ok("a whole-file boundary still means fit-to-box",
+      placeSignature(box, IMG.w, IMG.h, {
+        ink: { x0: 0, y0: 0, x1: 1, y1: 1 },
+      }).sized === false);
+
     // ── The wanted behaviour ────────────────────────────────────────────
     const r = placeSignature(box, IMG.w, IMG.h, {
       inkHeightPt: 24,
@@ -119,8 +157,13 @@ const mockRes = () => {
       const n = normalizeInk({ x0: -3, y0: 0.1, x1: 9, y1: 0.9 });
       return n.x0 === 0 && n.x1 === 1;
     })());
-    ok("a zero height still means fit-to-box",
-      placeSignature(box, IMG.w, IMG.h, { inkHeightPt: 0, ink }).sized === false);
+    // Zero height is "no fixed size", not "ignore everything": with a
+    // boundary drawn it still fits the boundary, and only without one does
+    // it fall all the way back to fitting the file.
+    ok("a zero height with a boundary fits the BOUNDARY",
+      placeSignature(box, IMG.w, IMG.h, { inkHeightPt: 0, ink }).sized === true);
+    ok("a zero height with no boundary fits the file",
+      placeSignature(box, IMG.w, IMG.h, { inkHeightPt: 0 }).sized === false);
 
     // ── The endpoint stores it, scoped to the owner ─────────────────────
     const line = await prisma.line.findFirst({ select: { id: true } });
