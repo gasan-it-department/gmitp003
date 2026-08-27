@@ -2305,16 +2305,10 @@ export const downloadSignedDocument = async (
         });
       }
 
-      if (s.signedAt) {
-        const caption = s.signedAt.toISOString().slice(0, 16).replace("T", " ");
-        page.drawText(caption, {
-          x: boxX,
-          y: Math.max(0, boxY - 8),
-          size: 6,
-          font: dateFont,
-          color: rgb(0.36, 0.36, 0.36),
-        });
-      }
+      // No signed-at caption under the box. The date belongs in the audit
+      // trail and on the verification page, not printed across a document
+      // that already has its own dateline — and it landed right where the
+      // signature's tail hangs, which is exactly where it is least welcome.
 
       // Verification QR — opt-in per signature. Encodes a URL pointing
       // at the readable HTML verify page on this API. Scanning opens the
