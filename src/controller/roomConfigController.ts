@@ -173,6 +173,46 @@ export const roomConfig = async (req: FastifyRequest, res: FastifyReply) => {
  * Line staff who could be added. People already in the room are marked rather
  * than hidden, so HR can see why someone is missing from the results.
  */
+/**
+ * Which OTHER room each of these people already belongs to.
+ *
+ * A person belongs to one document room. Their room is where their work
+ * arrives and where their signature authority sits, so being in two makes
+ * "route this to them" ambiguous and quietly splits their queue in half.
+ *
+ * `exceptRoomId` is the room being edited: membership there is not a clash,
+ * and neither is a membership that was removed (status 0) — re-adding
+ * someone you took out has to keep working.
+ */
+const otherRoomOf = async (
+  userIds: string[],
+  exceptRoomId: string,
+): Promise<Map<string, { id: string; code: string }>> => {
+  const out = new Map<string, { id: string; code: string }>();
+  if (!userIds.length) return out;
+  const rows = await prisma.roomAuthorizedUser.findMany({
+    where: {
+      userId: { in: userIds },
+      status: 1,
+      receivingRoomId: { not: null },
+      NOT: { receivingRoomId: exceptRoomId },
+    },
+    select: {
+      userId: true,
+      receivingRoom: { select: { id: true, code: true } },
+    },
+  });
+  for (const r of rows) {
+    if (!r.userId || !r.receivingRoom) continue;
+    if (out.has(r.userId)) continue;
+    out.set(r.userId, {
+      id: r.receivingRoom.id,
+      code: r.receivingRoom.code ?? "another room",
+    });
+  }
+  return out;
+};
+
 export const roomCandidates = async (req: FastifyRequest, res: FastifyReply) => {
   const q = req.query as { roomId?: string; query?: string };
   if (!q.roomId) throw new ValidationError("roomId is required");
@@ -206,6 +246,13 @@ export const roomCandidates = async (req: FastifyRequest, res: FastifyReply) => 
     take: 600,
   });
 
+  // Anyone already in a different room cannot be added here, so the list
+  // says so instead of offering them and failing on save.
+  const taken = await otherRoomOf(
+    users.map((u) => u.id),
+    room.id,
+  );
+
   const out: Array<Record<string, unknown>> = [];
   for (const u of users) {
     const first = await dec(u.firstName, u.firstNameIv);
@@ -228,6 +275,8 @@ export const roomCandidates = async (req: FastifyRequest, res: FastifyReply) => 
       office: u.department?.name ?? null,
       profilePicture: u.profilePicture ?? null,
       added: already.has(u.id),
+      /** The room they are already in, if it is not this one. */
+      inRoom: taken.get(u.id) ?? null,
     });
     if (out.length >= 200) break;
   }
@@ -320,8 +369,14 @@ export const addRoomMembers = async (
   const ids = [...new Set(Array.isArray(b.userIds) ? b.userIds : [])];
   if (!ids.length) throw new ValidationError("Pick at least one person");
 
+  // The candidate list already hides these, but a list is a hint and this
+  // is the rule: one person, one room.
+  const taken = await otherRoomOf(ids, room.id);
+
   let added = 0;
   const notified: string[] = [];
+  /** Who was refused, and which room already has them. */
+  const skipped: Array<{ userId: string; room: string }> = [];
   for (const userId of ids) {
     // Line-scoped: a room can never be handed to someone from another office.
     const u = await prisma.user.findFirst({
@@ -329,6 +384,12 @@ export const addRoomMembers = async (
       select: { id: true },
     });
     if (!u) continue;
+
+    const clash = taken.get(userId);
+    if (clash) {
+      skipped.push({ userId, room: clash.code });
+      continue;
+    }
 
     const existing = await prisma.roomAuthorizedUser.findFirst({
       where: { receivingRoomId: room.id, userId },
@@ -375,7 +436,7 @@ export const addRoomMembers = async (
     })
     .catch(() => undefined);
 
-  return res.code(200).send({ added, notified: notified.length });
+  return res.code(200).send({ added, notified: notified.length, skipped });
 };
 
 /** PATCH /document/room/config/member { roomId, memberId, type } */
