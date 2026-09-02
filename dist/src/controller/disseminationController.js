@@ -508,7 +508,7 @@ const finalizeDissemination = (req, res) => __awaiter(void 0, void 0, void 0, fu
                 throw new errors_1.ValidationError("Already dispatched. Only drafts can be finalized.");
             }
             if (((_b = (_a = queue._count) === null || _a === void 0 ? void 0 : _a.targetRooms) !== null && _b !== void 0 ? _b : 0) === 0) {
-                throw new errors_1.ValidationError("Add at least one target room first.");
+                throw new errors_1.ValidationError("Add at least one recipient first.");
             }
             if (((_d = (_c = queue._count) === null || _c === void 0 ? void 0 : _c.documents) !== null && _d !== void 0 ? _d : 0) === 0) {
                 throw new errors_1.ValidationError("Attach at least one document first.");

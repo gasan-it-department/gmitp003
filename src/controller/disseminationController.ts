@@ -533,7 +533,7 @@ export const finalizeDissemination = async (
         );
       }
       if ((queue._count?.targetRooms ?? 0) === 0) {
-        throw new ValidationError("Add at least one target room first.");
+        throw new ValidationError("Add at least one recipient first.");
       }
       if ((queue._count?.documents ?? 0) === 0) {
         throw new ValidationError("Attach at least one document first.");
