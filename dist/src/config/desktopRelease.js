@@ -1,0 +1,28 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.DESKTOP_RELEASE = void 0;
+/**
+ * Latest published Gasan Pharmacy DESKTOP release.
+ *
+ * ── How to ship a desktop update ──────────────────────────────────────────
+ * 1. In gmitp003-pharmacy-desktop: bump `AppUpdate.CurrentVersion`, then run
+ *    installer\make_release.ps1 → produces BOTH GasanPharmacySetup.exe
+ *    (preferred: wizard installer, upgrades in place) and
+ *    Gasan_Pharmacy_App.zip (script installer) on the Desktop.
+ * 2. Upload ONE of them anywhere public (Cloudinary raw upload, Drive direct
+ *    link, GitHub release asset…) and paste its URL below. A .exe URL runs
+ *    silently in place; a .zip URL runs its install script.
+ * 3. Bump `version` here to match the app, describe the changes in `notes`,
+ *    commit + push this repo → Railway redeploys.
+ *
+ * Every desktop checks this on launch (when online). If `version` is newer
+ * than the app, the user is offered a one-click "Download & install" that
+ * runs the zip's installer (data is kept — it lives outside the app folder).
+ *
+ * An empty `url` disables the offer even if the version is newer.
+ */
+exports.DESKTOP_RELEASE = {
+    version: "1.1.0",
+    url: "",
+    notes: "",
+};

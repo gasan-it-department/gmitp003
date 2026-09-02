@@ -21,6 +21,10 @@ import { attestQueue, newSerial, seal } from "../service/documentSeal";
 import { tempURL } from "../service/url";
 import { callerUserId } from "../middleware/handler";
 import { placeSignature } from "../service/signaturePlacement";
+import {
+  releaseCopyFurnished,
+  VISIBLE_TO_ROOM,
+} from "../service/copyFurnish";
 
 // ── Outbox: disseminations created BY this room ────────────────────────
 export const disseminationOutbox = async (
@@ -128,7 +132,7 @@ export const disseminationInbox = async (
     // (regardless of dispatch state). Surfaced in the response so the
     // empty-inbox screen can show what the data actually looks like.
     const rawTargets = await prisma.targetRoom.findMany({
-      where: { receivingRoomId: params.toRoomId },
+      where: { receivingRoomId: params.toRoomId, ...VISIBLE_TO_ROOM },
       orderBy: { timestamp: "desc" },
       take: 10,
       select: {
@@ -148,6 +152,8 @@ export const disseminationInbox = async (
       where: {
         receivingRoomId: params.toRoomId,
         queueRoom: { is: { status: { gte: 1 } } },
+        // A copy-furnished office sees nothing until the document is signed.
+        ...VISIBLE_TO_ROOM,
       },
       take: limit,
       skip: cursor ? 1 : 0,
@@ -211,6 +217,8 @@ export const disseminationDetail = async (
           select: {
             id: true,
             receivingRoomId: true,
+            copyFurnished: true,
+            releasedAt: true,
             roomReceiver: {
               select: { id: true, code: true, address: true },
             },
@@ -252,12 +260,22 @@ export const setTargetRooms = async (
   const body = req.body as {
     queueRoomId: string;
     targetRoomIds: string[];
+    /** Offices that get the document once every signature is in. */
+    copyFurnishedRoomIds?: string[];
     userId: string;
     lineId: string;
   };
   if (!body.queueRoomId || !Array.isArray(body.targetRoomIds)) {
     throw new ValidationError("INVALID REQUIRED FIELDS");
   }
+
+  // An addressee already receives the document, so copy-furnishing them as
+  // well is a no-op that would only produce a duplicate row and a second
+  // notification. Being an addressee wins.
+  const direct = [...new Set(body.targetRoomIds)];
+  const furnished = [...new Set(body.copyFurnishedRoomIds ?? [])].filter(
+    (id) => !direct.includes(id),
+  );
 
   try {
     await prisma.$transaction(async (tx) => {
@@ -277,15 +295,29 @@ export const setTargetRooms = async (
       });
       console.log("[setTargets] queueRoomId:", body.queueRoomId);
       console.log("[setTargets] targetRoomIds:", body.targetRoomIds);
-      if (body.targetRoomIds.length > 0) {
+      if (direct.length > 0) {
         const created = await tx.targetRoom.createMany({
-          data: body.targetRoomIds.map((rid) => ({
+          data: direct.map((rid) => ({
             signatureQueueRoomId: body.queueRoomId,
             receivingRoomId: rid,
             status: 0,
           })),
         });
         console.log("[setTargets] created count:", created.count);
+      }
+      // Copy-furnished rows are written now so the intent is on record and
+      // auditable from the start, but they stay held (releasedAt null) and
+      // the room sees nothing until the last signature lands.
+      if (furnished.length > 0) {
+        await tx.targetRoom.createMany({
+          data: furnished.map((rid) => ({
+            signatureQueueRoomId: body.queueRoomId,
+            receivingRoomId: rid,
+            status: 0,
+            copyFurnished: true,
+          })),
+        });
+        console.log("[setTargets] copy furnished:", furnished.length);
       }
 
       if (body.userId) {
@@ -295,8 +327,12 @@ export const setTargetRooms = async (
             lineId: body.lineId,
             title: "Updated dissemination targets",
             desc:
-              `Set ${body.targetRoomIds.length} target room` +
-              `${body.targetRoomIds.length === 1 ? "" : "s"} on queue ${body.queueRoomId}`,
+              `Set ${direct.length} target room` +
+              `${direct.length === 1 ? "" : "s"}` +
+              (furnished.length
+                ? ` and ${furnished.length} copy furnished`
+                : "") +
+              ` on queue ${body.queueRoomId}`,
             action: 2,
           },
         });
@@ -479,9 +515,11 @@ export const finalizeDissemination = async (
         step: updated.step,
       });
 
-      // Mark every target row as delivered.
+      // Mark every addressee row as delivered. Copy-furnished rows are
+      // deliberately left alone: they are delivered by releaseCopyFurnished
+      // when the last signature lands, not when the document is dispatched.
       const targetUpdate = await tx.targetRoom.updateMany({
-        where: { signatureQueueRoomId: body.queueRoomId },
+        where: { signatureQueueRoomId: body.queueRoomId, copyFurnished: false },
         data: { status: 1, receivedAt: new Date() },
       });
       console.log("[finalize] target rows updated:", targetUpdate.count);
@@ -492,6 +530,27 @@ export const finalizeDissemination = async (
         select: { id: true, receivingRoomId: true, status: true },
       });
       console.log("[finalize] target rows present:", targetsAfter);
+
+      // A dissemination with no signatories is routed without e-sign, so
+      // it is final the moment it is dispatched. "Once it is signed" with
+      // nothing to sign means now — otherwise the copy-furnished offices
+      // would wait on a signature that is never coming.
+      const willBeSigned = await tx.signatoryArrangement.count({
+        where: { signatureQueueRoomId: body.queueRoomId },
+      });
+      if (willBeSigned === 0) {
+        const early = await releaseCopyFurnished(
+          tx,
+          body.queueRoomId,
+          body.userId ?? null,
+        );
+        if (early.released > 0) {
+          console.log(
+            "[finalize] no signatories — copy furnished immediately to:",
+            early.rooms.join(", "),
+          );
+        }
+      }
 
       if (body.userId) {
         await tx.documentActivityLogs.create({
@@ -1250,6 +1309,7 @@ export const documentOverview = async (
             where: {
               receivingRoomId: roomId,
               queueRoom: { is: { status: { gte: 1 } } },
+              ...VISIBLE_TO_ROOM,
             },
           })
         : Promise.resolve(0),
@@ -1427,6 +1487,8 @@ export const viewDissemination = async (
             id: true,
             status: true,
             receivedAt: true,
+            copyFurnished: true,
+            releasedAt: true,
             roomReceiver: { select: { id: true, code: true } },
           },
         },
@@ -1794,6 +1856,21 @@ export const signMine = async (req: FastifyRequest, res: FastifyReply) => {
         });
       }
 
+      // Every signature is in, so the copy-furnished offices get it now.
+      // Inside the same transaction as the signature that completed the
+      // queue: if the signature is rolled back the release goes with it,
+      // and nobody is copy furnished on a document that was never signed.
+      let furnished = { released: 0, rooms: [] as string[] };
+      if (completed) {
+        furnished = await releaseCopyFurnished(tx, body.queueRoomId, body.userId);
+        if (furnished.released > 0) {
+          console.log(
+            "[signMine] copy furnished to:",
+            furnished.rooms.join(", "),
+          );
+        }
+      }
+
       // Notify the disseminator that someone signed, and notify everyone
       // if this was the last signature (queue now concluded).
       const everyone = await tx.signatoryArrangement.findMany({
@@ -1827,7 +1904,12 @@ export const signMine = async (req: FastifyRequest, res: FastifyReply) => {
         });
       }
 
-      return { signed: pending.length, completed, signedAt: now };
+      return {
+        signed: pending.length,
+        completed,
+        signedAt: now,
+        copyFurnished: furnished.released,
+      };
     });
 
     // Cryptographic attestation runs AFTER the transaction commits, and is
@@ -2564,8 +2646,11 @@ export const cancelDispatchedDissemination = async (
       for (const s of signatories) if (s.userId) recipients.add(s.userId);
       // Also notify all members of target rooms — they might be tracking
       // the dispatch in their inbox even if they're not signers.
+      // Only rooms that actually received it. Telling a copy-furnished
+      // office that a document was cancelled would be the first they ever
+      // heard of it.
       const targetRooms = await tx.targetRoom.findMany({
-        where: { signatureQueueRoomId: queue.id },
+        where: { signatureQueueRoomId: queue.id, ...VISIBLE_TO_ROOM },
         select: {
           roomReceiver: {
             select: { authorizedUser: { select: { userId: true } } },

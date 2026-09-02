@@ -2106,6 +2106,20 @@ model TargetRoom {
   status               Int                 @default(0)
   receivedAt           DateTime?
   submittedDocumentId  String?
+
+  // ── Copy furnished ──────────────────────────────────────────────────
+  // A copy-furnished room is not an addressee. It gets the document only
+  // once every signature is in, automatically, the way "Copy furnished:"
+  // at the foot of a memo means "send them the SIGNED thing afterwards".
+  //
+  // Held until then: the row exists from the moment the sender configures
+  // it, so the intent is on record and auditable, but nothing is delivered
+  // and the room sees nothing until releasedAt is stamped.
+  /// True when this row is a copy-furnish destination rather than a recipient.
+  copyFurnished        Boolean             @default(false)
+  /// When the automatic release actually happened. Null while held, and the
+  /// guard that makes releasing exactly-once.
+  releasedAt           DateTime?
   roomReceiver         ReceivingRoom?      @relation(fields: [receivingRoomId], references: [id])
   queueRoom            SignatureQueueRoom? @relation(fields: [signatureQueueRoomId], references: [id])
   submittedDocuments   SubmittedDocument?  @relation(fields: [submittedDocumentId], references: [id])
