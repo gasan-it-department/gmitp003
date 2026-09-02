@@ -265,7 +265,7 @@ const disseminationDetail = (req, res) => __awaiter(void 0, void 0, void 0, func
             },
         });
         if (!row)
-            throw new errors_1.NotFoundError("DISSEMINATION NOT FOUND");
+            throw new errors_1.NotFoundError("ROUTING NOT FOUND");
         return res.code(200).send(row);
     }
     catch (error) {
@@ -318,9 +318,9 @@ const setTargetRooms = (req, res) => __awaiter(void 0, void 0, void 0, function*
                 where: { id: body.queueRoomId },
             });
             if (!queue)
-                throw new errors_1.NotFoundError("Dissemination not found");
+                throw new errors_1.NotFoundError("Routing not found");
             if (queue.status !== 0) {
-                throw new errors_1.ValidationError("Cannot change targets after the dissemination has been dispatched.");
+                throw new errors_1.ValidationError("Cannot change recipients after the routing has been dispatched.");
             }
             // Replace strategy: drop existing target rows for this queue, recreate.
             yield tx.targetRoom.deleteMany({
@@ -357,7 +357,7 @@ const setTargetRooms = (req, res) => __awaiter(void 0, void 0, void 0, function*
                     data: {
                         userId: body.userId,
                         lineId: body.lineId,
-                        title: "Updated dissemination targets",
+                        title: "Updated routing recipients",
                         desc: `Set ${direct.length} target room` +
                             `${direct.length === 1 ? "" : "s"}` +
                             (furnished.length
@@ -396,9 +396,9 @@ const setSignatoryArrangement = (req, res) => __awaiter(void 0, void 0, void 0, 
                 where: { id: body.queueRoomId },
             });
             if (!queue)
-                throw new errors_1.NotFoundError("Dissemination not found");
+                throw new errors_1.NotFoundError("Routing not found");
             if (queue.status !== 0) {
-                throw new errors_1.ValidationError("Cannot change signatories after the dissemination has been dispatched.");
+                throw new errors_1.ValidationError("Cannot change signatories after the routing has been dispatched.");
             }
             // Resolve each RoomAuthorizedUser.id → its underlying User.id so
             // we can persist who actually owns each signing slot. Signers later
@@ -503,7 +503,7 @@ const finalizeDissemination = (req, res) => __awaiter(void 0, void 0, void 0, fu
                 },
             });
             if (!queue)
-                throw new errors_1.NotFoundError("Dissemination not found");
+                throw new errors_1.NotFoundError("Routing not found");
             if (queue.status !== 0) {
                 throw new errors_1.ValidationError("Already dispatched. Only drafts can be finalized.");
             }
@@ -554,8 +554,8 @@ const finalizeDissemination = (req, res) => __awaiter(void 0, void 0, void 0, fu
                     data: {
                         userId: body.userId,
                         lineId: body.lineId,
-                        title: "Dispatched dissemination",
-                        desc: `Dissemination "${(_f = queue.title) !== null && _f !== void 0 ? _f : body.queueRoomId}" finalized and dispatched.`,
+                        title: "Dispatched routing",
+                        desc: `Routing "${(_f = queue.title) !== null && _f !== void 0 ? _f : body.queueRoomId}" finalized and dispatched.`,
                         action: 1,
                     },
                 });
@@ -579,7 +579,7 @@ const finalizeDissemination = (req, res) => __awaiter(void 0, void 0, void 0, fu
                     recipientId: s.userId,
                     senderId: body.userId,
                     title: "Signature requested",
-                    content: `You're a signatory on "${(_g = queue.title) !== null && _g !== void 0 ? _g : "a dissemination"}". Open it from your Inbox to sign.`,
+                    content: `You're a signatory on "${(_g = queue.title) !== null && _g !== void 0 ? _g : "a document"}". Open it from your Inbox to sign.`,
                     path: `documents/dissemination?tab=inbox`,
                 });
             }
@@ -611,9 +611,9 @@ const removeDissemination = (req, res) => __awaiter(void 0, void 0, void 0, func
                 where: { id: params.id },
             });
             if (!queue)
-                throw new errors_1.NotFoundError("Dissemination not found");
+                throw new errors_1.NotFoundError("Routing not found");
             if (queue.status !== 0) {
-                throw new errors_1.ValidationError("Only draft disseminations can be removed.");
+                throw new errors_1.ValidationError("Only draft routings can be removed.");
             }
             yield tx.signatureQueueRoom.delete({ where: { id: queue.id } });
             if (params.userId) {
@@ -621,8 +621,8 @@ const removeDissemination = (req, res) => __awaiter(void 0, void 0, void 0, func
                     data: {
                         userId: params.userId,
                         lineId: params.lineId,
-                        title: "Removed dissemination",
-                        desc: `Removed draft dissemination ${(_a = queue.title) !== null && _a !== void 0 ? _a : queue.id}`,
+                        title: "Removed routing",
+                        desc: `Removed draft routing ${(_a = queue.title) !== null && _a !== void 0 ? _a : queue.id}`,
                         action: 0,
                     },
                 });
@@ -871,7 +871,7 @@ const saveSignaturePlacements = (req, res) => __awaiter(void 0, void 0, void 0, 
                 where: { id: body.queueRoomId },
             });
             if (!queue)
-                throw new errors_1.NotFoundError("Dissemination not found");
+                throw new errors_1.NotFoundError("Routing not found");
             if (queue.status !== 0) {
                 throw new errors_1.ValidationError("Cannot edit placements after dispatch.");
             }
@@ -1046,7 +1046,7 @@ const uploadDisseminationDocument = (req, res) => __awaiter(void 0, void 0, void
             select: { id: true, status: true, receivingRoomId: true },
         });
         if (!queue)
-            throw new errors_1.NotFoundError("Dissemination not found");
+            throw new errors_1.NotFoundError("Routing not found");
         if (queue.status !== 0) {
             throw new errors_1.ValidationError("Cannot attach documents after dispatch.");
         }
@@ -1080,7 +1080,7 @@ const uploadDisseminationDocument = (req, res) => __awaiter(void 0, void 0, void
                         userId,
                         lineId,
                         title: "Attached document",
-                        desc: `Attached ${upload.filename} to dissemination ${queueRoomId}`,
+                        desc: `Attached ${upload.filename} to routing ${queueRoomId}`,
                         action: 1,
                     },
                 });
@@ -1115,7 +1115,7 @@ const removeDisseminationDocument = (req, res) => __awaiter(void 0, void 0, void
                 select: { id: true, status: true },
             });
             if (!queue)
-                throw new errors_1.NotFoundError("Dissemination not found");
+                throw new errors_1.NotFoundError("Routing not found");
             if (queue.status !== 0) {
                 throw new errors_1.ValidationError("Cannot remove documents after dispatch.");
             }
@@ -1133,7 +1133,7 @@ const removeDisseminationDocument = (req, res) => __awaiter(void 0, void 0, void
                         userId: params.userId,
                         lineId: params.lineId || "",
                         title: "Removed document",
-                        desc: `Removed ${(_a = doc.title) !== null && _a !== void 0 ? _a : doc.id} from dissemination ${params.queueRoomId}`,
+                        desc: `Removed ${(_a = doc.title) !== null && _a !== void 0 ? _a : doc.id} from routing ${params.queueRoomId}`,
                         action: 0,
                     },
                 });
@@ -1495,7 +1495,7 @@ const viewDissemination = (req, res) => __awaiter(void 0, void 0, void 0, functi
             },
         });
         if (!row)
-            throw new errors_1.NotFoundError("Dissemination not found");
+            throw new errors_1.NotFoundError("Routing not found");
         // Pull each signer's active signature image (base64) so the renderer
         // can stamp it inside the SignatureCoor boxes without an extra fetch.
         const signedUserIds = Array.from(new Set(row.signatotyArrangement
@@ -1675,9 +1675,9 @@ const signMine = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
                 include: { fromRoom: { select: { lineId: true } } },
             });
             if (!queue)
-                throw new errors_1.NotFoundError("Dissemination not found");
+                throw new errors_1.NotFoundError("Routing not found");
             if (queue.status !== 1) {
-                throw new errors_1.ValidationError("Only active (dispatched) disseminations can be signed.");
+                throw new errors_1.ValidationError("Only active (dispatched) routings can be signed.");
             }
             // Confirm the user has an active signature on file — refusing to
             // sign without one prevents a "signed but invisible" state.
@@ -1741,8 +1741,8 @@ const signMine = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
                         userId: body.userId,
                         lineId: realLineId,
                         title: completed
-                            ? "Signed and completed dissemination"
-                            : "Signed dissemination slots",
+                            ? "Signed and completed routing"
+                            : "Signed routing slots",
                         desc: `Signed ${pending.length} slot${pending.length === 1 ? "" : "s"} on queue ${body.queueRoomId}` +
                             (completed ? " (queue completed)" : ""),
                         action: 1,
@@ -1782,14 +1782,14 @@ const signMine = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
                     recipients.add(e.userId);
             // don't ping the signer themselves
             recipients.delete(body.userId);
-            const title = (_j = queueOwner === null || queueOwner === void 0 ? void 0 : queueOwner.title) !== null && _j !== void 0 ? _j : "a dissemination";
+            const title = (_j = queueOwner === null || queueOwner === void 0 ? void 0 : queueOwner.title) !== null && _j !== void 0 ? _j : "a document";
             for (const rid of recipients) {
                 yield (0, notificationEvents_1.createUserNotification)(tx, {
                     recipientId: rid,
                     senderId: body.userId,
-                    title: completed ? "Dissemination concluded" : "Dissemination signed",
+                    title: completed ? "Routing concluded" : "Routing signed",
                     content: completed
-                        ? `All signatures collected on "${title}". The dissemination is now concluded.`
+                        ? `All signatures collected on "${title}". The routing is now concluded.`
                         : `Someone signed on "${title}".`,
                     path: `documents/dissemination?tab=inbox`,
                 });
@@ -1904,9 +1904,9 @@ const archiveDissemination = (req, res) => __awaiter(void 0, void 0, void 0, fun
                 },
             });
             if (!queue)
-                throw new errors_1.NotFoundError("Dissemination not found");
+                throw new errors_1.NotFoundError("Routing not found");
             if (queue.status !== 2) {
-                throw new errors_1.ValidationError("Only concluded disseminations (all signatures collected) can be archived.");
+                throw new errors_1.ValidationError("Only concluded routings (all signatures collected) can be archived.");
             }
             const lineId = (_a = queue.fromRoom) === null || _a === void 0 ? void 0 : _a.lineId;
             const receivingRoomId = (_b = queue.fromRoom) === null || _b === void 0 ? void 0 : _b.id;
@@ -1935,7 +1935,7 @@ const archiveDissemination = (req, res) => __awaiter(void 0, void 0, void 0, fun
                     data: {
                         userId: body.userId,
                         lineId,
-                        title: "Archived concluded dissemination",
+                        title: "Archived concluded routing",
                         desc: `Archived ${created} document${created === 1 ? "" : "s"} from queue ${body.queueRoomId} (${skipped} already archived)`,
                         action: 1,
                     },
@@ -2419,12 +2419,12 @@ const cancelDispatchedDissemination = (req, res) => __awaiter(void 0, void 0, vo
                 },
             });
             if (!queue)
-                throw new errors_1.NotFoundError("Dissemination not found");
+                throw new errors_1.NotFoundError("Routing not found");
             if (queue.userId && queue.userId !== body.userId) {
                 throw new errors_1.ValidationError("Only the disseminator can cancel.");
             }
             if (queue.status === 0) {
-                throw new errors_1.ValidationError("This dissemination is still a draft — remove it instead.");
+                throw new errors_1.ValidationError("This routing is still a draft — remove it instead.");
             }
             if (queue.status >= 2) {
                 throw new errors_1.ValidationError("Already concluded or cancelled — nothing to do.");
@@ -2443,7 +2443,7 @@ const cancelDispatchedDissemination = (req, res) => __awaiter(void 0, void 0, vo
                     data: {
                         userId: body.userId,
                         lineId: realLineId,
-                        title: "Cancelled dispatched dissemination",
+                        title: "Cancelled dispatched routing",
                         desc: `Cancelled "${(_c = queue.title) !== null && _c !== void 0 ? _c : queue.id}"` +
                             (body.reason ? ` — reason: ${body.reason}` : ""),
                         action: 0,
@@ -2487,8 +2487,8 @@ const cancelDispatchedDissemination = (req, res) => __awaiter(void 0, void 0, vo
                 yield (0, notificationEvents_1.createUserNotification)(tx, {
                     recipientId: rid,
                     senderId: body.userId,
-                    title: "Dissemination cancelled",
-                    content: `"${(_f = queue.title) !== null && _f !== void 0 ? _f : "A dissemination"}" was cancelled by the sender.` +
+                    title: "Routing cancelled",
+                    content: `"${(_f = queue.title) !== null && _f !== void 0 ? _f : "A document"}" was cancelled by the sender.` +
                         (body.reason ? ` Reason: ${body.reason}` : ""),
                     path: `documents/dissemination?tab=inbox`,
                 });
@@ -2588,7 +2588,7 @@ const verifySignaturePage = (req, res) => __awaiter(void 0, void 0, void 0, func
         const rows = [
             ["Signer", escape(fullName)],
             ["Position", escape(position)],
-            ["Document / Dissemination", escape(queueTitle)],
+            ["Document", escape(queueTitle)],
             ["Slot #", String(arr.index + 1)],
             ["Status", statusLabel],
             ["Signed at", escape(signedAt)],

@@ -249,7 +249,7 @@ export const disseminationDetail = async (
         user: { select: { id: true, firstName: true, lastName: true } },
       },
     });
-    if (!row) throw new NotFoundError("DISSEMINATION NOT FOUND");
+    if (!row) throw new NotFoundError("ROUTING NOT FOUND");
 
     return res.code(200).send(row);
   } catch (error) {
@@ -316,10 +316,10 @@ export const setTargetRooms = async (
       const queue = await tx.signatureQueueRoom.findUnique({
         where: { id: body.queueRoomId },
       });
-      if (!queue) throw new NotFoundError("Dissemination not found");
+      if (!queue) throw new NotFoundError("Routing not found");
       if (queue.status !== 0) {
         throw new ValidationError(
-          "Cannot change targets after the dissemination has been dispatched.",
+          "Cannot change recipients after the routing has been dispatched.",
         );
       }
 
@@ -359,7 +359,7 @@ export const setTargetRooms = async (
           data: {
             userId: body.userId,
             lineId: body.lineId,
-            title: "Updated dissemination targets",
+            title: "Updated routing recipients",
             desc:
               `Set ${direct.length} target room` +
               `${direct.length === 1 ? "" : "s"}` +
@@ -408,10 +408,10 @@ export const setSignatoryArrangement = async (
       const queue = await tx.signatureQueueRoom.findUnique({
         where: { id: body.queueRoomId },
       });
-      if (!queue) throw new NotFoundError("Dissemination not found");
+      if (!queue) throw new NotFoundError("Routing not found");
       if (queue.status !== 0) {
         throw new ValidationError(
-          "Cannot change signatories after the dissemination has been dispatched.",
+          "Cannot change signatories after the routing has been dispatched.",
         );
       }
 
@@ -526,7 +526,7 @@ export const finalizeDissemination = async (
           _count: { select: { targetRooms: true, documents: true } },
         },
       });
-      if (!queue) throw new NotFoundError("Dissemination not found");
+      if (!queue) throw new NotFoundError("Routing not found");
       if (queue.status !== 0) {
         throw new ValidationError(
           "Already dispatched. Only drafts can be finalized.",
@@ -591,8 +591,8 @@ export const finalizeDissemination = async (
           data: {
             userId: body.userId,
             lineId: body.lineId,
-            title: "Dispatched dissemination",
-            desc: `Dissemination "${queue.title ?? body.queueRoomId}" finalized and dispatched.`,
+            title: "Dispatched routing",
+            desc: `Routing "${queue.title ?? body.queueRoomId}" finalized and dispatched.`,
             action: 1,
           },
         });
@@ -616,7 +616,7 @@ export const finalizeDissemination = async (
           recipientId: s.userId,
           senderId: body.userId,
           title: "Signature requested",
-          content: `You're a signatory on "${queue.title ?? "a dissemination"}". Open it from your Inbox to sign.`,
+          content: `You're a signatory on "${queue.title ?? "a document"}". Open it from your Inbox to sign.`,
           path: `documents/dissemination?tab=inbox`,
         });
       }
@@ -650,10 +650,10 @@ export const removeDissemination = async (
       const queue = await tx.signatureQueueRoom.findUnique({
         where: { id: params.id },
       });
-      if (!queue) throw new NotFoundError("Dissemination not found");
+      if (!queue) throw new NotFoundError("Routing not found");
       if (queue.status !== 0) {
         throw new ValidationError(
-          "Only draft disseminations can be removed.",
+          "Only draft routings can be removed.",
         );
       }
       await tx.signatureQueueRoom.delete({ where: { id: queue.id } });
@@ -663,8 +663,8 @@ export const removeDissemination = async (
           data: {
             userId: params.userId,
             lineId: params.lineId,
-            title: "Removed dissemination",
-            desc: `Removed draft dissemination ${queue.title ?? queue.id}`,
+            title: "Removed routing",
+            desc: `Removed draft routing ${queue.title ?? queue.id}`,
             action: 0,
           },
         });
@@ -960,7 +960,7 @@ export const saveSignaturePlacements = async (
       const queue = await tx.signatureQueueRoom.findUnique({
         where: { id: body.queueRoomId },
       });
-      if (!queue) throw new NotFoundError("Dissemination not found");
+      if (!queue) throw new NotFoundError("Routing not found");
       if (queue.status !== 0) {
         throw new ValidationError("Cannot edit placements after dispatch.");
       }
@@ -1129,7 +1129,7 @@ export const uploadDisseminationDocument = async (
       where: { id: queueRoomId },
       select: { id: true, status: true, receivingRoomId: true },
     });
-    if (!queue) throw new NotFoundError("Dissemination not found");
+    if (!queue) throw new NotFoundError("Routing not found");
     if (queue.status !== 0) {
       throw new ValidationError("Cannot attach documents after dispatch.");
     }
@@ -1164,7 +1164,7 @@ export const uploadDisseminationDocument = async (
             userId,
             lineId,
             title: "Attached document",
-            desc: `Attached ${upload.filename} to dissemination ${queueRoomId}`,
+            desc: `Attached ${upload.filename} to routing ${queueRoomId}`,
             action: 1,
           },
         });
@@ -1204,7 +1204,7 @@ export const removeDisseminationDocument = async (
         where: { id: params.queueRoomId },
         select: { id: true, status: true },
       });
-      if (!queue) throw new NotFoundError("Dissemination not found");
+      if (!queue) throw new NotFoundError("Routing not found");
       if (queue.status !== 0) {
         throw new ValidationError("Cannot remove documents after dispatch.");
       }
@@ -1225,7 +1225,7 @@ export const removeDisseminationDocument = async (
             userId: params.userId,
             lineId: params.lineId || "",
             title: "Removed document",
-            desc: `Removed ${doc.title ?? doc.id} from dissemination ${params.queueRoomId}`,
+            desc: `Removed ${doc.title ?? doc.id} from routing ${params.queueRoomId}`,
             action: 0,
           },
         });
@@ -1622,7 +1622,7 @@ export const viewDissemination = async (
         },
       },
     });
-    if (!row) throw new NotFoundError("Dissemination not found");
+    if (!row) throw new NotFoundError("Routing not found");
 
     // Pull each signer's active signature image (base64) so the renderer
     // can stamp it inside the SignatureCoor boxes without an extra fetch.
@@ -1847,10 +1847,10 @@ export const signMine = async (req: FastifyRequest, res: FastifyReply) => {
         where: { id: body.queueRoomId },
         include: { fromRoom: { select: { lineId: true } } },
       });
-      if (!queue) throw new NotFoundError("Dissemination not found");
+      if (!queue) throw new NotFoundError("Routing not found");
       if (queue.status !== 1) {
         throw new ValidationError(
-          "Only active (dispatched) disseminations can be signed.",
+          "Only active (dispatched) routings can be signed.",
         );
       }
 
@@ -1921,8 +1921,8 @@ export const signMine = async (req: FastifyRequest, res: FastifyReply) => {
             userId: body.userId,
             lineId: realLineId,
             title: completed
-              ? "Signed and completed dissemination"
-              : "Signed dissemination slots",
+              ? "Signed and completed routing"
+              : "Signed routing slots",
             desc:
               `Signed ${pending.length} slot${pending.length === 1 ? "" : "s"} on queue ${body.queueRoomId}` +
               (completed ? " (queue completed)" : ""),
@@ -1966,14 +1966,14 @@ export const signMine = async (req: FastifyRequest, res: FastifyReply) => {
       // don't ping the signer themselves
       recipients.delete(body.userId);
 
-      const title = queueOwner?.title ?? "a dissemination";
+      const title = queueOwner?.title ?? "a document";
       for (const rid of recipients) {
         await createUserNotification(tx, {
           recipientId: rid,
           senderId: body.userId,
-          title: completed ? "Dissemination concluded" : "Dissemination signed",
+          title: completed ? "Routing concluded" : "Routing signed",
           content: completed
-            ? `All signatures collected on "${title}". The dissemination is now concluded.`
+            ? `All signatures collected on "${title}". The routing is now concluded.`
             : `Someone signed on "${title}".`,
           path: `documents/dissemination?tab=inbox`,
         });
@@ -2095,10 +2095,10 @@ export const archiveDissemination = async (
           fromRoom: { select: { id: true, lineId: true } },
         },
       });
-      if (!queue) throw new NotFoundError("Dissemination not found");
+      if (!queue) throw new NotFoundError("Routing not found");
       if (queue.status !== 2) {
         throw new ValidationError(
-          "Only concluded disseminations (all signatures collected) can be archived.",
+          "Only concluded routings (all signatures collected) can be archived.",
         );
       }
 
@@ -2129,7 +2129,7 @@ export const archiveDissemination = async (
           data: {
             userId: body.userId,
             lineId,
-            title: "Archived concluded dissemination",
+            title: "Archived concluded routing",
             desc: `Archived ${created} document${created === 1 ? "" : "s"} from queue ${body.queueRoomId} (${skipped} already archived)`,
             action: 1,
           },
@@ -2669,13 +2669,13 @@ export const cancelDispatchedDissemination = async (
           fromRoom: { select: { lineId: true } },
         },
       });
-      if (!queue) throw new NotFoundError("Dissemination not found");
+      if (!queue) throw new NotFoundError("Routing not found");
       if (queue.userId && queue.userId !== body.userId) {
         throw new ValidationError("Only the disseminator can cancel.");
       }
       if (queue.status === 0) {
         throw new ValidationError(
-          "This dissemination is still a draft — remove it instead.",
+          "This routing is still a draft — remove it instead.",
         );
       }
       if (queue.status >= 2) {
@@ -2699,7 +2699,7 @@ export const cancelDispatchedDissemination = async (
           data: {
             userId: body.userId,
             lineId: realLineId,
-            title: "Cancelled dispatched dissemination",
+            title: "Cancelled dispatched routing",
             desc:
               `Cancelled "${queue.title ?? queue.id}"` +
               (body.reason ? ` — reason: ${body.reason}` : ""),
@@ -2743,9 +2743,9 @@ export const cancelDispatchedDissemination = async (
         await createUserNotification(tx, {
           recipientId: rid,
           senderId: body.userId,
-          title: "Dissemination cancelled",
+          title: "Routing cancelled",
           content:
-            `"${queue.title ?? "A dissemination"}" was cancelled by the sender.` +
+            `"${queue.title ?? "A document"}" was cancelled by the sender.` +
             (body.reason ? ` Reason: ${body.reason}` : ""),
           path: `documents/dissemination?tab=inbox`,
         });
@@ -2855,7 +2855,7 @@ export const verifySignaturePage = async (
     const rows: Array<[string, string]> = [
       ["Signer", escape(fullName)],
       ["Position", escape(position)],
-      ["Document / Dissemination", escape(queueTitle)],
+      ["Document", escape(queueTitle)],
       ["Slot #", String(arr.index + 1)],
       ["Status", statusLabel],
       ["Signed at", escape(signedAt)],
