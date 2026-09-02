@@ -26,6 +26,15 @@ import {
   VISIBLE_TO_ROOM,
 } from "../service/copyFurnish";
 
+/**
+ * Somebody who can actually open what lands in a room.
+ *
+ * A removed member keeps their row with status 0, and a placeholder row can
+ * carry no user at all. Neither is a person, so neither makes a room able to
+ * receive a document.
+ */
+const ACTIVE_MEMBER = { status: 1, userId: { not: null } } as const;
+
 // ── Outbox: disseminations created BY this room ────────────────────────
 export const disseminationOutbox = async (
   req: FastifyRequest,
@@ -276,6 +285,31 @@ export const setTargetRooms = async (
   const furnished = [...new Set(body.copyFurnishedRoomIds ?? [])].filter(
     (id) => !direct.includes(id),
   );
+
+  // A room with no members cannot open anything sent to it, so targeting one
+  // silently loses the document. The picker greys these out, but a list is a
+  // hint and this is the rule.
+  const asked = [...direct, ...furnished];
+  if (asked.length) {
+    const withMembers = await prisma.roomAuthorizedUser.findMany({
+      where: { receivingRoomId: { in: asked }, ...ACTIVE_MEMBER },
+      select: { receivingRoomId: true },
+      distinct: ["receivingRoomId"],
+    });
+    const ok = new Set(withMembers.map((m) => m.receivingRoomId));
+    const empty = asked.filter((id) => !ok.has(id));
+    if (empty.length) {
+      const named = await prisma.receivingRoom.findMany({
+        where: { id: { in: empty } },
+        select: { code: true },
+      });
+      const codes = named.map((n) => n.code).join(", ") || "one of them";
+      throw new ValidationError(
+        `No one has been added to ${codes} yet, so nothing sent there could ` +
+          `be opened. Add a member in Document Rooms first, or drop it.`,
+      );
+    }
+  }
 
   try {
     await prisma.$transaction(async (tx) => {
@@ -662,13 +696,23 @@ export const targetRoomCandidates = async (
   if (!params.lineId) throw new ValidationError("INVALID REQUIRED ID");
 
   try {
-    const limit = params.limit ? parseInt(params.limit, 10) : 50;
-    // Only rooms that actually have authorized users — otherwise orphaned
-    // ReceivingRoom rows (left behind by membership resets) show up as
-    // viable targets and dispatches go into a void.
+    const limit = params.limit ? parseInt(params.limit, 10) : 200;
+    // Every room in the line, including the ones nobody can open yet.
+    //
+    // This used to filter to `authorizedUser: { some: {} }`, because a room
+    // with no members is a room where a dispatch lands and is never seen.
+    // That protection was right; hiding the room was not. An office that
+    // exists in Document Rooms but is missing from this list looks like the
+    // system lost it, and the sender has no way to find out why — you can
+    // sit there seeing one office out of a dozen and nothing tells you the
+    // other eleven are simply empty.
+    //
+    // So they all come back now, each carrying whether it can actually
+    // receive anything. The picker greys out the ones that cannot and says
+    // what to do about it, and setTargetRooms refuses them outright, so the
+    // dispatch is still protected — the sender just knows why.
     const where: any = {
       lineId: params.lineId,
-      authorizedUser: { some: {} },
     };
     if (params.excludeRoomId) where.NOT = { id: params.excludeRoomId };
     if (params.query?.trim()) {
@@ -690,7 +734,38 @@ export const targetRoomCandidates = async (
         _count: { select: { authorizedUser: true } },
       },
     });
-    return res.code(200).send({ list: rows });
+
+    // Only an ACTIVE membership held by a real user counts: a removed member
+    // (status 0) and a placeholder row with no user are both nobody, and a
+    // room holding only those is as empty as one holding nothing. That is a
+    // different tally from the _count above, which is every row ever.
+    const active = await prisma.roomAuthorizedUser.groupBy({
+      by: ["receivingRoomId"],
+      where: { receivingRoomId: { in: rows.map((r) => r.id) }, ...ACTIVE_MEMBER },
+      _count: { _all: true },
+    });
+    const memberOf = new Map(
+      active.map((a) => [a.receivingRoomId ?? "", a._count._all]),
+    );
+
+    const list = rows.map((r) => {
+      const memberCount = memberOf.get(r.id) ?? 0;
+      return {
+        ...r,
+        memberCount,
+        /** False = the document would land where nobody can open it. */
+        receivable: memberCount > 0,
+      };
+    });
+    return res.code(200).send({
+      list,
+      // So the picker can explain a short list instead of just being short.
+      summary: {
+        total: list.length,
+        receivable: list.filter((r) => r.receivable).length,
+        needMembers: list.filter((r) => !r.receivable).length,
+      },
+    });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
