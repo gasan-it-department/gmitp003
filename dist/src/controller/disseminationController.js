@@ -2421,7 +2421,7 @@ const cancelDispatchedDissemination = (req, res) => __awaiter(void 0, void 0, vo
             if (!queue)
                 throw new errors_1.NotFoundError("Routing not found");
             if (queue.userId && queue.userId !== body.userId) {
-                throw new errors_1.ValidationError("Only the disseminator can cancel.");
+                throw new errors_1.ValidationError("Only the sender can cancel.");
             }
             if (queue.status === 0) {
                 throw new errors_1.ValidationError("This routing is still a draft — remove it instead.");

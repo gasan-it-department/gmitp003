@@ -2671,7 +2671,7 @@ export const cancelDispatchedDissemination = async (
       });
       if (!queue) throw new NotFoundError("Routing not found");
       if (queue.userId && queue.userId !== body.userId) {
-        throw new ValidationError("Only the disseminator can cancel.");
+        throw new ValidationError("Only the sender can cancel.");
       }
       if (queue.status === 0) {
         throw new ValidationError(
