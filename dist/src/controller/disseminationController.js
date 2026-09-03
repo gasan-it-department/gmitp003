@@ -82,6 +82,119 @@ const copyFurnish_1 = require("../service/copyFurnish");
  */
 const ACTIVE_MEMBER = { status: 1, userId: { not: null } };
 /**
+ * Who may READ one routing — its detail, its recipients, its files.
+ *
+ * Three ways in, and all three are real doors people walk through:
+ *
+ *  - a signatory on it, who may belong to neither room;
+ *  - somebody in the sending room, who reaches it from the Outbox;
+ *  - somebody in a room it actually reached, from the Inbox. A held
+ *    copy-furnished row does not count, because that office has not been
+ *    given the document yet and must not learn it exists.
+ *
+ * An UNASSIGNED signatory slot grants nothing. A third of the slots in
+ * the wild have no user on them, and treating "nobody holds this slot" as
+ * "anybody may look" would be the widest hole of the lot; those documents
+ * are reached through a room, which is what the other two doors are for.
+ */
+const canSeeRouting = (actorId, queueId) => __awaiter(void 0, void 0, void 0, function* () {
+    const queue = yield prisma_1.prisma.signatureQueueRoom.findUnique({
+        where: { id: queueId },
+        select: {
+            receivingRoomId: true,
+            targetRooms: {
+                where: copyFurnish_1.VISIBLE_TO_ROOM,
+                select: { receivingRoomId: true },
+            },
+        },
+    });
+    if (!queue)
+        return false;
+    const signs = yield prisma_1.prisma.signatoryArrangement.count({
+        where: { signatureQueueRoomId: queueId, userId: actorId },
+    });
+    if (signs > 0)
+        return true;
+    const rooms = [
+        queue.receivingRoomId,
+        ...queue.targetRooms.map((t) => t.receivingRoomId),
+    ].filter((x) => !!x);
+    if (!rooms.length)
+        return false;
+    return !!(yield prisma_1.prisma.roomAuthorizedUser.findFirst({
+        where: { receivingRoomId: { in: rooms }, userId: actorId, status: 1 },
+        select: { id: true },
+    }));
+});
+/** Read gate. Refuses without confirming the routing exists. */
+const requireCanSeeRouting = (req, queueId) => __awaiter(void 0, void 0, void 0, function* () {
+    const actorId = yield (0, handler_1.callerUserId)(req);
+    if (!actorId)
+        throw new errors_1.UnauthorizedError("Not signed in");
+    if (!(yield canSeeRouting(actorId, queueId))) {
+        console.warn(`[routing] refused: user ${actorId} asked for ${queueId}`);
+        throw new errors_1.NotFoundError("Not found");
+    }
+    return actorId;
+});
+/**
+ * Who may CHANGE a routing — attach a file, remove one, move the
+ * signature boxes. Only the office that is sending it. A recipient being
+ * able to delete the sender's attachment is a different bug entirely.
+ */
+const requireOwnsRouting = (req, queueId) => __awaiter(void 0, void 0, void 0, function* () {
+    const actorId = yield (0, handler_1.callerUserId)(req);
+    if (!actorId)
+        throw new errors_1.UnauthorizedError("Not signed in");
+    const queue = yield prisma_1.prisma.signatureQueueRoom.findUnique({
+        where: { id: queueId },
+        select: { receivingRoomId: true },
+    });
+    if (!(queue === null || queue === void 0 ? void 0 : queue.receivingRoomId))
+        throw new errors_1.NotFoundError("Not found");
+    const member = yield prisma_1.prisma.roomAuthorizedUser.findFirst({
+        where: {
+            receivingRoomId: queue.receivingRoomId,
+            userId: actorId,
+            status: 1,
+        },
+        select: { id: true },
+    });
+    if (!member) {
+        console.warn(`[routing] write refused: user ${actorId} on ${queueId}`);
+        throw new errors_1.UnauthorizedError("Only the sending office can change this.");
+    }
+    return actorId;
+});
+/**
+ * The same question for a file, which is addressed by document id.
+ *
+ * A document either belongs to a routing or it does not. If it does, the
+ * routing decides. If it does not it is somebody's own upload — a Self
+ * Sign file — and only they may fetch it. That second branch closes a
+ * hole of its own: this endpoint is shared with Self Sign, so every
+ * private upload in the municipality was one id away from anybody.
+ */
+const requireCanSeeDocument = (req, documentId) => __awaiter(void 0, void 0, void 0, function* () {
+    const doc = yield prisma_1.prisma.document.findUnique({
+        where: { id: documentId },
+        select: { userId: true, signatureQueueRoomId: true },
+    });
+    if (!doc)
+        throw new errors_1.NotFoundError("Not found");
+    if (doc.signatureQueueRoomId) {
+        return requireCanSeeRouting(req, doc.signatureQueueRoomId);
+    }
+    const actorId = yield (0, handler_1.callerUserId)(req);
+    if (!actorId)
+        throw new errors_1.UnauthorizedError("Not signed in");
+    if (doc.userId !== actorId) {
+        console.warn(`[routing] file refused: user ${actorId} on doc ${documentId}`);
+        throw new errors_1.NotFoundError("Not found");
+    }
+    return actorId;
+});
+/**
  * A room's mail belongs to the people who work in that room.
  *
  * The inbox and outbox both take the room id from the request, and both
@@ -280,6 +393,8 @@ const disseminationDetail = (req, res) => __awaiter(void 0, void 0, void 0, func
     const params = req.query;
     if (!params.id)
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
+    // Only the people this routing actually involves.
+    yield requireCanSeeRouting(req, params.id);
     try {
         const row = yield prisma_1.prisma.signatureQueueRoom.findUnique({
             where: { id: params.id },
@@ -839,6 +954,8 @@ const disseminationDocuments = (req, res) => __awaiter(void 0, void 0, void 0, f
     const params = req.query;
     if (!params.queueRoomId)
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
+    // Only the people this routing actually involves.
+    yield requireCanSeeRouting(req, params.queueRoomId);
     try {
         const docs = yield prisma_1.prisma.document.findMany({
             where: { signatureQueueRoomId: params.queueRoomId },
@@ -888,6 +1005,8 @@ const streamDocumentFile = (req, res) => __awaiter(void 0, void 0, void 0, funct
     const params = req.query;
     if (!params.id)
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
+    // Routing file or a private Self Sign upload — the document decides.
+    yield requireCanSeeDocument(req, params.id);
     try {
         const file = yield prisma_1.prisma.decodedFile.findFirst({
             where: { documentId: params.id },
@@ -920,6 +1039,8 @@ const saveSignaturePlacements = (req, res) => __awaiter(void 0, void 0, void 0, 
     if (!body.queueRoomId || !body.documentId || !Array.isArray(body.placements)) {
         throw new errors_1.ValidationError("INVALID REQUIRED FIELDS");
     }
+    // Only the office sending it may move the signature boxes.
+    yield requireOwnsRouting(req, body.queueRoomId);
     try {
         yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
             const queue = yield tx.signatureQueueRoom.findUnique({
@@ -1093,6 +1214,12 @@ const uploadDisseminationDocument = (req, res) => __awaiter(void 0, void 0, void
             throw new errors_1.ValidationError("FILE EXCEEDS 25MB LIMIT");
         }
         const { queueRoomId, userId, lineId, title } = formData;
+        // Only the sending office may attach to this routing. The check has to
+        // sit here rather than at the top: queueRoomId arrives as a form field,
+        // so it is not known until the multipart body has been read.
+        if (!queueRoomId)
+            throw new errors_1.ValidationError("INVALID REQUIRED ID");
+        yield requireOwnsRouting(req, queueRoomId);
         if (!queueRoomId || !lineId) {
             throw new errors_1.ValidationError("INVALID REQUIRED FIELDS");
         }
@@ -1162,6 +1289,8 @@ const removeDisseminationDocument = (req, res) => __awaiter(void 0, void 0, void
     if (!params.id || !params.queueRoomId) {
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
     }
+    // Only the sending office may detach a document.
+    yield requireOwnsRouting(req, params.queueRoomId);
     try {
         yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
             var _a;
@@ -1479,6 +1608,8 @@ const viewDissemination = (req, res) => __awaiter(void 0, void 0, void 0, functi
     const params = req.query;
     if (!params.id)
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
+    // Only the people this routing actually involves.
+    yield requireCanSeeRouting(req, params.id);
     try {
         const row = yield prisma_1.prisma.signatureQueueRoom.findUnique({
             where: { id: params.id },
@@ -2033,6 +2164,7 @@ const downloadSignedDocument = (req, res) => __awaiter(void 0, void 0, void 0, f
     const params = req.query;
     if (!params.documentId)
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
+    yield requireCanSeeDocument(req, params.documentId);
     try {
         const doc = yield prisma_1.prisma.document.findUnique({
             where: { id: params.documentId },
