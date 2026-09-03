@@ -19,6 +19,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.documentReceivePageServe = exports.documentReceivePageUpload = exports.myDocMobileAccess = exports.revokeDocMobileAccess = exports.grantDocMobileAccess = exports.docMobileAccessCandidates = exports.listDocMobileAccess = exports.documentReceiveList = exports.documentReceiveCreate = exports.documentReceiveFind = exports.documentReceiveSync = void 0;
 const prisma_1 = require("../barrel/prisma");
 const errors_1 = require("../errors/errors");
+const callerScope_1 = require("../service/callerScope");
 /**
  * Document Receiving — barcode-stickered physical documents logged by the
  * office/unit receiving personnel.
@@ -259,10 +260,13 @@ const docMobileAccessCandidates = (req, res) => __awaiter(void 0, void 0, void 0
 exports.docMobileAccessCandidates = docMobileAccessCandidates;
 // POST /document/mobile-access { lineId, userId, grantedById } — grant (idempotent)
 const grantDocMobileAccess = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    var _a;
     const body = req.body;
     if (!body.lineId || !body.userId)
         throw new errors_1.ValidationError("lineId and userId are required");
+    // Handing somebody mobile access is a privilege grant, and it was open
+    // to anyone signed in. The granter is the token's user, never a name
+    // supplied in the body — an audit trail you can forge is not one.
+    const { actorId } = yield (0, callerScope_1.requireSameLine)(req, body.lineId);
     const user = yield prisma_1.prisma.user.findFirst({
         where: { id: body.userId, lineId: body.lineId },
         select: { id: true },
@@ -274,7 +278,7 @@ const grantDocMobileAccess = (req, res) => __awaiter(void 0, void 0, void 0, fun
         create: {
             lineId: body.lineId,
             userId: body.userId,
-            grantedById: (_a = body.grantedById) !== null && _a !== void 0 ? _a : null,
+            grantedById: actorId,
         },
         update: {},
     });
@@ -286,6 +290,8 @@ const revokeDocMobileAccess = (req, res) => __awaiter(void 0, void 0, void 0, fu
     const body = req.body;
     if (!body.lineId || !body.userId)
         throw new errors_1.ValidationError("lineId and userId are required");
+    // Taking access away is as much a privilege as giving it.
+    yield (0, callerScope_1.requireSameLine)(req, body.lineId);
     yield prisma_1.prisma.documentMobileAccess.deleteMany({
         where: { lineId: body.lineId, userId: body.userId },
     });

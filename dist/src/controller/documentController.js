@@ -23,6 +23,7 @@ exports.generateAbstract = exports.routerInfo = exports.createDocumentRoute = ex
 const prisma_1 = require("../barrel/prisma");
 const errors_1 = require("../errors/errors");
 const Embedding_1 = require("../service/Embedding");
+const callerScope_1 = require("../service/callerScope");
 const notificationEvents_1 = require("../service/notificationEvents");
 const addDocument = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     var _a, e_1, _b, _c, _d, e_2, _e, _f;
@@ -1198,6 +1199,10 @@ const removeRoom = (req, res) => __awaiter(void 0, void 0, void 0, function* () 
     if (!params.id || !params.lineId || !params.userId) {
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
     }
+    // Deleting a room is destructive and was open to any signed-in account
+    // anywhere. Scoped to the caller's own municipality, and the actor on
+    // the log entry is the token's, not whatever the query claimed.
+    const { actorId } = yield (0, callerScope_1.requireSameLine)(req, params.lineId);
     try {
         const response = yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
             var _a;
@@ -1206,6 +1211,11 @@ const removeRoom = (req, res) => __awaiter(void 0, void 0, void 0, function* () 
             });
             if (!room)
                 throw new errors_1.NotFoundError("ROOM NOT FOUND");
+            // …and the room must belong to that municipality, or the lineId in
+            // the query is just a password for somebody else's rooms.
+            if (room.lineId !== params.lineId) {
+                throw new errors_1.NotFoundError("ROOM NOT FOUND");
+            }
             if (room.status === 0)
                 return true; // already removed
             yield tx.receivingRoom.update({

@@ -71,6 +71,7 @@ const documentSeal_1 = require("../service/documentSeal");
 const url_1 = require("../service/url");
 const handler_1 = require("../middleware/handler");
 const roomConfigController_1 = require("./roomConfigController");
+const callerScope_1 = require("../service/callerScope");
 const signaturePlacement_1 = require("../service/signaturePlacement");
 const copyFurnish_1 = require("../service/copyFurnish");
 /**
@@ -455,6 +456,8 @@ const setTargetRooms = (req, res) => __awaiter(void 0, void 0, void 0, function*
     if (!body.queueRoomId || !Array.isArray(body.targetRoomIds)) {
         throw new errors_1.ValidationError("INVALID REQUIRED FIELDS");
     }
+    // Only the office sending it decides who it goes to.
+    yield requireOwnsRouting(req, body.queueRoomId);
     // An addressee already receives the document, so copy-furnishing them as
     // well is a no-op that would only produce a duplicate row and a second
     // notification. Being an addressee wins.
@@ -559,6 +562,8 @@ const setSignatoryArrangement = (req, res) => __awaiter(void 0, void 0, void 0, 
     if (!body.queueRoomId || !Array.isArray(body.signatories)) {
         throw new errors_1.ValidationError("INVALID REQUIRED FIELDS");
     }
+    // Only the sending office decides who signs it.
+    yield requireOwnsRouting(req, body.queueRoomId);
     try {
         yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
             var _a;
@@ -663,6 +668,8 @@ const finalizeDissemination = (req, res) => __awaiter(void 0, void 0, void 0, fu
     const body = req.body;
     if (!body.queueRoomId)
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
+    // Dispatching is the sending office's act, not anybody's.
+    yield requireOwnsRouting(req, body.queueRoomId);
     try {
         const result = yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
             var _a, _b, _c, _d, _e, _f, _g;
@@ -774,6 +781,8 @@ const removeDissemination = (req, res) => __awaiter(void 0, void 0, void 0, func
     const params = req.query;
     if (!params.id)
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
+    // Only the sending office may throw away its own draft.
+    yield requireOwnsRouting(req, params.id);
     try {
         yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
             var _a;
@@ -1345,6 +1354,9 @@ const repairRoomMembership = (req, res) => __awaiter(void 0, void 0, void 0, fun
     const body = req.body;
     if (!body.userId)
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
+    // Repairing a person's room membership is something you do to
+    // yourself. It mints rooms and moves people between them.
+    yield (0, callerScope_1.requireSelf)(req, body.userId);
     try {
         const result = yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
             // Already a member somewhere? Nothing to do.
@@ -1530,6 +1542,9 @@ const resetRoomMembership = (req, res) => __awaiter(void 0, void 0, void 0, func
     const body = req.body;
     if (!body.userId)
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
+    // Same: this peels somebody off their room and mints them a new
+    // one, which is how an outbox appears to vanish.
+    yield (0, callerScope_1.requireSelf)(req, body.userId);
     try {
         const result = yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
             const reg = yield tx.roomRegistration.findFirst({
@@ -2048,9 +2063,24 @@ exports.signMine = signMine;
 // slot — they become its signer.
 const claimSignatorySlot = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     const body = req.body;
-    if (!body.arrangementId || !body.userId) {
+    if (!body.arrangementId)
         throw new errors_1.ValidationError("INVALID REQUIRED FIELDS");
-    }
+    // You claim a slot for yourself. The userId in the body used to say who
+    // was being bound, which meant anybody could make anybody else the
+    // signatory on anybody's document.
+    const { actorId } = yield (0, callerScope_1.requireSelf)(req, body.userId);
+    // And the routing has to be one you can already see. Note the order:
+    // claiming makes you a signatory, and being a signatory is one of the
+    // three things that GRANTS sight of a routing — so checking after the
+    // claim would let anyone bootstrap their way into any document by
+    // claiming a slot on it first.
+    const slot = yield prisma_1.prisma.signatoryArrangement.findUnique({
+        where: { id: body.arrangementId },
+        select: { signatureQueueRoomId: true },
+    });
+    if (!(slot === null || slot === void 0 ? void 0 : slot.signatureQueueRoomId))
+        throw new errors_1.NotFoundError("Not found");
+    yield requireCanSeeRouting(req, slot.signatureQueueRoomId);
     try {
         const result = yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
             const arr = yield tx.signatoryArrangement.findUnique({
@@ -2059,7 +2089,7 @@ const claimSignatorySlot = (req, res) => __awaiter(void 0, void 0, void 0, funct
             });
             if (!arr)
                 throw new errors_1.NotFoundError("Arrangement not found");
-            if (arr.userId && arr.userId !== body.userId) {
+            if (arr.userId && arr.userId !== actorId) {
                 throw new errors_1.ValidationError("This slot is already assigned.");
             }
             if (arr.status !== 0) {
@@ -2067,7 +2097,7 @@ const claimSignatorySlot = (req, res) => __awaiter(void 0, void 0, void 0, funct
             }
             const updated = yield tx.signatoryArrangement.update({
                 where: { id: arr.id },
-                data: { userId: body.userId },
+                data: { userId: actorId },
             });
             return updated;
         }));

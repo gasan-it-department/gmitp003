@@ -21,6 +21,7 @@ import { attestQueue, newSerial, seal } from "../service/documentSeal";
 import { tempURL } from "../service/url";
 import { callerUserId } from "../middleware/handler";
 import { ROOM_MEMBER_TYPES } from "./roomConfigController";
+import { requireSelf } from "../service/callerScope";
 import { placeSignature } from "../service/signaturePlacement";
 import {
   releaseCopyFurnished,
@@ -458,6 +459,9 @@ export const setTargetRooms = async (
     throw new ValidationError("INVALID REQUIRED FIELDS");
   }
 
+  // Only the office sending it decides who it goes to.
+  await requireOwnsRouting(req, body.queueRoomId);
+
   // An addressee already receives the document, so copy-furnishing them as
   // well is a no-op that would only produce a duplicate row and a second
   // notification. Being an addressee wins.
@@ -583,6 +587,9 @@ export const setSignatoryArrangement = async (
     throw new ValidationError("INVALID REQUIRED FIELDS");
   }
 
+  // Only the sending office decides who signs it.
+  await requireOwnsRouting(req, body.queueRoomId);
+
   try {
     await prisma.$transaction(async (tx) => {
       const queue = await tx.signatureQueueRoom.findUnique({
@@ -697,6 +704,9 @@ export const finalizeDissemination = async (
     lineId: string;
   };
   if (!body.queueRoomId) throw new ValidationError("INVALID REQUIRED ID");
+
+  // Dispatching is the sending office's act, not anybody's.
+  await requireOwnsRouting(req, body.queueRoomId);
 
   try {
     const result = await prisma.$transaction(async (tx) => {
@@ -824,6 +834,9 @@ export const removeDissemination = async (
     lineId: string;
   };
   if (!params.id) throw new ValidationError("INVALID REQUIRED ID");
+
+  // Only the sending office may throw away its own draft.
+  await requireOwnsRouting(req, params.id);
 
   try {
     await prisma.$transaction(async (tx) => {
@@ -1448,6 +1461,10 @@ export const repairRoomMembership = async (
   const body = req.body as { userId: string };
   if (!body.userId) throw new ValidationError("INVALID REQUIRED ID");
 
+  // Repairing a person's room membership is something you do to
+  // yourself. It mints rooms and moves people between them.
+  await requireSelf(req, body.userId);
+
   try {
     const result = await prisma.$transaction(async (tx) => {
       // Already a member somewhere? Nothing to do.
@@ -1658,6 +1675,10 @@ export const resetRoomMembership = async (
 ) => {
   const body = req.body as { userId: string };
   if (!body.userId) throw new ValidationError("INVALID REQUIRED ID");
+
+  // Same: this peels somebody off their room and mints them a new
+  // one, which is how an outbox appears to vanish.
+  await requireSelf(req, body.userId);
 
   try {
     const result = await prisma.$transaction(async (tx) => {
@@ -2252,10 +2273,26 @@ export const claimSignatorySlot = async (
   req: FastifyRequest,
   res: FastifyReply,
 ) => {
-  const body = req.body as { arrangementId: string; userId: string };
-  if (!body.arrangementId || !body.userId) {
-    throw new ValidationError("INVALID REQUIRED FIELDS");
-  }
+  const body = req.body as { arrangementId: string; userId?: string };
+  if (!body.arrangementId) throw new ValidationError("INVALID REQUIRED FIELDS");
+
+  // You claim a slot for yourself. The userId in the body used to say who
+  // was being bound, which meant anybody could make anybody else the
+  // signatory on anybody's document.
+  const { actorId } = await requireSelf(req, body.userId);
+
+  // And the routing has to be one you can already see. Note the order:
+  // claiming makes you a signatory, and being a signatory is one of the
+  // three things that GRANTS sight of a routing — so checking after the
+  // claim would let anyone bootstrap their way into any document by
+  // claiming a slot on it first.
+  const slot = await prisma.signatoryArrangement.findUnique({
+    where: { id: body.arrangementId },
+    select: { signatureQueueRoomId: true },
+  });
+  if (!slot?.signatureQueueRoomId) throw new NotFoundError("Not found");
+  await requireCanSeeRouting(req, slot.signatureQueueRoomId);
+
   try {
     const result = await prisma.$transaction(async (tx) => {
       const arr = await tx.signatoryArrangement.findUnique({
@@ -2263,7 +2300,7 @@ export const claimSignatorySlot = async (
         select: { id: true, userId: true, status: true },
       });
       if (!arr) throw new NotFoundError("Arrangement not found");
-      if (arr.userId && arr.userId !== body.userId) {
+      if (arr.userId && arr.userId !== actorId) {
         throw new ValidationError("This slot is already assigned.");
       }
       if (arr.status !== 0) {
@@ -2271,7 +2308,7 @@ export const claimSignatorySlot = async (
       }
       const updated = await tx.signatoryArrangement.update({
         where: { id: arr.id },
-        data: { userId: body.userId },
+        data: { userId: actorId },
       });
       return updated;
     });

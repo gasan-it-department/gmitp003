@@ -2,6 +2,7 @@ import { FastifyRequest, FastifyReply } from "../barrel/fastify";
 import { Prisma, prisma } from "../barrel/prisma";
 import { AppError, NotFoundError, ValidationError } from "../errors/errors";
 import { embeddingService } from "../service/Embedding";
+import { requireSameLine } from "../service/callerScope";
 import { createUserNotification } from "../service/notificationEvents";
 
 export const addDocument = async (req: FastifyRequest, res: FastifyReply) => {
@@ -1259,6 +1260,10 @@ export const removeRoom = async (req: FastifyRequest, res: FastifyReply) => {
   if (!params.id || !params.lineId || !params.userId) {
     throw new ValidationError("INVALID REQUIRED ID");
   }
+  // Deleting a room is destructive and was open to any signed-in account
+  // anywhere. Scoped to the caller's own municipality, and the actor on
+  // the log entry is the token's, not whatever the query claimed.
+  const { actorId } = await requireSameLine(req, params.lineId);
 
   try {
     const response = await prisma.$transaction(async (tx) => {
@@ -1266,6 +1271,11 @@ export const removeRoom = async (req: FastifyRequest, res: FastifyReply) => {
         where: { id: params.id },
       });
       if (!room) throw new NotFoundError("ROOM NOT FOUND");
+      // …and the room must belong to that municipality, or the lineId in
+      // the query is just a password for somebody else's rooms.
+      if (room.lineId !== params.lineId) {
+        throw new NotFoundError("ROOM NOT FOUND");
+      }
       if (room.status === 0) return true; // already removed
 
       await tx.receivingRoom.update({

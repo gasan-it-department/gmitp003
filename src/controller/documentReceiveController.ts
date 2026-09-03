@@ -1,6 +1,7 @@
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
 import { prisma } from "../barrel/prisma";
 import { ValidationError } from "../errors/errors";
+import { requireSameLine } from "../service/callerScope";
 
 /**
  * Document Receiving — barcode-stickered physical documents logged by the
@@ -299,6 +300,10 @@ export const grantDocMobileAccess = async (
   };
   if (!body.lineId || !body.userId)
     throw new ValidationError("lineId and userId are required");
+  // Handing somebody mobile access is a privilege grant, and it was open
+  // to anyone signed in. The granter is the token's user, never a name
+  // supplied in the body — an audit trail you can forge is not one.
+  const { actorId } = await requireSameLine(req, body.lineId);
   const user = await prisma.user.findFirst({
     where: { id: body.userId, lineId: body.lineId },
     select: { id: true },
@@ -309,7 +314,7 @@ export const grantDocMobileAccess = async (
     create: {
       lineId: body.lineId,
       userId: body.userId,
-      grantedById: body.grantedById ?? null,
+      grantedById: actorId,
     },
     update: {},
   });
@@ -324,6 +329,8 @@ export const revokeDocMobileAccess = async (
   const body = req.body as { lineId?: string; userId?: string };
   if (!body.lineId || !body.userId)
     throw new ValidationError("lineId and userId are required");
+  // Taking access away is as much a privilege as giving it.
+  await requireSameLine(req, body.lineId);
   await prisma.documentMobileAccess.deleteMany({
     where: { lineId: body.lineId, userId: body.userId },
   });
