@@ -140,6 +140,8 @@ const authorizedUsers = (req, res) => __awaiter(void 0, void 0, void 0, function
     if (!params.type && typeof params.type != "number") {
         throw new errors_1.ValidationError("INVALID TYPE");
     }
+    // Likewise the people in those rooms.
+    yield (0, callerScope_1.requireSameLine)(req, params.id);
     try {
         const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
         const limit = params.limit ? parseInt(params.limit) : 10;
@@ -260,6 +262,8 @@ const signatoryRegistry = (req, res) => __awaiter(void 0, void 0, void 0, functi
     if (!params.userId) {
         throw new errors_1.ValidationError("MISSING_USER_ID");
     }
+    // This is the caller's own room registration, not a lookup service.
+    yield (0, callerScope_1.requireSelf)(req, params.userId);
     try {
         const [roomRegistration, signatory, room] = yield prisma_1.prisma.$transaction([
             prisma_1.prisma.roomRegistration.findFirst({
@@ -578,6 +582,9 @@ const archives = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     if (!params.id) {
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
     }
+    // The archive is a municipal record: it belongs to a line, and the
+    // line comes from the caller rather than the query string.
+    yield (0, callerScope_1.requireSameLine)(req, params.id);
     try {
         const limit = params.limit ? parseInt(params.limit, 10) : 20;
         const q = (_a = params.query) === null || _a === void 0 ? void 0 : _a.trim();
@@ -655,6 +662,9 @@ exports.archives = archives;
 const searchArchiveDocsAI = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p;
     const params = req.query;
+    // The archive is a municipal record: it belongs to a line, and the
+    // line comes from the caller rather than the query string.
+    yield (0, callerScope_1.requireSameLine)(req, params.id);
     try {
         const limit = params.limit ? parseInt(params.limit, 10) : 20;
         // Accept either `offset` or `lastCursor` (treated as a stringified offset)
@@ -870,6 +880,9 @@ exports.searchArchiveDocsAI = searchArchiveDocsAI;
 const searchArchiveDocs = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     var _a;
     const params = req.query;
+    // The archive is a municipal record: it belongs to a line, and the
+    // line comes from the caller rather than the query string.
+    yield (0, callerScope_1.requireSameLine)(req, params.id);
     try {
         const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
         const limit = params.limit ? parseInt(params.limit, 10) : 20;
@@ -1096,6 +1109,8 @@ const rooms = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     const params = req.query;
     if (!params.id)
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
+    // A municipality's room list is its own.
+    yield (0, callerScope_1.requireSameLine)(req, params.id);
     try {
         const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
         const limit = params.limit ? parseInt(params.limit, 10) : 20;
@@ -1147,6 +1162,15 @@ const room = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     const params = req.query;
     if (!params.id)
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
+    {
+        const r = yield prisma_1.prisma.receivingRoom.findUnique({
+            where: { id: params.id },
+            select: { lineId: true },
+        });
+        if (!r)
+            throw new errors_1.NotFoundError("ROOM NOT FOUND");
+        yield (0, callerScope_1.requireSameLine)(req, r.lineId);
+    }
     try {
         const response = yield prisma_1.prisma.receivingRoom.findUnique({
             where: { id: params.id },
@@ -1250,6 +1274,15 @@ const updateRoomStatus = (req, res) => __awaiter(void 0, void 0, void 0, functio
     if (!body.id || !body.lineId || !body.userId) {
         throw new Error("INVALID REQUIRED ID");
     }
+    {
+        const r = yield prisma_1.prisma.receivingRoom.findUnique({
+            where: { id: body.id },
+            select: { lineId: true },
+        });
+        if (!r)
+            throw new errors_1.NotFoundError("ROOM NOT FOUND");
+        yield (0, callerScope_1.requireSameLine)(req, r.lineId);
+    }
     try {
         const response = yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
             const updatedRoom = yield tx.receivingRoom.update({
@@ -1287,6 +1320,17 @@ const archiveDetail = (req, res) => __awaiter(void 0, void 0, void 0, function* 
     const params = req.query;
     if (!params.id)
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
+    // Addressed by document id, so the line has to be read off the
+    // record before it can be checked — an id is not a permission.
+    {
+        const rec = yield prisma_1.prisma.archiveDocument.findUnique({
+            where: { id: params.id },
+            select: { lineId: true },
+        });
+        if (!rec)
+            throw new errors_1.NotFoundError("NOT FOUND");
+        yield (0, callerScope_1.requireSameLine)(req, rec.lineId);
+    }
     try {
         const response = yield prisma_1.prisma.archiveDocument.findUnique({
             where: { id: params.id },
@@ -1356,6 +1400,9 @@ const removeArchive = (req, res) => __awaiter(void 0, void 0, void 0, function* 
     const params = req.query;
     if (!params.id || !params.userId || !params.lineId)
         throw new errors_1.ValidationError("INVALID REQUIRED IDS");
+    // Deleting a municipal record: the caller's own line, and the actor on
+    // the log is the token's rather than the query's.
+    yield (0, callerScope_1.requireSameLine)(req, params.lineId);
     try {
         const result = yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
             var _a, _b, _c;
@@ -1414,6 +1461,17 @@ const downloadArchiveFile = (req, res) => __awaiter(void 0, void 0, void 0, func
     const params = req.query;
     if (!params.id)
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
+    // Addressed by document id, so the line has to be read off the
+    // record before it can be checked — an id is not a permission.
+    {
+        const rec = yield prisma_1.prisma.archiveDocument.findUnique({
+            where: { id: params.id },
+            select: { lineId: true },
+        });
+        if (!rec)
+            throw new errors_1.NotFoundError("NOT FOUND");
+        yield (0, callerScope_1.requireSameLine)(req, rec.lineId);
+    }
     try {
         const response = yield prisma_1.prisma.archiveDocument.findUnique({
             where: {

@@ -2,7 +2,7 @@ import { FastifyRequest, FastifyReply } from "../barrel/fastify";
 import { Prisma, prisma } from "../barrel/prisma";
 import { AppError, NotFoundError, ValidationError } from "../errors/errors";
 import { embeddingService } from "../service/Embedding";
-import { requireSameLine } from "../service/callerScope";
+import { requireSameLine, requireSelf } from "../service/callerScope";
 import { createUserNotification } from "../service/notificationEvents";
 
 export const addDocument = async (req: FastifyRequest, res: FastifyReply) => {
@@ -112,6 +112,8 @@ export const authorizedUsers = async (
     throw new ValidationError("INVALID TYPE");
   }
 
+  // Likewise the people in those rooms.
+  await requireSameLine(req, params.id);
   try {
     const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
     const limit = params.limit ? parseInt(params.limit) : 10;
@@ -251,6 +253,8 @@ export const signatoryRegistry = async (
   if (!params.userId) {
     throw new ValidationError("MISSING_USER_ID");
   }
+  // This is the caller's own room registration, not a lookup service.
+  await requireSelf(req, params.userId);
   try {
     const [roomRegistration, signatory, room] = await prisma.$transaction([
       prisma.roomRegistration.findFirst({
@@ -608,6 +612,9 @@ export const archives = async (req: FastifyRequest, res: FastifyReply) => {
     throw new ValidationError("INVALID REQUIRED ID");
   }
 
+  // The archive is a municipal record: it belongs to a line, and the
+  // line comes from the caller rather than the query string.
+  await requireSameLine(req, params.id);
   try {
     const limit = params.limit ? parseInt(params.limit, 10) : 20;
     const q = params.query?.trim();
@@ -697,6 +704,9 @@ export const searchArchiveDocsAI = async (
     offset?: string;
   };
 
+  // The archive is a municipal record: it belongs to a line, and the
+  // line comes from the caller rather than the query string.
+  await requireSameLine(req, params.id);
   try {
     const limit = params.limit ? parseInt(params.limit, 10) : 20;
     // Accept either `offset` or `lastCursor` (treated as a stringified offset)
@@ -927,6 +937,9 @@ export const searchArchiveDocs = async (
 ) => {
   const params = req.query as PagingProps & { query?: string };
 
+  // The archive is a municipal record: it belongs to a line, and the
+  // line comes from the caller rather than the query string.
+  await requireSameLine(req, params.id);
   try {
     const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
     const limit = params.limit ? parseInt(params.limit, 10) : 20;
@@ -1154,6 +1167,8 @@ export const rooms = async (req: FastifyRequest, res: FastifyReply) => {
   const params = req.query as PagingProps;
   if (!params.id) throw new ValidationError("INVALID REQUIRED ID");
 
+  // A municipality's room list is its own.
+  await requireSameLine(req, params.id);
   try {
     const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
     const limit = params.limit ? parseInt(params.limit, 10) : 20;
@@ -1208,6 +1223,14 @@ export const room = async (req: FastifyRequest, res: FastifyReply) => {
   const params = req.query as { id: string };
   if (!params.id) throw new ValidationError("INVALID REQUIRED ID");
 
+  {
+    const r = await prisma.receivingRoom.findUnique({
+      where: { id: params.id },
+      select: { lineId: true },
+    });
+    if (!r) throw new NotFoundError("ROOM NOT FOUND");
+    await requireSameLine(req, r.lineId);
+  }
   try {
     const response = await prisma.receivingRoom.findUnique({
       where: { id: params.id },
@@ -1324,6 +1347,14 @@ export const updateRoomStatus = async (
     throw new Error("INVALID REQUIRED ID");
   }
 
+  {
+    const r = await prisma.receivingRoom.findUnique({
+      where: { id: body.id },
+      select: { lineId: true },
+    });
+    if (!r) throw new NotFoundError("ROOM NOT FOUND");
+    await requireSameLine(req, r.lineId);
+  }
   try {
     const response = await prisma.$transaction(async (tx) => {
       const updatedRoom = await tx.receivingRoom.update({
@@ -1366,6 +1397,16 @@ export const archiveDetail = async (req: FastifyRequest, res: FastifyReply) => {
 
   if (!params.id) throw new ValidationError("INVALID REQUIRED ID");
 
+  // Addressed by document id, so the line has to be read off the
+  // record before it can be checked — an id is not a permission.
+  {
+    const rec = await prisma.archiveDocument.findUnique({
+      where: { id: params.id },
+      select: { lineId: true },
+    });
+    if (!rec) throw new NotFoundError("NOT FOUND");
+    await requireSameLine(req, rec.lineId);
+  }
   try {
     const response = await prisma.archiveDocument.findUnique({
       where: { id: params.id },
@@ -1439,6 +1480,9 @@ export const removeArchive = async (req: FastifyRequest, res: FastifyReply) => {
   if (!params.id || !params.userId || !params.lineId)
     throw new ValidationError("INVALID REQUIRED IDS");
 
+  // Deleting a municipal record: the caller's own line, and the actor on
+  // the log is the token's rather than the query's.
+  await requireSameLine(req, params.lineId);
   try {
     const result = await prisma.$transaction(async (tx) => {
       const existing = await tx.archiveDocument.findUnique({
@@ -1502,6 +1546,16 @@ export const downloadArchiveFile = async (
 
   if (!params.id) throw new ValidationError("INVALID REQUIRED ID");
 
+  // Addressed by document id, so the line has to be read off the
+  // record before it can be checked — an id is not a permission.
+  {
+    const rec = await prisma.archiveDocument.findUnique({
+      where: { id: params.id },
+      select: { lineId: true },
+    });
+    if (!rec) throw new NotFoundError("NOT FOUND");
+    await requireSameLine(req, rec.lineId);
+  }
   try {
     const response = await prisma.archiveDocument.findUnique({
       where: {

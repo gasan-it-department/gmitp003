@@ -15,6 +15,7 @@
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
 import { prisma, Prisma } from "../barrel/prisma";
 import { AppError, NotFoundError, ValidationError } from "../errors/errors";
+import { requireSelf } from "../service/callerScope";
 
 const MAX_DOC_BYTES = 25 * 1024 * 1024; // 25 MB
 
@@ -54,7 +55,10 @@ export const selfSignUpload = async (
       throw new ValidationError("FILE EXCEEDS 25MB LIMIT");
     }
     const { userId, lineId, title } = fields;
-    if (!userId || !lineId) {
+    // The uploaded document is stamped with an owner, and that owner is
+    // whoever is signed in — not a name posted alongside the file.
+    const { actorId } = await requireSelf(req, userId);
+    if (!lineId) {
       throw new ValidationError("INVALID REQUIRED FIELDS");
     }
 
@@ -64,7 +68,7 @@ export const selfSignUpload = async (
           title: title || upload!.fileName.replace(/\.pdf$/i, ""),
           size: upload!.buffer.length,
           lineId,
-          userId,
+          userId: actorId,
           docType: 0,
           type: 9, // 9 = self-sign (distinct from dissemination docs)
           original: 1,
@@ -136,6 +140,12 @@ export const selfSignSavePlacements = async (
     throw new ValidationError("INVALID REQUIRED FIELDS");
   }
 
+  // Self Sign documents are private: one owner, nobody else. Every one of
+  // these handlers took the userId from the request, so the ownership
+  // checks below were circular — an attacker supplied both sides of the
+  // comparison and it agreed with itself. Taking the id from the token
+  // instead is the whole fix; the checks that follow were always right.
+  const { actorId } = await requireSelf(req, (req.body as { userId?: string })?.userId);
   try {
     await prisma.$transaction(async (tx) => {
       const doc = await tx.document.findUnique({
@@ -143,7 +153,7 @@ export const selfSignSavePlacements = async (
         select: { id: true, userId: true },
       });
       if (!doc) throw new NotFoundError("Document not found");
-      if (doc.userId !== body.userId) {
+      if (doc.userId !== actorId) {
         throw new ValidationError("Not the document owner.");
       }
 
@@ -152,7 +162,7 @@ export const selfSignSavePlacements = async (
         select: { id: true, userId: true, status: true },
       });
       if (!arr) throw new NotFoundError("Arrangement not found");
-      if (arr.userId !== body.userId) {
+      if (arr.userId !== actorId) {
         throw new ValidationError("Not the arrangement owner.");
       }
       if (arr.status !== 0) {
@@ -225,10 +235,16 @@ export const selfSignAll = async (req: FastifyRequest, res: FastifyReply) => {
     signatureId?: string | null;
     geo?: { lat: number; lng: number; accuracy?: number | null } | null;
   };
-  if (!body.arrangementId || !body.userId) {
+  if (!body.arrangementId) {
     throw new ValidationError("INVALID REQUIRED FIELDS");
   }
 
+  // Self Sign documents are private: one owner, nobody else. Every one of
+  // these handlers took the userId from the request, so the ownership
+  // checks below were circular — an attacker supplied both sides of the
+  // comparison and it agreed with itself. Taking the id from the token
+  // instead is the whole fix; the checks that follow were always right.
+  const { actorId } = await requireSelf(req, (req.body as { userId?: string })?.userId);
   try {
     const result = await prisma.$transaction(async (tx) => {
       const arr = await tx.signatoryArrangement.findUnique({
@@ -236,7 +252,7 @@ export const selfSignAll = async (req: FastifyRequest, res: FastifyReply) => {
         select: { id: true, userId: true, status: true, sign: { select: { id: true } } },
       });
       if (!arr) throw new NotFoundError("Arrangement not found");
-      if (arr.userId !== body.userId) {
+      if (arr.userId !== actorId) {
         throw new ValidationError("Not your arrangement.");
       }
       if (arr.status !== 0) {
@@ -253,7 +269,7 @@ export const selfSignAll = async (req: FastifyRequest, res: FastifyReply) => {
       let sig: { id: string } | null = null;
       if (body.signatureId) {
         sig = await tx.signature.findFirst({
-          where: { id: body.signatureId, userId: body.userId },
+          where: { id: body.signatureId, userId: actorId },
           select: { id: true },
         });
         if (!sig) {
@@ -263,7 +279,7 @@ export const selfSignAll = async (req: FastifyRequest, res: FastifyReply) => {
         }
       } else {
         sig = await tx.signature.findFirst({
-          where: { userId: body.userId, active: true },
+          where: { userId: actorId, active: true },
           select: { id: true },
         });
         if (!sig) {
@@ -310,10 +326,16 @@ export const selfSignUnsign = async (
   res: FastifyReply,
 ) => {
   const body = req.body as { arrangementId: string; userId: string };
-  if (!body.arrangementId || !body.userId) {
+  if (!body.arrangementId) {
     throw new ValidationError("INVALID REQUIRED FIELDS");
   }
 
+  // Self Sign documents are private: one owner, nobody else. Every one of
+  // these handlers took the userId from the request, so the ownership
+  // checks below were circular — an attacker supplied both sides of the
+  // comparison and it agreed with itself. Taking the id from the token
+  // instead is the whole fix; the checks that follow were always right.
+  const { actorId } = await requireSelf(req, (req.body as { userId?: string })?.userId);
   try {
     await prisma.$transaction(async (tx) => {
       const arr = await tx.signatoryArrangement.findUnique({
@@ -326,7 +348,7 @@ export const selfSignUnsign = async (
         },
       });
       if (!arr) throw new NotFoundError("Arrangement not found");
-      if (arr.userId !== body.userId) {
+      if (arr.userId !== actorId) {
         throw new ValidationError("Not your arrangement.");
       }
       if (arr.status !== 1) {
@@ -383,9 +405,15 @@ export const selfSignList = async (
     lastCursor?: string | null;
     limit?: string;
   };
-  if (!params.userId || !params.lineId) {
+  if (!params.lineId) {
     throw new ValidationError("INVALID REQUIRED FIELDS");
   }
+  // Self Sign documents are private: one owner, nobody else. Every one of
+  // these handlers took the userId from the request, so the ownership
+  // checks below were circular — an attacker supplied both sides of the
+  // comparison and it agreed with itself. Taking the id from the token
+  // instead is the whole fix; the checks that follow were always right.
+  const { actorId } = await requireSelf(req, (req.query as { userId?: string })?.userId);
   try {
     const limit = params.limit ? parseInt(params.limit, 10) : 20;
     const cursor =
@@ -395,7 +423,7 @@ export const selfSignList = async (
 
     const rows = await prisma.document.findMany({
       where: {
-        userId: params.userId,
+        userId: actorId,
         lineId: params.lineId,
         signatureQueueRoomId: null,
         type: 9,
@@ -458,9 +486,15 @@ export const selfSignDetail = async (
   res: FastifyReply,
 ) => {
   const params = req.query as { id: string; userId: string };
-  if (!params.id || !params.userId) {
+  if (!params.id) {
     throw new ValidationError("INVALID REQUIRED FIELDS");
   }
+  // Self Sign documents are private: one owner, nobody else. Every one of
+  // these handlers took the userId from the request, so the ownership
+  // checks below were circular — an attacker supplied both sides of the
+  // comparison and it agreed with itself. Taking the id from the token
+  // instead is the whole fix; the checks that follow were always right.
+  const { actorId } = await requireSelf(req, (req.query as { userId?: string })?.userId);
   try {
     const doc = await prisma.document.findUnique({
       where: { id: params.id },
@@ -486,7 +520,7 @@ export const selfSignDetail = async (
       },
     });
     if (!doc) throw new NotFoundError("Document not found");
-    if (doc.userId !== params.userId) {
+    if (doc.userId !== actorId) {
       throw new ValidationError("Not the document owner.");
     }
     // Pull the single self-sign arrangement (placements bind to it).
@@ -507,7 +541,7 @@ export const selfSignDetail = async (
     } | null = null;
     if (arrIds.length > 0) {
       const row = await prisma.signatoryArrangement.findFirst({
-        where: { id: { in: arrIds }, userId: params.userId },
+        where: { id: { in: arrIds }, userId: actorId },
         select: { id: true, status: true, signedAt: true, signatureId: true },
       });
       arrangement = row ?? null;
@@ -516,7 +550,7 @@ export const selfSignDetail = async (
       // Fallback: find the user's own arrangement for this doc even when
       // no placements exist yet (just-uploaded state).
       arrangement = await prisma.signatoryArrangement.findFirst({
-        where: { userId: params.userId, signatureQueueRoomId: null },
+        where: { userId: actorId, signatureQueueRoomId: null },
         orderBy: { timestamp: "desc" },
         select: { id: true, status: true, signedAt: true, signatureId: true },
       });
@@ -542,7 +576,7 @@ export const selfSignDetail = async (
     } | null = null;
     if (arrangement?.signatureId) {
       sigRow = await prisma.signature.findFirst({
-        where: { id: arrangement.signatureId, userId: params.userId },
+        where: { id: arrangement.signatureId, userId: actorId },
         select: {
           signature: true,
           inkHeightPt: true,
@@ -556,7 +590,7 @@ export const selfSignDetail = async (
     }
     if (!sigRow) {
       sigRow = await prisma.signature.findFirst({
-        where: { userId: params.userId },
+        where: { userId: actorId },
         orderBy: [{ active: "desc" }, { timestamp: "desc" }],
         select: {
           signature: true,
@@ -642,9 +676,15 @@ export const selfSignArchive = async (
   res: FastifyReply,
 ) => {
   const body = req.body as { documentId: string; userId: string };
-  if (!body.documentId || !body.userId) {
+  if (!body.documentId) {
     throw new ValidationError("INVALID REQUIRED FIELDS");
   }
+  // Self Sign documents are private: one owner, nobody else. Every one of
+  // these handlers took the userId from the request, so the ownership
+  // checks below were circular — an attacker supplied both sides of the
+  // comparison and it agreed with itself. Taking the id from the token
+  // instead is the whole fix; the checks that follow were always right.
+  const { actorId } = await requireSelf(req, (req.body as { userId?: string })?.userId);
   try {
     const result = await prisma.$transaction(async (tx) => {
       const doc = await tx.document.findUnique({
@@ -668,7 +708,7 @@ export const selfSignArchive = async (
         },
       });
       if (!doc) throw new NotFoundError("Document not found");
-      if (doc.userId !== body.userId) {
+      if (doc.userId !== actorId) {
         throw new ValidationError("Not the document owner.");
       }
       // Must have at least one signed arrangement attached.
@@ -686,7 +726,7 @@ export const selfSignArchive = async (
       const room = await tx.receivingRoom.findFirst({
         where: {
           lineId: doc.lineId,
-          authorizedUser: { some: { userId: body.userId } },
+          authorizedUser: { some: { userId: actorId } },
         },
         select: { id: true },
       });
@@ -718,9 +758,15 @@ export const selfSignRemove = async (
   res: FastifyReply,
 ) => {
   const params = req.query as { id: string; userId: string };
-  if (!params.id || !params.userId) {
+  if (!params.id) {
     throw new ValidationError("INVALID REQUIRED FIELDS");
   }
+  // Self Sign documents are private: one owner, nobody else. Every one of
+  // these handlers took the userId from the request, so the ownership
+  // checks below were circular — an attacker supplied both sides of the
+  // comparison and it agreed with itself. Taking the id from the token
+  // instead is the whole fix; the checks that follow were always right.
+  const { actorId } = await requireSelf(req, (req.query as { userId?: string })?.userId);
   try {
     const doc = await prisma.document.findUnique({
       where: { id: params.id },
@@ -737,7 +783,7 @@ export const selfSignRemove = async (
       },
     });
     if (!doc) throw new NotFoundError("Document not found");
-    if (doc.userId !== params.userId) {
+    if (doc.userId !== actorId) {
       throw new ValidationError("Not the document owner.");
     }
     const isSigned = doc.pages

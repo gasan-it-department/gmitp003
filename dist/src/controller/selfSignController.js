@@ -32,6 +32,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.selfSignRemove = exports.selfSignArchive = exports.selfSignDetail = exports.selfSignList = exports.selfSignUnsign = exports.selfSignAll = exports.selfSignSavePlacements = exports.selfSignUpload = void 0;
 const prisma_1 = require("../barrel/prisma");
 const errors_1 = require("../errors/errors");
+const callerScope_1 = require("../service/callerScope");
 const MAX_DOC_BYTES = 25 * 1024 * 1024; // 25 MB
 // ─── Upload ────────────────────────────────────────────────────────────
 const selfSignUpload = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
@@ -91,7 +92,10 @@ const selfSignUpload = (req, res) => __awaiter(void 0, void 0, void 0, function*
             throw new errors_1.ValidationError("FILE EXCEEDS 25MB LIMIT");
         }
         const { userId, lineId, title } = fields;
-        if (!userId || !lineId) {
+        // The uploaded document is stamped with an owner, and that owner is
+        // whoever is signed in — not a name posted alongside the file.
+        const { actorId } = yield (0, callerScope_1.requireSelf)(req, userId);
+        if (!lineId) {
             throw new errors_1.ValidationError("INVALID REQUIRED FIELDS");
         }
         const result = yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
@@ -100,7 +104,7 @@ const selfSignUpload = (req, res) => __awaiter(void 0, void 0, void 0, function*
                     title: title || upload.fileName.replace(/\.pdf$/i, ""),
                     size: upload.buffer.length,
                     lineId,
-                    userId,
+                    userId: actorId,
                     docType: 0,
                     type: 9, // 9 = self-sign (distinct from dissemination docs)
                     original: 1,
@@ -150,12 +154,19 @@ exports.selfSignUpload = selfSignUpload;
 // the document and recreates them from the payload. Auto-saved by the
 // frontend on every box change.
 const selfSignSavePlacements = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a;
     const body = req.body;
     if (!body.documentId ||
         !body.arrangementId ||
         !Array.isArray(body.placements)) {
         throw new errors_1.ValidationError("INVALID REQUIRED FIELDS");
     }
+    // Self Sign documents are private: one owner, nobody else. Every one of
+    // these handlers took the userId from the request, so the ownership
+    // checks below were circular — an attacker supplied both sides of the
+    // comparison and it agreed with itself. Taking the id from the token
+    // instead is the whole fix; the checks that follow were always right.
+    const { actorId } = yield (0, callerScope_1.requireSelf)(req, (_a = req.body) === null || _a === void 0 ? void 0 : _a.userId);
     try {
         yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
             const doc = yield tx.document.findUnique({
@@ -164,7 +175,7 @@ const selfSignSavePlacements = (req, res) => __awaiter(void 0, void 0, void 0, f
             });
             if (!doc)
                 throw new errors_1.NotFoundError("Document not found");
-            if (doc.userId !== body.userId) {
+            if (doc.userId !== actorId) {
                 throw new errors_1.ValidationError("Not the document owner.");
             }
             const arr = yield tx.signatoryArrangement.findUnique({
@@ -173,7 +184,7 @@ const selfSignSavePlacements = (req, res) => __awaiter(void 0, void 0, void 0, f
             });
             if (!arr)
                 throw new errors_1.NotFoundError("Arrangement not found");
-            if (arr.userId !== body.userId) {
+            if (arr.userId !== actorId) {
                 throw new errors_1.ValidationError("Not the arrangement owner.");
             }
             if (arr.status !== 0) {
@@ -234,10 +245,17 @@ const selfSignSavePlacements = (req, res) => __awaiter(void 0, void 0, void 0, f
 exports.selfSignSavePlacements = selfSignSavePlacements;
 // ─── Sign all in one click ─────────────────────────────────────────────
 const selfSignAll = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a;
     const body = req.body;
-    if (!body.arrangementId || !body.userId) {
+    if (!body.arrangementId) {
         throw new errors_1.ValidationError("INVALID REQUIRED FIELDS");
     }
+    // Self Sign documents are private: one owner, nobody else. Every one of
+    // these handlers took the userId from the request, so the ownership
+    // checks below were circular — an attacker supplied both sides of the
+    // comparison and it agreed with itself. Taking the id from the token
+    // instead is the whole fix; the checks that follow were always right.
+    const { actorId } = yield (0, callerScope_1.requireSelf)(req, (_a = req.body) === null || _a === void 0 ? void 0 : _a.userId);
     try {
         const result = yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
             var _a, _b, _c, _d, _e, _f;
@@ -247,7 +265,7 @@ const selfSignAll = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
             });
             if (!arr)
                 throw new errors_1.NotFoundError("Arrangement not found");
-            if (arr.userId !== body.userId) {
+            if (arr.userId !== actorId) {
                 throw new errors_1.ValidationError("Not your arrangement.");
             }
             if (arr.status !== 0) {
@@ -261,7 +279,7 @@ const selfSignAll = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
             let sig = null;
             if (body.signatureId) {
                 sig = yield tx.signature.findFirst({
-                    where: { id: body.signatureId, userId: body.userId },
+                    where: { id: body.signatureId, userId: actorId },
                     select: { id: true },
                 });
                 if (!sig) {
@@ -270,7 +288,7 @@ const selfSignAll = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
             }
             else {
                 sig = yield tx.signature.findFirst({
-                    where: { userId: body.userId, active: true },
+                    where: { userId: actorId, active: true },
                     select: { id: true },
                 });
                 if (!sig) {
@@ -312,10 +330,17 @@ exports.selfSignAll = selfSignAll;
 // metadata cleared. Blocked once the doc is archived — the archive entry
 // asserts "this doc is signed", so it must be removed first.
 const selfSignUnsign = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a;
     const body = req.body;
-    if (!body.arrangementId || !body.userId) {
+    if (!body.arrangementId) {
         throw new errors_1.ValidationError("INVALID REQUIRED FIELDS");
     }
+    // Self Sign documents are private: one owner, nobody else. Every one of
+    // these handlers took the userId from the request, so the ownership
+    // checks below were circular — an attacker supplied both sides of the
+    // comparison and it agreed with itself. Taking the id from the token
+    // instead is the whole fix; the checks that follow were always right.
+    const { actorId } = yield (0, callerScope_1.requireSelf)(req, (_a = req.body) === null || _a === void 0 ? void 0 : _a.userId);
     try {
         yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
             const arr = yield tx.signatoryArrangement.findUnique({
@@ -329,7 +354,7 @@ const selfSignUnsign = (req, res) => __awaiter(void 0, void 0, void 0, function*
             });
             if (!arr)
                 throw new errors_1.NotFoundError("Arrangement not found");
-            if (arr.userId !== body.userId) {
+            if (arr.userId !== actorId) {
                 throw new errors_1.ValidationError("Not your arrangement.");
             }
             if (arr.status !== 1) {
@@ -375,10 +400,17 @@ const selfSignUnsign = (req, res) => __awaiter(void 0, void 0, void 0, function*
 exports.selfSignUnsign = selfSignUnsign;
 // ─── List self-signed docs (history) ───────────────────────────────────
 const selfSignList = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a;
     const params = req.query;
-    if (!params.userId || !params.lineId) {
+    if (!params.lineId) {
         throw new errors_1.ValidationError("INVALID REQUIRED FIELDS");
     }
+    // Self Sign documents are private: one owner, nobody else. Every one of
+    // these handlers took the userId from the request, so the ownership
+    // checks below were circular — an attacker supplied both sides of the
+    // comparison and it agreed with itself. Taking the id from the token
+    // instead is the whole fix; the checks that follow were always right.
+    const { actorId } = yield (0, callerScope_1.requireSelf)(req, (_a = req.query) === null || _a === void 0 ? void 0 : _a.userId);
     try {
         const limit = params.limit ? parseInt(params.limit, 10) : 20;
         const cursor = params.lastCursor && params.lastCursor !== "null"
@@ -386,7 +418,7 @@ const selfSignList = (req, res) => __awaiter(void 0, void 0, void 0, function* (
             : undefined;
         const rows = yield prisma_1.prisma.document.findMany({
             where: {
-                userId: params.userId,
+                userId: actorId,
                 lineId: params.lineId,
                 signatureQueueRoomId: null,
                 type: 9,
@@ -444,10 +476,17 @@ const selfSignList = (req, res) => __awaiter(void 0, void 0, void 0, function* (
 exports.selfSignList = selfSignList;
 // ─── Get a single self-sign doc (for the editor) ───────────────────────
 const selfSignDetail = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a;
     const params = req.query;
-    if (!params.id || !params.userId) {
+    if (!params.id) {
         throw new errors_1.ValidationError("INVALID REQUIRED FIELDS");
     }
+    // Self Sign documents are private: one owner, nobody else. Every one of
+    // these handlers took the userId from the request, so the ownership
+    // checks below were circular — an attacker supplied both sides of the
+    // comparison and it agreed with itself. Taking the id from the token
+    // instead is the whole fix; the checks that follow were always right.
+    const { actorId } = yield (0, callerScope_1.requireSelf)(req, (_a = req.query) === null || _a === void 0 ? void 0 : _a.userId);
     try {
         const doc = yield prisma_1.prisma.document.findUnique({
             where: { id: params.id },
@@ -474,7 +513,7 @@ const selfSignDetail = (req, res) => __awaiter(void 0, void 0, void 0, function*
         });
         if (!doc)
             throw new errors_1.NotFoundError("Document not found");
-        if (doc.userId !== params.userId) {
+        if (doc.userId !== actorId) {
             throw new errors_1.ValidationError("Not the document owner.");
         }
         // Pull the single self-sign arrangement (placements bind to it).
@@ -484,7 +523,7 @@ const selfSignDetail = (req, res) => __awaiter(void 0, void 0, void 0, function*
         let arrangement = null;
         if (arrIds.length > 0) {
             const row = yield prisma_1.prisma.signatoryArrangement.findFirst({
-                where: { id: { in: arrIds }, userId: params.userId },
+                where: { id: { in: arrIds }, userId: actorId },
                 select: { id: true, status: true, signedAt: true, signatureId: true },
             });
             arrangement = row !== null && row !== void 0 ? row : null;
@@ -493,7 +532,7 @@ const selfSignDetail = (req, res) => __awaiter(void 0, void 0, void 0, function*
             // Fallback: find the user's own arrangement for this doc even when
             // no placements exist yet (just-uploaded state).
             arrangement = yield prisma_1.prisma.signatoryArrangement.findFirst({
-                where: { userId: params.userId, signatureQueueRoomId: null },
+                where: { userId: actorId, signatureQueueRoomId: null },
                 orderBy: { timestamp: "desc" },
                 select: { id: true, status: true, signedAt: true, signatureId: true },
             });
@@ -510,7 +549,7 @@ const selfSignDetail = (req, res) => __awaiter(void 0, void 0, void 0, function*
         let sigRow = null;
         if (arrangement === null || arrangement === void 0 ? void 0 : arrangement.signatureId) {
             sigRow = yield prisma_1.prisma.signature.findFirst({
-                where: { id: arrangement.signatureId, userId: params.userId },
+                where: { id: arrangement.signatureId, userId: actorId },
                 select: {
                     signature: true,
                     inkHeightPt: true,
@@ -524,7 +563,7 @@ const selfSignDetail = (req, res) => __awaiter(void 0, void 0, void 0, function*
         }
         if (!sigRow) {
             sigRow = yield prisma_1.prisma.signature.findFirst({
-                where: { userId: params.userId },
+                where: { userId: actorId },
                 orderBy: [{ active: "desc" }, { timestamp: "desc" }],
                 select: {
                     signature: true,
@@ -604,10 +643,17 @@ const selfSignDetail = (req, res) => __awaiter(void 0, void 0, void 0, function*
 exports.selfSignDetail = selfSignDetail;
 // ─── Archive a signed self-sign doc to the room archive ────────────────
 const selfSignArchive = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a;
     const body = req.body;
-    if (!body.documentId || !body.userId) {
+    if (!body.documentId) {
         throw new errors_1.ValidationError("INVALID REQUIRED FIELDS");
     }
+    // Self Sign documents are private: one owner, nobody else. Every one of
+    // these handlers took the userId from the request, so the ownership
+    // checks below were circular — an attacker supplied both sides of the
+    // comparison and it agreed with itself. Taking the id from the token
+    // instead is the whole fix; the checks that follow were always right.
+    const { actorId } = yield (0, callerScope_1.requireSelf)(req, (_a = req.body) === null || _a === void 0 ? void 0 : _a.userId);
     try {
         const result = yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
             var _a;
@@ -633,7 +679,7 @@ const selfSignArchive = (req, res) => __awaiter(void 0, void 0, void 0, function
             });
             if (!doc)
                 throw new errors_1.NotFoundError("Document not found");
-            if (doc.userId !== body.userId) {
+            if (doc.userId !== actorId) {
                 throw new errors_1.ValidationError("Not the document owner.");
             }
             // Must have at least one signed arrangement attached.
@@ -649,7 +695,7 @@ const selfSignArchive = (req, res) => __awaiter(void 0, void 0, void 0, function
             const room = yield tx.receivingRoom.findFirst({
                 where: {
                     lineId: doc.lineId,
-                    authorizedUser: { some: { userId: body.userId } },
+                    authorizedUser: { some: { userId: actorId } },
                 },
                 select: { id: true },
             });
@@ -680,10 +726,17 @@ const selfSignArchive = (req, res) => __awaiter(void 0, void 0, void 0, function
 exports.selfSignArchive = selfSignArchive;
 // ─── Remove (only while unsigned) ──────────────────────────────────────
 const selfSignRemove = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a;
     const params = req.query;
-    if (!params.id || !params.userId) {
+    if (!params.id) {
         throw new errors_1.ValidationError("INVALID REQUIRED FIELDS");
     }
+    // Self Sign documents are private: one owner, nobody else. Every one of
+    // these handlers took the userId from the request, so the ownership
+    // checks below were circular — an attacker supplied both sides of the
+    // comparison and it agreed with itself. Taking the id from the token
+    // instead is the whole fix; the checks that follow were always right.
+    const { actorId } = yield (0, callerScope_1.requireSelf)(req, (_a = req.query) === null || _a === void 0 ? void 0 : _a.userId);
     try {
         const doc = yield prisma_1.prisma.document.findUnique({
             where: { id: params.id },
@@ -701,7 +754,7 @@ const selfSignRemove = (req, res) => __awaiter(void 0, void 0, void 0, function*
         });
         if (!doc)
             throw new errors_1.NotFoundError("Document not found");
-        if (doc.userId !== params.userId) {
+        if (doc.userId !== actorId) {
             throw new errors_1.ValidationError("Not the document owner.");
         }
         const isSigned = doc.pages
