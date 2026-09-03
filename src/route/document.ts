@@ -56,6 +56,7 @@ import {
   disseminationInbox,
   disseminationDetail,
   setTargetRooms,
+  acknowledgeReceipt,
   setSignatoryArrangement,
   finalizeDissemination,
   removeDissemination,
@@ -273,6 +274,11 @@ export const document = (fastify: FastifyInstance) => {
     "/document/dissemination/signatories/set",
     { preHandler: authenticated },
     setSignatoryArrangement,
+  );
+  fastify.patch(
+    "/document/dissemination/receipt",
+    { preHandler: authenticated },
+    acknowledgeReceipt,
   );
   fastify.patch(
     "/document/dissemination/finalize",

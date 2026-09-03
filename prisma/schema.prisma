@@ -1158,6 +1158,8 @@ model User {
   viewingBy                        ProfileView[]                    @relation("viewingBy")
   Promotions                       Promotion[]
   roomAuthorizedUsers              RoomAuthorizedUser[]
+  /// Documents this person confirmed their office had received.
+  acknowledgedTargetRooms          TargetRoom[]              @relation("TargetRoomAcknowledger")
   roomRegistrations                RoomRegistration[]
   roomRegistrationReceivers        RoomRegistrationAuthorizedUser[]
   RoomRegistrationConversationFrom RoomRegistrationConversation[]   @relation("RoomRegistrationConversationFrom")
@@ -2120,9 +2122,27 @@ model TargetRoom {
   /// When the automatic release actually happened. Null while held, and the
   /// guard that makes releasing exactly-once.
   releasedAt           DateTime?
+  // ── Receipt ─────────────────────────────────────────────────────────
+  // Somebody in the receiving office confirming the document is in hand.
+  //
+  // NOT the same as `receivedAt` above, which is when the SYSTEM delivered
+  // it — stamped automatically at dispatch, or at release for a copy
+  // furnished row. Delivery is the system's word; this is a person's, and
+  // only the second one settles an argument about whether an office ever
+  // got the memo. Both are kept, because "sent at 9, acknowledged at 11"
+  // is the useful sentence.
+  /// When a receiver in the room confirmed it. Null = not yet acknowledged.
+  acknowledgedAt       DateTime?
+  /// Who confirmed it. Kept so the confirmation has a name against it.
+  acknowledgedById     String?
+  /// Optional remark from the office: "2 copies", "received by front desk".
+  acknowledgedNote     String?
+  acknowledgedBy       User?               @relation("TargetRoomAcknowledger", fields: [acknowledgedById], references: [id])
   roomReceiver         ReceivingRoom?      @relation(fields: [receivingRoomId], references: [id])
   queueRoom            SignatureQueueRoom? @relation(fields: [signatureQueueRoomId], references: [id])
   submittedDocuments   SubmittedDocument?  @relation(fields: [submittedDocumentId], references: [id])
+
+  @@index([receivingRoomId, acknowledgedAt])
 }
 
 model DocumentRoute {

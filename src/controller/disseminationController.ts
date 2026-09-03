@@ -20,6 +20,7 @@ import { createUserNotification } from "../service/notificationEvents";
 import { attestQueue, newSerial, seal } from "../service/documentSeal";
 import { tempURL } from "../service/url";
 import { callerUserId } from "../middleware/handler";
+import { ROOM_MEMBER_TYPES } from "./roomConfigController";
 import { placeSignature } from "../service/signaturePlacement";
 import {
   releaseCopyFurnished,
@@ -94,6 +95,9 @@ export const disseminationOutbox = async (
         targetRooms: {
           select: {
             id: true,
+            copyFurnished: true,
+            releasedAt: true,
+            acknowledgedAt: true,
             roomReceiver: { select: { id: true, code: true, address: true } },
           },
         },
@@ -169,6 +173,9 @@ export const disseminationInbox = async (
       cursor,
       orderBy: { timestamp: "desc" },
       include: {
+        acknowledgedBy: {
+          select: { id: true, firstName: true, lastName: true },
+        },
         queueRoom: {
           select: {
             id: true,
@@ -186,10 +193,27 @@ export const disseminationInbox = async (
       },
     });
 
+    // Whether the person reading this inbox is allowed to mark things
+    // received. Sent once for the page rather than per row, because it is
+    // a property of the reader and the room, not of any one document.
+    const actorId = await callerUserId(req);
+    const canAcknowledge = actorId
+      ? !!(await prisma.roomAuthorizedUser.findFirst({
+          where: {
+            receivingRoomId: params.toRoomId,
+            userId: actorId,
+            status: 1,
+            type: { in: [ROOM_MEMBER_TYPES.owner, ROOM_MEMBER_TYPES.receiver] },
+          },
+          select: { id: true },
+        }))
+      : false;
+
     const lastCursor = rows.length ? rows[rows.length - 1].id : null;
     const hasMore = rows.length === limit;
     return res.code(200).send({
       list: rows,
+      canAcknowledge,
       lastCursor,
       hasMore,
       debug: {
@@ -228,6 +252,11 @@ export const disseminationDetail = async (
             receivingRoomId: true,
             copyFurnished: true,
             releasedAt: true,
+            acknowledgedAt: true,
+            acknowledgedNote: true,
+            acknowledgedBy: {
+              select: { id: true, firstName: true, lastName: true },
+            },
             roomReceiver: {
               select: { id: true, code: true, address: true },
             },
@@ -1564,6 +1593,11 @@ export const viewDissemination = async (
             receivedAt: true,
             copyFurnished: true,
             releasedAt: true,
+            acknowledgedAt: true,
+            acknowledgedNote: true,
+            acknowledgedBy: {
+              select: { id: true, firstName: true, lastName: true },
+            },
             roomReceiver: { select: { id: true, code: true } },
           },
         },
@@ -3031,6 +3065,158 @@ export const verifySignatureData = async (
     if (error instanceof NotFoundError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError(error.message, 500, error.code);
+    }
+    throw error;
+  }
+};
+
+// ─── Receipt: an office confirming the document is in hand ─────────────
+//
+// Delivery and receipt are two different facts. The system stamps
+// `receivedAt` the moment it drops a document into a room, which proves
+// only that the system did its part. Whether anyone in that office
+// actually has it is a question only a person in that office can answer,
+// and it is the question that gets asked when something goes missing.
+//
+// So a receiver marks it received, their name goes on it, and the sender
+// can stop phoning to ask. They can correct it afterwards too — marking
+// the wrong row is exactly the mistake a busy front desk makes, and an
+// acknowledgement nobody can take back is worse than none.
+export const acknowledgeReceipt = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as {
+    targetRoomId: string;
+    /** true = mark received, false = undo a mistaken one. */
+    received?: boolean;
+    note?: string | null;
+  };
+  if (!body.targetRoomId) throw new ValidationError("INVALID REQUIRED ID");
+
+  const actorId = await callerUserId(req);
+  if (!actorId) throw new UnauthorizedError("Not signed in");
+
+  const received = body.received !== false;
+  const note = (body.note ?? "").trim().slice(0, 300) || null;
+
+  try {
+    const target = await prisma.targetRoom.findUnique({
+      where: { id: body.targetRoomId },
+      select: {
+        id: true,
+        receivingRoomId: true,
+        copyFurnished: true,
+        releasedAt: true,
+        acknowledgedAt: true,
+        acknowledgedById: true,
+        roomReceiver: { select: { id: true, code: true, lineId: true } },
+        queueRoom: {
+          select: { id: true, title: true, status: true, userId: true },
+        },
+      },
+    });
+    if (!target) throw new NotFoundError("Not found in your inbox");
+
+    // Nothing to acknowledge until it has actually been sent, and a
+    // copy-furnished room that is still held has not been given anything
+    // at all — it cannot even see the document yet.
+    if ((target.queueRoom?.status ?? 0) < 1) {
+      throw new ValidationError("This has not been dispatched yet.");
+    }
+    if (target.copyFurnished && target.releasedAt === null) {
+      throw new NotFoundError("Not found in your inbox");
+    }
+
+    // Only somebody who actually works in the receiving office, and only
+    // in a role whose job this is. A signatory signs; a receiver receives.
+    const membership = await prisma.roomAuthorizedUser.findFirst({
+      where: {
+        receivingRoomId: target.receivingRoomId ?? "",
+        userId: actorId,
+        status: 1,
+        type: { in: [ROOM_MEMBER_TYPES.owner, ROOM_MEMBER_TYPES.receiver] },
+      },
+      select: { id: true, type: true },
+    });
+    if (!membership) {
+      console.warn(
+        `[receipt] refused: user ${actorId} on room ${target.receivingRoomId}`,
+      );
+      throw new UnauthorizedError(
+        "Only a receiver or the owner of this office can mark it received.",
+      );
+    }
+
+    const now = new Date();
+    const updated = await prisma.$transaction(async (tx) => {
+      const row = await tx.targetRoom.update({
+        where: { id: target.id },
+        data: received
+          ? {
+              acknowledgedAt: target.acknowledgedAt ?? now,
+              acknowledgedById: actorId,
+              acknowledgedNote: note,
+            }
+          : {
+              acknowledgedAt: null,
+              acknowledgedById: null,
+              acknowledgedNote: null,
+            },
+        select: {
+          id: true,
+          acknowledgedAt: true,
+          acknowledgedNote: true,
+          acknowledgedBy: {
+            select: { id: true, firstName: true, lastName: true },
+          },
+        },
+      });
+
+      const lineId = target.roomReceiver?.lineId;
+      if (lineId) {
+        await tx.documentActivityLogs.create({
+          data: {
+            userId: actorId,
+            lineId,
+            title: received ? "Marked received" : "Undid a receipt",
+            desc:
+              `${target.roomReceiver?.code ?? "An office"} ` +
+              (received ? "received " : "un-marked ") +
+              `"${target.queueRoom?.title ?? target.queueRoom?.id}"` +
+              (received && note ? ` — ${note}` : ""),
+            action: received ? 1 : 0,
+          },
+        });
+      }
+
+      // The whole point is that the sender stops having to ask. Tell them
+      // about a correction too: they are relying on this record either way.
+      const sender = target.queueRoom?.userId;
+      if (sender && sender !== actorId) {
+        await createUserNotification(tx, {
+          recipientId: sender,
+          senderId: actorId,
+          title: received ? "Document received" : "Receipt withdrawn",
+          content: received
+            ? `${target.roomReceiver?.code ?? "An office"} marked ` +
+              `"${target.queueRoom?.title ?? "your document"}" as received.` +
+              (note ? ` Note: ${note}` : "")
+            : `${target.roomReceiver?.code ?? "An office"} withdrew its ` +
+              `receipt of "${target.queueRoom?.title ?? "your document"}".`,
+          path: `documents/dissemination?tab=outbox`,
+        });
+      }
+      return row;
+    });
+
+    return res.code(200).send({ message: "OK", target: updated });
+  } catch (error) {
+    if (error instanceof NotFoundError) throw error;
+    if (error instanceof ValidationError) throw error;
+    if (error instanceof UnauthorizedError) throw error;
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
     }
     throw error;
   }

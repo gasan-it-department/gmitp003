@@ -1570,7 +1570,10 @@ exports.TargetRoomScalarFieldEnum = {
     receivedAt: 'receivedAt',
     submittedDocumentId: 'submittedDocumentId',
     copyFurnished: 'copyFurnished',
-    releasedAt: 'releasedAt'
+    releasedAt: 'releasedAt',
+    acknowledgedAt: 'acknowledgedAt',
+    acknowledgedById: 'acknowledgedById',
+    acknowledgedNote: 'acknowledgedNote'
 };
 exports.DocumentRouteScalarFieldEnum = {
     id: 'id',

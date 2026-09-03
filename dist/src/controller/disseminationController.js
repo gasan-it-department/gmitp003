@@ -63,13 +63,14 @@ var __asyncValues = (this && this.__asyncValues) || function (o) {
     function settle(resolve, reject, d, v) { Promise.resolve(v).then(function(v) { resolve({ value: v, done: d }); }, reject); }
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.verifySignatureData = exports.verifySignaturePage = exports.cancelDispatchedDissemination = exports.downloadSignedDocument = exports.archiveDissemination = exports.claimSignatorySlot = exports.signMine = exports.viewDissemination = exports.resetRoomMembership = exports.documentOverview = exports.repairRoomMembership = exports.removeDisseminationDocument = exports.uploadDisseminationDocument = exports.saveSignaturePlacements = exports.streamDocumentFile = exports.disseminationDocuments = exports.signatoryCandidates = exports.targetRoomCandidates = exports.removeDissemination = exports.finalizeDissemination = exports.setSignatoryArrangement = exports.setTargetRooms = exports.disseminationDetail = exports.disseminationInbox = exports.disseminationOutbox = void 0;
+exports.acknowledgeReceipt = exports.verifySignatureData = exports.verifySignaturePage = exports.cancelDispatchedDissemination = exports.downloadSignedDocument = exports.archiveDissemination = exports.claimSignatorySlot = exports.signMine = exports.viewDissemination = exports.resetRoomMembership = exports.documentOverview = exports.repairRoomMembership = exports.removeDisseminationDocument = exports.uploadDisseminationDocument = exports.saveSignaturePlacements = exports.streamDocumentFile = exports.disseminationDocuments = exports.signatoryCandidates = exports.targetRoomCandidates = exports.removeDissemination = exports.finalizeDissemination = exports.setSignatoryArrangement = exports.setTargetRooms = exports.disseminationDetail = exports.disseminationInbox = exports.disseminationOutbox = void 0;
 const prisma_1 = require("../barrel/prisma");
 const errors_1 = require("../errors/errors");
 const notificationEvents_1 = require("../service/notificationEvents");
 const documentSeal_1 = require("../service/documentSeal");
 const url_1 = require("../service/url");
 const handler_1 = require("../middleware/handler");
+const roomConfigController_1 = require("./roomConfigController");
 const signaturePlacement_1 = require("../service/signaturePlacement");
 const copyFurnish_1 = require("../service/copyFurnish");
 /**
@@ -129,6 +130,9 @@ const disseminationOutbox = (req, res) => __awaiter(void 0, void 0, void 0, func
                 targetRooms: {
                     select: {
                         id: true,
+                        copyFurnished: true,
+                        releasedAt: true,
+                        acknowledgedAt: true,
                         roomReceiver: { select: { id: true, code: true, address: true } },
                     },
                 },
@@ -187,6 +191,9 @@ const disseminationInbox = (req, res) => __awaiter(void 0, void 0, void 0, funct
             cursor,
             orderBy: { timestamp: "desc" },
             include: {
+                acknowledgedBy: {
+                    select: { id: true, firstName: true, lastName: true },
+                },
                 queueRoom: {
                     select: {
                         id: true,
@@ -203,10 +210,26 @@ const disseminationInbox = (req, res) => __awaiter(void 0, void 0, void 0, funct
                 },
             },
         });
+        // Whether the person reading this inbox is allowed to mark things
+        // received. Sent once for the page rather than per row, because it is
+        // a property of the reader and the room, not of any one document.
+        const actorId = yield (0, handler_1.callerUserId)(req);
+        const canAcknowledge = actorId
+            ? !!(yield prisma_1.prisma.roomAuthorizedUser.findFirst({
+                where: {
+                    receivingRoomId: params.toRoomId,
+                    userId: actorId,
+                    status: 1,
+                    type: { in: [roomConfigController_1.ROOM_MEMBER_TYPES.owner, roomConfigController_1.ROOM_MEMBER_TYPES.receiver] },
+                },
+                select: { id: true },
+            }))
+            : false;
         const lastCursor = rows.length ? rows[rows.length - 1].id : null;
         const hasMore = rows.length === limit;
         return res.code(200).send({
             list: rows,
+            canAcknowledge,
             lastCursor,
             hasMore,
             debug: {
@@ -243,6 +266,11 @@ const disseminationDetail = (req, res) => __awaiter(void 0, void 0, void 0, func
                         receivingRoomId: true,
                         copyFurnished: true,
                         releasedAt: true,
+                        acknowledgedAt: true,
+                        acknowledgedNote: true,
+                        acknowledgedBy: {
+                            select: { id: true, firstName: true, lastName: true },
+                        },
                         roomReceiver: {
                             select: { id: true, code: true, address: true },
                         },
@@ -1436,6 +1464,11 @@ const viewDissemination = (req, res) => __awaiter(void 0, void 0, void 0, functi
                         receivedAt: true,
                         copyFurnished: true,
                         releasedAt: true,
+                        acknowledgedAt: true,
+                        acknowledgedNote: true,
+                        acknowledgedBy: {
+                            select: { id: true, firstName: true, lastName: true },
+                        },
                         roomReceiver: { select: { id: true, code: true } },
                     },
                 },
@@ -2766,3 +2799,142 @@ const verifySignatureData = (req, res) => __awaiter(void 0, void 0, void 0, func
     }
 });
 exports.verifySignatureData = verifySignatureData;
+// ─── Receipt: an office confirming the document is in hand ─────────────
+//
+// Delivery and receipt are two different facts. The system stamps
+// `receivedAt` the moment it drops a document into a room, which proves
+// only that the system did its part. Whether anyone in that office
+// actually has it is a question only a person in that office can answer,
+// and it is the question that gets asked when something goes missing.
+//
+// So a receiver marks it received, their name goes on it, and the sender
+// can stop phoning to ask. They can correct it afterwards too — marking
+// the wrong row is exactly the mistake a busy front desk makes, and an
+// acknowledgement nobody can take back is worse than none.
+const acknowledgeReceipt = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a, _b, _c, _d;
+    const body = req.body;
+    if (!body.targetRoomId)
+        throw new errors_1.ValidationError("INVALID REQUIRED ID");
+    const actorId = yield (0, handler_1.callerUserId)(req);
+    if (!actorId)
+        throw new errors_1.UnauthorizedError("Not signed in");
+    const received = body.received !== false;
+    const note = ((_a = body.note) !== null && _a !== void 0 ? _a : "").trim().slice(0, 300) || null;
+    try {
+        const target = yield prisma_1.prisma.targetRoom.findUnique({
+            where: { id: body.targetRoomId },
+            select: {
+                id: true,
+                receivingRoomId: true,
+                copyFurnished: true,
+                releasedAt: true,
+                acknowledgedAt: true,
+                acknowledgedById: true,
+                roomReceiver: { select: { id: true, code: true, lineId: true } },
+                queueRoom: {
+                    select: { id: true, title: true, status: true, userId: true },
+                },
+            },
+        });
+        if (!target)
+            throw new errors_1.NotFoundError("Not found in your inbox");
+        // Nothing to acknowledge until it has actually been sent, and a
+        // copy-furnished room that is still held has not been given anything
+        // at all — it cannot even see the document yet.
+        if (((_c = (_b = target.queueRoom) === null || _b === void 0 ? void 0 : _b.status) !== null && _c !== void 0 ? _c : 0) < 1) {
+            throw new errors_1.ValidationError("This has not been dispatched yet.");
+        }
+        if (target.copyFurnished && target.releasedAt === null) {
+            throw new errors_1.NotFoundError("Not found in your inbox");
+        }
+        // Only somebody who actually works in the receiving office, and only
+        // in a role whose job this is. A signatory signs; a receiver receives.
+        const membership = yield prisma_1.prisma.roomAuthorizedUser.findFirst({
+            where: {
+                receivingRoomId: (_d = target.receivingRoomId) !== null && _d !== void 0 ? _d : "",
+                userId: actorId,
+                status: 1,
+                type: { in: [roomConfigController_1.ROOM_MEMBER_TYPES.owner, roomConfigController_1.ROOM_MEMBER_TYPES.receiver] },
+            },
+            select: { id: true, type: true },
+        });
+        if (!membership) {
+            console.warn(`[receipt] refused: user ${actorId} on room ${target.receivingRoomId}`);
+            throw new errors_1.UnauthorizedError("Only a receiver or the owner of this office can mark it received.");
+        }
+        const now = new Date();
+        const updated = yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
+            var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r;
+            const row = yield tx.targetRoom.update({
+                where: { id: target.id },
+                data: received
+                    ? {
+                        acknowledgedAt: (_a = target.acknowledgedAt) !== null && _a !== void 0 ? _a : now,
+                        acknowledgedById: actorId,
+                        acknowledgedNote: note,
+                    }
+                    : {
+                        acknowledgedAt: null,
+                        acknowledgedById: null,
+                        acknowledgedNote: null,
+                    },
+                select: {
+                    id: true,
+                    acknowledgedAt: true,
+                    acknowledgedNote: true,
+                    acknowledgedBy: {
+                        select: { id: true, firstName: true, lastName: true },
+                    },
+                },
+            });
+            const lineId = (_b = target.roomReceiver) === null || _b === void 0 ? void 0 : _b.lineId;
+            if (lineId) {
+                yield tx.documentActivityLogs.create({
+                    data: {
+                        userId: actorId,
+                        lineId,
+                        title: received ? "Marked received" : "Undid a receipt",
+                        desc: `${(_d = (_c = target.roomReceiver) === null || _c === void 0 ? void 0 : _c.code) !== null && _d !== void 0 ? _d : "An office"} ` +
+                            (received ? "received " : "un-marked ") +
+                            `"${(_f = (_e = target.queueRoom) === null || _e === void 0 ? void 0 : _e.title) !== null && _f !== void 0 ? _f : (_g = target.queueRoom) === null || _g === void 0 ? void 0 : _g.id}"` +
+                            (received && note ? ` — ${note}` : ""),
+                        action: received ? 1 : 0,
+                    },
+                });
+            }
+            // The whole point is that the sender stops having to ask. Tell them
+            // about a correction too: they are relying on this record either way.
+            const sender = (_h = target.queueRoom) === null || _h === void 0 ? void 0 : _h.userId;
+            if (sender && sender !== actorId) {
+                yield (0, notificationEvents_1.createUserNotification)(tx, {
+                    recipientId: sender,
+                    senderId: actorId,
+                    title: received ? "Document received" : "Receipt withdrawn",
+                    content: received
+                        ? `${(_k = (_j = target.roomReceiver) === null || _j === void 0 ? void 0 : _j.code) !== null && _k !== void 0 ? _k : "An office"} marked ` +
+                            `"${(_m = (_l = target.queueRoom) === null || _l === void 0 ? void 0 : _l.title) !== null && _m !== void 0 ? _m : "your document"}" as received.` +
+                            (note ? ` Note: ${note}` : "")
+                        : `${(_p = (_o = target.roomReceiver) === null || _o === void 0 ? void 0 : _o.code) !== null && _p !== void 0 ? _p : "An office"} withdrew its ` +
+                            `receipt of "${(_r = (_q = target.queueRoom) === null || _q === void 0 ? void 0 : _q.title) !== null && _r !== void 0 ? _r : "your document"}".`,
+                    path: `documents/dissemination?tab=outbox`,
+                });
+            }
+            return row;
+        }));
+        return res.code(200).send({ message: "OK", target: updated });
+    }
+    catch (error) {
+        if (error instanceof errors_1.NotFoundError)
+            throw error;
+        if (error instanceof errors_1.ValidationError)
+            throw error;
+        if (error instanceof errors_1.UnauthorizedError)
+            throw error;
+        if (error instanceof prisma_1.Prisma.PrismaClientKnownRequestError) {
+            throw new errors_1.AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+        }
+        throw error;
+    }
+});
+exports.acknowledgeReceipt = acknowledgeReceipt;

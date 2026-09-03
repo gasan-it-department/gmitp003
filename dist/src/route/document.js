@@ -52,6 +52,7 @@ const document = (fastify) => {
     fastify.get("/document/dissemination/detail", { preHandler: handler_1.authenticated }, disseminationController_1.disseminationDetail);
     fastify.post("/document/dissemination/targets/set", { preHandler: handler_1.authenticated }, disseminationController_1.setTargetRooms);
     fastify.post("/document/dissemination/signatories/set", { preHandler: handler_1.authenticated }, disseminationController_1.setSignatoryArrangement);
+    fastify.patch("/document/dissemination/receipt", { preHandler: handler_1.authenticated }, disseminationController_1.acknowledgeReceipt);
     fastify.patch("/document/dissemination/finalize", { preHandler: handler_1.authenticated }, disseminationController_1.finalizeDissemination);
     fastify.delete("/document/dissemination/remove", { preHandler: handler_1.authenticated }, disseminationController_1.removeDissemination);
     fastify.get("/document/dissemination/target-rooms", { preHandler: handler_1.authenticated }, disseminationController_1.targetRoomCandidates);
