@@ -36,6 +36,41 @@ import {
  */
 const ACTIVE_MEMBER = { status: 1, userId: { not: null } } as const;
 
+/**
+ * A room's mail belongs to the people who work in that room.
+ *
+ * The inbox and outbox both take the room id from the request, and both
+ * used to hand it over on trust — so any signed-in account could read any
+ * office's correspondence by editing one id: what the Mayor's office was
+ * sent, what Accounting dispatched, every subject line and sender. The
+ * room id is a uuid, which is a speed bump, not a lock.
+ *
+ * Membership is the rule, in any of the three roles: an owner, a
+ * signatory and a receiver all genuinely work in that office. A REMOVED
+ * member keeps their row at status 0 and is refused by it, which is the
+ * point of removing someone.
+ *
+ * Returns the membership so a caller that also needs the role does not
+ * pay for a second query.
+ */
+const requireRoomMember = async (
+  req: FastifyRequest,
+  roomId: string,
+): Promise<{ actorId: string; type: number }> => {
+  const actorId = await callerUserId(req);
+  if (!actorId) throw new UnauthorizedError("Not signed in");
+  const member = await prisma.roomAuthorizedUser.findFirst({
+    where: { receivingRoomId: roomId, userId: actorId, status: 1 },
+    select: { type: true },
+  });
+  if (!member) {
+    // Logged because a mismatch here is somebody trying ids, not a typo.
+    console.warn(`[rooms] refused: user ${actorId} asked for room ${roomId}`);
+    throw new UnauthorizedError("This is not your office's mail.");
+  }
+  return { actorId, type: member.type };
+};
+
 // ── Outbox: disseminations created BY this room ────────────────────────
 export const disseminationOutbox = async (
   req: FastifyRequest,
@@ -49,6 +84,8 @@ export const disseminationOutbox = async (
     status?: string; // "draft" | "active" | "completed" | "all"
   };
   if (!params.fromRoomId) throw new ValidationError("INVALID REQUIRED ID");
+  // Before a single row is read: this has to be your own room.
+  await requireRoomMember(req, params.fromRoomId);
 
   try {
     const limit = params.limit ? parseInt(params.limit, 10) : 20;
@@ -130,6 +167,8 @@ export const disseminationInbox = async (
     limit?: string;
   };
   if (!params.toRoomId) throw new ValidationError("INVALID REQUIRED ID");
+  // Before a single row is read: this has to be your own room.
+  const member = await requireRoomMember(req, params.toRoomId);
 
   try {
     const limit = params.limit ? parseInt(params.limit, 10) : 20;
@@ -193,21 +232,13 @@ export const disseminationInbox = async (
       },
     });
 
-    // Whether the person reading this inbox is allowed to mark things
-    // received. Sent once for the page rather than per row, because it is
-    // a property of the reader and the room, not of any one document.
-    const actorId = await callerUserId(req);
-    const canAcknowledge = actorId
-      ? !!(await prisma.roomAuthorizedUser.findFirst({
-          where: {
-            receivingRoomId: params.toRoomId,
-            userId: actorId,
-            status: 1,
-            type: { in: [ROOM_MEMBER_TYPES.owner, ROOM_MEMBER_TYPES.receiver] },
-          },
-          select: { id: true },
-        }))
-      : false;
+    // Whether the person reading this inbox may mark things received.
+    // Sent once for the page rather than per row, because it is a property
+    // of the reader and the room, not of any one document. The role came
+    // back from the gate above, so this costs nothing.
+    const canAcknowledge =
+      member.type === ROOM_MEMBER_TYPES.owner ||
+      member.type === ROOM_MEMBER_TYPES.receiver;
 
     const lastCursor = rows.length ? rows[rows.length - 1].id : null;
     const hasMore = rows.length === limit;

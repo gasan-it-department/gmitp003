@@ -147,9 +147,16 @@ const mockRes = () => {
       return q;
     };
 
+    // The inbox is now gated on room membership, so it has to be read AS
+    // somebody who works there. Each of these rooms was made with an owner.
     const inboxOf = async (roomId: string) => {
+      const asWho =
+        roomId === TO.id ? ADDRESSEE.accountId
+        : roomId === CC.id ? CF.accountId
+        : SENDER.accountId;
       const r = mockRes();
-      await disseminationInbox({ query: { toRoomId: roomId } } as any, r);
+      await disseminationInbox(
+        { user: { id: asWho }, query: { toRoomId: roomId } } as any, r);
       return (r._body?.list ?? []) as any[];
     };
     const badgeOf = async (roomId: string, userId: string) => {
@@ -229,7 +236,8 @@ const mockRes = () => {
     ok("…the debug sample does not leak it either",
       !(await (async () => {
         const r = mockRes();
-        await disseminationInbox({ query: { toRoomId: CC.id } } as any, r);
+        await disseminationInbox(
+          { user: { id: CF.accountId }, query: { toRoomId: CC.id } } as any, r);
         return (r._body?.debug?.sample ?? []) as any[];
       })()).some((t: any) => t.signatureQueueRoomId === Q.id));
 
