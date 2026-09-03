@@ -159,11 +159,16 @@ const mockRes = () => {
         { user: { id: asWho }, query: { toRoomId: roomId } } as any, r);
       return (r._body?.list ?? []) as any[];
     };
-    const badgeOf = async (roomId: string, userId: string) => {
+    // The overview is scoped to whoever asks, so it is read AS a person and
+    // the room comes from their own membership. It reports the inbox count
+    // under myRoom — this used to read `_body.inbox`, which does not exist,
+    // so the assertion below was passing on `undefined ?? 0` no matter what
+    // the real count was.
+    const badgeOf = async (accountId: string) => {
       const r = mockRes();
       await documentOverview(
-        { query: { lineId: line.id, roomId, userId } } as any, r);
-      return r._body;
+        { user: { id: accountId }, query: { lineId: line.id } } as any, r);
+      return (r._body?.myRoom?.inbox ?? -1) as number;
     };
     const holds = (queueId: string, roomId: string) =>
       prisma.targetRoom.findFirst({
@@ -241,9 +246,14 @@ const mockRes = () => {
         return (r._body?.debug?.sample ?? []) as any[];
       })()).some((t: any) => t.signatureQueueRoomId === Q.id));
 
-    const cfBadgeBefore = (await badgeOf(CC.id, CF.userId))?.inbox ?? 0;
+    const cfBadgeBefore = await badgeOf(CF.accountId);
     ok("…and their inbox badge does not count it", cfBadgeBefore === 0,
       String(cfBadgeBefore));
+    // Paired with the addressee, so a badge stuck at zero for everyone
+    // could not pass the line above by accident.
+    ok("…while the addressee's badge DOES count it",
+      (await badgeOf(ADDRESSEE.accountId)) === 1,
+      String(await badgeOf(ADDRESSEE.accountId)));
     ok("dispatch left the held row undelivered",
       (await holds(Q.id, CC.id))?.status === 0);
     ok("nobody in that office has been notified yet",

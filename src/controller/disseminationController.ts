@@ -1540,19 +1540,43 @@ export const documentOverview = async (
   const params = req.query as { lineId: string; userId?: string };
   if (!params.lineId) throw new ValidationError("INVALID REQUIRED ID");
 
+  // These are all "my" numbers, so they come from the token, not the URL.
+  // The userId in the query used to be trusted, which meant anyone could
+  // read another person's inbox count, outbox count and signature count by
+  // typing their id. It is ignored now.
+  const accountId = (req.user as { id?: string } | undefined)?.id;
+  if (!accountId) throw new UnauthorizedError("Not signed in");
+  const account = await prisma.account.findUnique({
+    where: { id: accountId },
+    select: { lineId: true, User: { select: { id: true, lineId: true } } },
+  });
+  const actorId = account?.User?.id;
+  if (!actorId) throw new UnauthorizedError("Not signed in");
+
+  // The line is likewise the caller's own. It is still taken from the
+  // request because the caller's own record does not always carry one, but
+  // it has to agree with what the account says, or these are somebody
+  // else's totals.
+  const ownLine = account?.User?.lineId ?? account?.lineId ?? null;
+  if (!ownLine || ownLine !== params.lineId) {
+    console.warn(
+      `[overview] refused: account ${accountId} asked for line ${params.lineId}`,
+    );
+    throw new UnauthorizedError("This is not your municipality's data.");
+  }
+
   try {
-    // Find the user's receiving room (for inbox/outbox).
-    let roomId: string | null = null;
-    if (params.userId) {
-      const room = await prisma.receivingRoom.findFirst({
-        where: {
-          lineId: params.lineId,
-          authorizedUser: { some: { userId: params.userId } },
-        },
-        select: { id: true },
-      });
-      roomId = room?.id ?? null;
-    }
+    // The caller's own receiving room, for the inbox and outbox tiles.
+    // Membership has to be ACTIVE: a room somebody was removed from is not
+    // theirs any more, and its counts are not theirs to see.
+    const room = await prisma.receivingRoom.findFirst({
+      where: {
+        lineId: params.lineId,
+        authorizedUser: { some: { userId: actorId, status: 1 } },
+      },
+      select: { id: true },
+    });
+    const roomId: string | null = room?.id ?? null;
 
     const [
       archiveTotal,
@@ -1588,19 +1612,21 @@ export const documentOverview = async (
             where: { receivingRoomId: roomId, status: { gte: 1 } },
           })
         : Promise.resolve(0),
-      params.userId
-        ? prisma.signatoryArrangement.count({
-            where: {
-              status: 0,
-              signatureQueueRoom: { status: 1 },
-            },
-          })
-        : Promise.resolve(0),
-      params.userId
-        ? prisma.signature.count({
-            where: { userId: params.userId },
-          })
-        : Promise.resolve(0),
+      // "Pending my signature" had no userId filter and no line filter,
+      // so it counted every unsigned slot in the database and showed the
+      // same number to everybody — 47 here, on every dashboard. It is the
+      // caller's own slots now, on their own line.
+      prisma.signatoryArrangement.count({
+        where: {
+          userId: actorId,
+          status: 0,
+          signatureQueueRoom: {
+            status: 1,
+            fromRoom: { lineId: params.lineId },
+          },
+        },
+      }),
+      prisma.signature.count({ where: { userId: actorId } }),
     ]);
 
     return res.code(200).send({
