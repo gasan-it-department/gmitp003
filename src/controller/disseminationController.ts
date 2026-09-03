@@ -21,7 +21,11 @@ import { attestQueue, newSerial, seal } from "../service/documentSeal";
 import { tempURL } from "../service/url";
 import { callerUserId } from "../middleware/handler";
 import { ROOM_MEMBER_TYPES } from "./roomConfigController";
-import { requireSelf } from "../service/callerScope";
+import {
+  requireSelf,
+  requireSameLine,
+  requireRoomMember,
+} from "../service/callerScope";
 import { placeSignature } from "../service/signaturePlacement";
 import {
   releaseCopyFurnished,
@@ -153,41 +157,6 @@ const requireCanSeeDocument = async (
     throw new NotFoundError("Not found");
   }
   return actorId;
-};
-
-/**
- * A room's mail belongs to the people who work in that room.
- *
- * The inbox and outbox both take the room id from the request, and both
- * used to hand it over on trust — so any signed-in account could read any
- * office's correspondence by editing one id: what the Mayor's office was
- * sent, what Accounting dispatched, every subject line and sender. The
- * room id is a uuid, which is a speed bump, not a lock.
- *
- * Membership is the rule, in any of the three roles: an owner, a
- * signatory and a receiver all genuinely work in that office. A REMOVED
- * member keeps their row at status 0 and is refused by it, which is the
- * point of removing someone.
- *
- * Returns the membership so a caller that also needs the role does not
- * pay for a second query.
- */
-const requireRoomMember = async (
-  req: FastifyRequest,
-  roomId: string,
-): Promise<{ actorId: string; type: number }> => {
-  const actorId = await callerUserId(req);
-  if (!actorId) throw new UnauthorizedError("Not signed in");
-  const member = await prisma.roomAuthorizedUser.findFirst({
-    where: { receivingRoomId: roomId, userId: actorId, status: 1 },
-    select: { type: true },
-  });
-  if (!member) {
-    // Logged because a mismatch here is somebody trying ids, not a typo.
-    console.warn(`[rooms] refused: user ${actorId} asked for room ${roomId}`);
-    throw new UnauthorizedError("This is not your office's mail.");
-  }
-  return { actorId, type: member.type };
 };
 
 // ── Outbox: disseminations created BY this room ────────────────────────
@@ -888,6 +857,8 @@ export const targetRoomCandidates = async (
   };
   if (!params.lineId) throw new ValidationError("INVALID REQUIRED ID");
 
+  // Every office in a municipality, which is that municipality's list.
+  await requireSameLine(req, params.lineId);
   try {
     const limit = params.limit ? parseInt(params.limit, 10) : 200;
     // Every room in the line, including the ones nobody can open yet.
@@ -979,6 +950,8 @@ export const signatoryCandidates = async (
   };
   if (!params.lineId) throw new ValidationError("INVALID REQUIRED ID");
 
+  // And everybody who could sign in it.
+  await requireSameLine(req, params.lineId);
   try {
     const limit = params.limit ? parseInt(params.limit, 10) : 50;
     const where: any = {

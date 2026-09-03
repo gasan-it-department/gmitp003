@@ -310,6 +310,8 @@ const roomRequest = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
     if (!params.id) {
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
     }
+    // Pending room registrations for a municipality are its own business.
+    yield (0, callerScope_1.requireSameLine)(req, params.id);
     try {
         // Bug fix: was `{ id: params.id }` (the lineId), so pagination would
         // restart at the first row on every page. The cursor must be the
@@ -391,6 +393,8 @@ const updateStatus = (req, res) => __awaiter(void 0, void 0, void 0, function* (
     if (!body.id || !body.lineId || !body.status || !body.userId) {
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
     }
+    // Approving or rejecting a room registration on somebody else's line.
+    yield (0, callerScope_1.requireSameLine)(req, body.lineId);
     try {
         const response = yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
             const dateUpdated = {};
@@ -481,6 +485,8 @@ const deleteRoomRequest = (req, res) => __awaiter(void 0, void 0, void 0, functi
     if (!params.id || !params.lineId || !params.userId) {
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
     }
+    // Same for throwing one away.
+    yield (0, callerScope_1.requireSameLine)(req, params.lineId);
     try {
         const response = yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
             const request = yield tx.roomRegistration.delete({
@@ -523,6 +529,15 @@ const roomRequestDetails = (req, res) => __awaiter(void 0, void 0, void 0, funct
     const params = req.query;
     if (!params.id)
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
+    {
+        const reg = yield prisma_1.prisma.roomRegistration.findUnique({
+            where: { id: params.id },
+            select: { lineId: true },
+        });
+        if (!reg)
+            throw new errors_1.NotFoundError("NOT FOUND");
+        yield (0, callerScope_1.requireSameLine)(req, reg.lineId);
+    }
     try {
         const response = yield prisma_1.prisma.roomRegistration.findUnique({
             where: { id: params.id },
@@ -1514,23 +1529,28 @@ const downloadArchiveFile = (req, res) => __awaiter(void 0, void 0, void 0, func
 exports.downloadArchiveFile = downloadArchiveFile;
 const createDocumentRoute = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     const body = req.body;
-    if (!body.roomName || !body.lineId || !body.userId || !body.roomId) {
+    if (!body.roomName || !body.lineId || !body.roomId) {
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
     }
+    // Starting a routing places a draft in a sending room and puts a name on
+    // it. Both were taken from the body, so anyone could open a draft in
+    // another office and attribute it to a colleague.
+    const { actorId } = yield (0, callerScope_1.requireRoomMember)(req, body.roomId);
+    yield (0, callerScope_1.requireSameLine)(req, body.lineId);
     try {
         const response = yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
             const room = yield tx.signatureQueueRoom.create({
                 data: {
                     title: body.roomName,
                     receivingRoomId: body.roomId,
-                    userId: body.userId,
+                    userId: actorId,
                     status: 0,
                     step: 0,
                 },
             });
             yield tx.documentActivityLogs.create({
                 data: {
-                    userId: body.userId,
+                    userId: actorId,
                     lineId: body.lineId,
                     title: `Created Document Room - ${body.roomName}`,
                     desc: `Document Room "${body.roomName}" was created.`,
@@ -1552,10 +1572,21 @@ const createDocumentRoute = (req, res) => __awaiter(void 0, void 0, void 0, func
 });
 exports.createDocumentRoute = createDocumentRoute;
 const routerInfo = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a;
     const params = req.query;
     console.log("Route: ", params);
     if (!params.id) {
         throw new errors_1.ValidationError("INVALID REQUIRED PARAMETERS");
+    }
+    {
+        // A routing's line lives on the room it was sent from.
+        const q = yield prisma_1.prisma.signatureQueueRoom.findUnique({
+            where: { id: params.id },
+            select: { fromRoom: { select: { lineId: true } } },
+        });
+        if (!q)
+            throw new errors_1.NotFoundError("NOT FOUND");
+        yield (0, callerScope_1.requireSameLine)(req, (_a = q.fromRoom) === null || _a === void 0 ? void 0 : _a.lineId);
     }
     try {
         const response = yield prisma_1.prisma.signatureQueueRoom.findUnique({

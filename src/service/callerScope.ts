@@ -72,3 +72,29 @@ export const requireSelf = async (
   }
   return caller;
 };
+
+/**
+ * A room's business belongs to the people who work in that room.
+ *
+ * Any of the three roles counts — an owner, a signatory and a receiver all
+ * genuinely work there. A REMOVED member keeps their row at status 0 and
+ * is refused by it, which is the point of removing someone.
+ *
+ * Returns the role so a caller that also needs it does not pay for a
+ * second query.
+ */
+export const requireRoomMember = async (
+  req: FastifyRequest,
+  roomId: string,
+): Promise<{ actorId: string; type: number }> => {
+  const { actorId } = await callerContext(req);
+  const member = await prisma.roomAuthorizedUser.findFirst({
+    where: { receivingRoomId: roomId, userId: actorId, status: 1 },
+    select: { type: true },
+  });
+  if (!member) {
+    console.warn(`[scope] refused: user ${actorId} asked for room ${roomId}`);
+    throw new UnauthorizedError("This is not your office.");
+  }
+  return { actorId, type: member.type };
+};

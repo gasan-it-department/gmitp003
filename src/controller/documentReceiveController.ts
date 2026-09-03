@@ -37,6 +37,8 @@ export const documentReceiveSync = async (
 ) => {
   const q = req.query as { lineId?: string; since?: string };
   if (!q.lineId) throw new ValidationError("BAD_REQUEST: lineId required");
+  // And the offline sync feed behind the mobile scanner.
+  await requireSameLine(req, (req.query as { lineId?: string }).lineId);
   const sinceMs = q.since ? parseInt(q.since, 10) : 0;
   const sinceDate = sinceMs > 0 ? new Date(sinceMs) : undefined;
 
@@ -62,6 +64,8 @@ export const documentReceiveFind = async (
 ) => {
   const q = req.query as { lineId?: string; barcode?: string };
   if (!q.lineId || !q.barcode) throw new ValidationError("BAD_REQUEST");
+  // Including looking one up by barcode.
+  await requireSameLine(req, (req.query as { lineId?: string }).lineId);
   const row = await prisma.documentReceiveRecord.findUnique({
     where: { lineId_barcode: { lineId: q.lineId, barcode: q.barcode.trim() } },
   });
@@ -94,6 +98,8 @@ export const documentReceiveCreate = async (
   const title = (b.title ?? "").trim();
   if (!lineId || !barcode || !title)
     throw new ValidationError("BAD_REQUEST: lineId, barcode and title required");
+  // Logging an arrival onto somebody else's line.
+  await requireSameLine(req, b.lineId);
 
   // Replay of the same offline op → return what it created.
   if (b.id) {
@@ -163,6 +169,8 @@ export const documentReceiveList = async (
     direction?: string;
   };
   if (!q.lineId) throw new ValidationError("BAD_REQUEST: lineId required");
+  // A municipality's receiving log is its own.
+  await requireSameLine(req, (req.query as { lineId?: string }).lineId);
   const take = Math.min(parseInt(q.limit ?? "20", 10) || 20, 100);
 
   const where: any = { lineId: q.lineId, deletedAt: null };
@@ -208,6 +216,8 @@ export const listDocMobileAccess = async (
 ) => {
   const { lineId } = req.query as { lineId?: string };
   if (!lineId) throw new ValidationError("lineId is required");
+  // Who may scan on mobile, for this municipality.
+  await requireSameLine(req, (req.query as { lineId?: string }).lineId);
   const rows = await prisma.documentMobileAccess.findMany({
     where: { lineId },
     orderBy: { timestamp: "desc" },
@@ -246,6 +256,8 @@ export const docMobileAccessCandidates = async (
 ) => {
   const { lineId, query } = req.query as { lineId?: string; query?: string };
   if (!lineId) throw new ValidationError("lineId is required");
+  // And who could be given it.
+  await requireSameLine(req, (req.query as { lineId?: string }).lineId);
   const granted = await prisma.documentMobileAccess.findMany({
     where: { lineId },
     select: { userId: true },
@@ -409,6 +421,16 @@ export const documentReceivePageUpload = async (
   const recordId = (fields.recordId ?? "").trim();
   const page = Math.max(1, parseInt(fields.page ?? "1", 10) || 1);
   if (!recordId) throw new ValidationError("BAD_REQUEST: recordId required");
+  // The record says which municipality this page belongs to. Read it
+  // off the record: the id in the form is not a permission.
+  {
+    const rec = await prisma.documentReceiveRecord.findUnique({
+      where: { id: recordId },
+      select: { lineId: true },
+    });
+    if (!rec) throw new ValidationError("NOT_FOUND");
+    await requireSameLine(req, rec.lineId);
+  }
 
   // Replay of the same offline op → succeed without duplicating.
   if (id) {

@@ -9,7 +9,7 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
     });
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.requireSelf = exports.requireSameLine = exports.callerContext = void 0;
+exports.requireRoomMember = exports.requireSelf = exports.requireSameLine = exports.callerContext = void 0;
 const prisma_1 = require("../barrel/prisma");
 const errors_1 = require("../errors/errors");
 const callerContext = (req) => __awaiter(void 0, void 0, void 0, function* () {
@@ -58,3 +58,26 @@ const requireSelf = (req, userId) => __awaiter(void 0, void 0, void 0, function*
     return caller;
 });
 exports.requireSelf = requireSelf;
+/**
+ * A room's business belongs to the people who work in that room.
+ *
+ * Any of the three roles counts — an owner, a signatory and a receiver all
+ * genuinely work there. A REMOVED member keeps their row at status 0 and
+ * is refused by it, which is the point of removing someone.
+ *
+ * Returns the role so a caller that also needs it does not pay for a
+ * second query.
+ */
+const requireRoomMember = (req, roomId) => __awaiter(void 0, void 0, void 0, function* () {
+    const { actorId } = yield (0, exports.callerContext)(req);
+    const member = yield prisma_1.prisma.roomAuthorizedUser.findFirst({
+        where: { receivingRoomId: roomId, userId: actorId, status: 1 },
+        select: { type: true },
+    });
+    if (!member) {
+        console.warn(`[scope] refused: user ${actorId} asked for room ${roomId}`);
+        throw new errors_1.UnauthorizedError("This is not your office.");
+    }
+    return { actorId, type: member.type };
+});
+exports.requireRoomMember = requireRoomMember;

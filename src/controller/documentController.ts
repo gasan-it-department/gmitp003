@@ -2,7 +2,11 @@ import { FastifyRequest, FastifyReply } from "../barrel/fastify";
 import { Prisma, prisma } from "../barrel/prisma";
 import { AppError, NotFoundError, ValidationError } from "../errors/errors";
 import { embeddingService } from "../service/Embedding";
-import { requireSameLine, requireSelf } from "../service/callerScope";
+import {
+  requireSameLine,
+  requireSelf,
+  requireRoomMember,
+} from "../service/callerScope";
 import { createUserNotification } from "../service/notificationEvents";
 
 export const addDocument = async (req: FastifyRequest, res: FastifyReply) => {
@@ -303,6 +307,8 @@ export const roomRequest = async (req: FastifyRequest, res: FastifyReply) => {
     throw new ValidationError("INVALID REQUIRED ID");
   }
 
+  // Pending room registrations for a municipality are its own business.
+  await requireSameLine(req, params.id);
   try {
     // Bug fix: was `{ id: params.id }` (the lineId), so pagination would
     // restart at the first row on every page. The cursor must be the
@@ -400,6 +406,8 @@ export const updateStatus = async (req: FastifyRequest, res: FastifyReply) => {
     throw new ValidationError("INVALID REQUIRED ID");
   }
 
+  // Approving or rejecting a room registration on somebody else's line.
+  await requireSameLine(req, body.lineId);
   try {
     const response = await prisma.$transaction(async (tx) => {
       const dateUpdated: any = {};
@@ -504,6 +512,8 @@ export const deleteRoomRequest = async (
     throw new ValidationError("INVALID REQUIRED ID");
   }
 
+  // Same for throwing one away.
+  await requireSameLine(req, params.lineId);
   try {
     const response = await prisma.$transaction(async (tx) => {
       const request = await tx.roomRegistration.delete({
@@ -550,6 +560,14 @@ export const roomRequestDetails = async (
   const params = req.query as { id: string };
   if (!params.id) throw new ValidationError("INVALID REQUIRED ID");
 
+  {
+    const reg = await prisma.roomRegistration.findUnique({
+      where: { id: params.id },
+      select: { lineId: true },
+    });
+    if (!reg) throw new NotFoundError("NOT FOUND");
+    await requireSameLine(req, reg.lineId);
+  }
   try {
     const response = await prisma.roomRegistration.findUnique({
       where: { id: params.id },
@@ -1613,16 +1631,22 @@ export const createDocumentRoute = async (
     roomId: string;
   };
 
-  if (!body.roomName || !body.lineId || !body.userId || !body.roomId) {
+  if (!body.roomName || !body.lineId || !body.roomId) {
     throw new ValidationError("INVALID REQUIRED ID");
   }
+  // Starting a routing places a draft in a sending room and puts a name on
+  // it. Both were taken from the body, so anyone could open a draft in
+  // another office and attribute it to a colleague.
+  const { actorId } = await requireRoomMember(req, body.roomId);
+  await requireSameLine(req, body.lineId);
+
   try {
     const response = await prisma.$transaction(async (tx) => {
       const room = await tx.signatureQueueRoom.create({
         data: {
           title: body.roomName,
           receivingRoomId: body.roomId,
-          userId: body.userId,
+          userId: actorId,
           status: 0,
           step: 0,
         },
@@ -1630,7 +1654,7 @@ export const createDocumentRoute = async (
 
       await tx.documentActivityLogs.create({
         data: {
-          userId: body.userId,
+          userId: actorId,
           lineId: body.lineId,
           title: `Created Document Room - ${body.roomName}`,
           desc: `Document Room "${body.roomName}" was created.`,
@@ -1657,6 +1681,15 @@ export const routerInfo = async (req: FastifyRequest, res: FastifyReply) => {
 
   if (!params.id) {
     throw new ValidationError("INVALID REQUIRED PARAMETERS");
+  }
+  {
+    // A routing's line lives on the room it was sent from.
+    const q = await prisma.signatureQueueRoom.findUnique({
+      where: { id: params.id },
+      select: { fromRoom: { select: { lineId: true } } },
+    });
+    if (!q) throw new NotFoundError("NOT FOUND");
+    await requireSameLine(req, q.fromRoom?.lineId);
   }
   try {
     const response = await prisma.signatureQueueRoom.findUnique({

@@ -195,38 +195,6 @@ const requireCanSeeDocument = (req, documentId) => __awaiter(void 0, void 0, voi
     }
     return actorId;
 });
-/**
- * A room's mail belongs to the people who work in that room.
- *
- * The inbox and outbox both take the room id from the request, and both
- * used to hand it over on trust — so any signed-in account could read any
- * office's correspondence by editing one id: what the Mayor's office was
- * sent, what Accounting dispatched, every subject line and sender. The
- * room id is a uuid, which is a speed bump, not a lock.
- *
- * Membership is the rule, in any of the three roles: an owner, a
- * signatory and a receiver all genuinely work in that office. A REMOVED
- * member keeps their row at status 0 and is refused by it, which is the
- * point of removing someone.
- *
- * Returns the membership so a caller that also needs the role does not
- * pay for a second query.
- */
-const requireRoomMember = (req, roomId) => __awaiter(void 0, void 0, void 0, function* () {
-    const actorId = yield (0, handler_1.callerUserId)(req);
-    if (!actorId)
-        throw new errors_1.UnauthorizedError("Not signed in");
-    const member = yield prisma_1.prisma.roomAuthorizedUser.findFirst({
-        where: { receivingRoomId: roomId, userId: actorId, status: 1 },
-        select: { type: true },
-    });
-    if (!member) {
-        // Logged because a mismatch here is somebody trying ids, not a typo.
-        console.warn(`[rooms] refused: user ${actorId} asked for room ${roomId}`);
-        throw new errors_1.UnauthorizedError("This is not your office's mail.");
-    }
-    return { actorId, type: member.type };
-});
 // ── Outbox: disseminations created BY this room ────────────────────────
 const disseminationOutbox = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     var _a;
@@ -234,7 +202,7 @@ const disseminationOutbox = (req, res) => __awaiter(void 0, void 0, void 0, func
     if (!params.fromRoomId)
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
     // Before a single row is read: this has to be your own room.
-    yield requireRoomMember(req, params.fromRoomId);
+    yield (0, callerScope_1.requireRoomMember)(req, params.fromRoomId);
     try {
         const limit = params.limit ? parseInt(params.limit, 10) : 20;
         // Axios serializes null query params as the literal string "null".
@@ -308,7 +276,7 @@ const disseminationInbox = (req, res) => __awaiter(void 0, void 0, void 0, funct
     if (!params.toRoomId)
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
     // Before a single row is read: this has to be your own room.
-    const member = yield requireRoomMember(req, params.toRoomId);
+    const member = yield (0, callerScope_1.requireRoomMember)(req, params.toRoomId);
     try {
         const limit = params.limit ? parseInt(params.limit, 10) : 20;
         // Axios serializes null query params as the literal string "null".
@@ -828,6 +796,8 @@ const targetRoomCandidates = (req, res) => __awaiter(void 0, void 0, void 0, fun
     const params = req.query;
     if (!params.lineId)
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
+    // Every office in a municipality, which is that municipality's list.
+    yield (0, callerScope_1.requireSameLine)(req, params.lineId);
     try {
         const limit = params.limit ? parseInt(params.limit, 10) : 200;
         // Every room in the line, including the ones nobody can open yet.
@@ -909,6 +879,8 @@ const signatoryCandidates = (req, res) => __awaiter(void 0, void 0, void 0, func
     const params = req.query;
     if (!params.lineId)
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
+    // And everybody who could sign in it.
+    yield (0, callerScope_1.requireSameLine)(req, params.lineId);
     try {
         const limit = params.limit ? parseInt(params.limit, 10) : 50;
         const where = {

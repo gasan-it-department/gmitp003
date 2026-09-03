@@ -53,6 +53,8 @@ const documentReceiveSync = (req, res) => __awaiter(void 0, void 0, void 0, func
     const q = req.query;
     if (!q.lineId)
         throw new errors_1.ValidationError("BAD_REQUEST: lineId required");
+    // And the offline sync feed behind the mobile scanner.
+    yield (0, callerScope_1.requireSameLine)(req, req.query.lineId);
     const sinceMs = q.since ? parseInt(q.since, 10) : 0;
     const sinceDate = sinceMs > 0 ? new Date(sinceMs) : undefined;
     const rows = yield prisma_1.prisma.documentReceiveRecord.findMany({
@@ -73,6 +75,8 @@ const documentReceiveFind = (req, res) => __awaiter(void 0, void 0, void 0, func
     const q = req.query;
     if (!q.lineId || !q.barcode)
         throw new errors_1.ValidationError("BAD_REQUEST");
+    // Including looking one up by barcode.
+    yield (0, callerScope_1.requireSameLine)(req, req.query.lineId);
     const row = yield prisma_1.prisma.documentReceiveRecord.findUnique({
         where: { lineId_barcode: { lineId: q.lineId, barcode: q.barcode.trim() } },
     });
@@ -94,6 +98,8 @@ const documentReceiveCreate = (req, res) => __awaiter(void 0, void 0, void 0, fu
     const title = ((_c = b.title) !== null && _c !== void 0 ? _c : "").trim();
     if (!lineId || !barcode || !title)
         throw new errors_1.ValidationError("BAD_REQUEST: lineId, barcode and title required");
+    // Logging an arrival onto somebody else's line.
+    yield (0, callerScope_1.requireSameLine)(req, b.lineId);
     // Replay of the same offline op → return what it created.
     if (b.id) {
         const byId = yield prisma_1.prisma.documentReceiveRecord.findUnique({
@@ -148,6 +154,8 @@ const documentReceiveList = (req, res) => __awaiter(void 0, void 0, void 0, func
     const q = req.query;
     if (!q.lineId)
         throw new errors_1.ValidationError("BAD_REQUEST: lineId required");
+    // A municipality's receiving log is its own.
+    yield (0, callerScope_1.requireSameLine)(req, req.query.lineId);
     const take = Math.min(parseInt((_a = q.limit) !== null && _a !== void 0 ? _a : "20", 10) || 20, 100);
     const where = { lineId: q.lineId, deletedAt: null };
     if (q.direction === "in" || q.direction === "out")
@@ -179,6 +187,8 @@ const listDocMobileAccess = (req, res) => __awaiter(void 0, void 0, void 0, func
     const { lineId } = req.query;
     if (!lineId)
         throw new errors_1.ValidationError("lineId is required");
+    // Who may scan on mobile, for this municipality.
+    yield (0, callerScope_1.requireSameLine)(req, req.query.lineId);
     const rows = yield prisma_1.prisma.documentMobileAccess.findMany({
         where: { lineId },
         orderBy: { timestamp: "desc" },
@@ -218,6 +228,8 @@ const docMobileAccessCandidates = (req, res) => __awaiter(void 0, void 0, void 0
     const { lineId, query } = req.query;
     if (!lineId)
         throw new errors_1.ValidationError("lineId is required");
+    // And who could be given it.
+    yield (0, callerScope_1.requireSameLine)(req, req.query.lineId);
     const granted = yield prisma_1.prisma.documentMobileAccess.findMany({
         where: { lineId },
         select: { userId: true },
@@ -392,6 +404,17 @@ const documentReceivePageUpload = (req, res) => __awaiter(void 0, void 0, void 0
     const page = Math.max(1, parseInt((_k = fields.page) !== null && _k !== void 0 ? _k : "1", 10) || 1);
     if (!recordId)
         throw new errors_1.ValidationError("BAD_REQUEST: recordId required");
+    // The record says which municipality this page belongs to. Read it
+    // off the record: the id in the form is not a permission.
+    {
+        const rec = yield prisma_1.prisma.documentReceiveRecord.findUnique({
+            where: { id: recordId },
+            select: { lineId: true },
+        });
+        if (!rec)
+            throw new errors_1.ValidationError("NOT_FOUND");
+        yield (0, callerScope_1.requireSameLine)(req, rec.lineId);
+    }
     // Replay of the same offline op → succeed without duplicating.
     if (id) {
         const existing = yield prisma_1.prisma.documentReceivePage.findUnique({

@@ -313,7 +313,7 @@ app.get("/test/ai", (request, reply) => __awaiter(void 0, void 0, void 0, functi
 // Public build marker — lets anyone (including the assistant) CONFIRM which
 // build is actually serving, instead of trusting deploy timers. Bump the
 // tag with each meaningful deploy.
-const BUILD_TAG = "2026-09-03-p2-selfsign-archive";
+const BUILD_TAG = "2026-09-03-p3-scope";
 app.get("/health/build", () => __awaiter(void 0, void 0, void 0, function* () { return ({ status: "ok", build: BUILD_TAG }); }));
 app.listen({ port: 3000, host: "0.0.0.0" }, (err, address) => {
     if (err) {
