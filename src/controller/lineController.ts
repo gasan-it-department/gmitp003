@@ -11,6 +11,7 @@ import { createUserNotification } from "../service/notificationEvents";
 import cloudinary from "../class/Cloundinary";
 import fs from "fs";
 import path from "path";
+import { requireSameLine } from "../service/callerScope";
 
 const temp_url = process.env.VITE_LOCAL_FRONTEND_URL;
 
@@ -1273,11 +1274,21 @@ export const lineData = async (req: FastifyRequest, res: FastifyReply) => {
   if (!params.id) {
     throw new ValidationError("INVALID REQUIRED ID");
   }
+  // A line's record is its own municipality's. This took the id from the
+  // query and answered for any of them.
+  await requireSameLine(req, params.id);
+
   try {
     const response = await prisma.line.findUnique({
       where: {
         id: params.id,
       },
+      // Never the password. This returns the whole Line row, and that row
+      // has a password column on it — no consumer has ever read it, and an
+      // endpoint that hands one out by accident is a bad way to find that
+      // out. The contact columns beside it are institutional rather than
+      // secret, so they stay for now.
+      omit: { password: true },
       include: {
         municipal: {
           select: {

@@ -64,6 +64,7 @@ const notificationEvents_1 = require("../service/notificationEvents");
 const Cloundinary_1 = __importDefault(require("../class/Cloundinary"));
 const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
+const callerScope_1 = require("../service/callerScope");
 const temp_url = process.env.VITE_LOCAL_FRONTEND_URL;
 const createLine = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
@@ -1185,11 +1186,20 @@ const lineData = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     if (!params.id) {
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
     }
+    // A line's record is its own municipality's. This took the id from the
+    // query and answered for any of them.
+    yield (0, callerScope_1.requireSameLine)(req, params.id);
     try {
         const response = yield prisma_1.prisma.line.findUnique({
             where: {
                 id: params.id,
             },
+            // Never the password. This returns the whole Line row, and that row
+            // has a password column on it — no consumer has ever read it, and an
+            // endpoint that hands one out by accident is a bad way to find that
+            // out. The contact columns beside it are institutional rather than
+            // secret, so they stay for now.
+            omit: { password: true },
             include: {
                 municipal: {
                     select: {
