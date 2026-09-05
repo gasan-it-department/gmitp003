@@ -99,6 +99,7 @@ const document = (fastify) => {
     fastify.get("/document/receive/find", { preHandler: [handler_1.authenticated, handler_1.documentMobileAuth] }, documentReceiveController_1.documentReceiveFind);
     fastify.post("/document/receive", { preHandler: [handler_1.authenticated, handler_1.documentMobileAuth] }, documentReceiveController_1.documentReceiveCreate);
     fastify.get("/document/receive/list", { preHandler: handler_1.authenticated }, documentReceiveController_1.documentReceiveList);
+    fastify.post("/document/receive/disseminate", { preHandler: handler_1.authenticated }, documentReceiveController_1.documentReceiveDisseminate);
     fastify.post("/document/receive/page", { preHandler: [handler_1.authenticated, handler_1.documentMobileAuth] }, documentReceiveController_1.documentReceivePageUpload);
     // PUBLIC — page images load directly by URL (uuid-obscured, like chat media).
     fastify.get("/document/receive/page/:id", documentReceiveController_1.documentReceivePageServe);

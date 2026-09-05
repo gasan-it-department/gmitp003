@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -16,7 +49,7 @@ var __asyncValues = (this && this.__asyncValues) || function (o) {
     function settle(resolve, reject, d, v) { Promise.resolve(v).then(function(v) { resolve({ value: v, done: d }); }, reject); }
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.documentReceivePageServe = exports.documentReceivePageUpload = exports.myDocMobileAccess = exports.revokeDocMobileAccess = exports.grantDocMobileAccess = exports.docMobileAccessCandidates = exports.listDocMobileAccess = exports.documentReceiveList = exports.documentReceiveCreate = exports.documentReceiveFind = exports.documentReceiveSync = void 0;
+exports.documentReceiveDisseminate = exports.documentReceivePageServe = exports.documentReceivePageUpload = exports.myDocMobileAccess = exports.revokeDocMobileAccess = exports.grantDocMobileAccess = exports.docMobileAccessCandidates = exports.listDocMobileAccess = exports.documentReceiveList = exports.documentReceiveCreate = exports.documentReceiveFind = exports.documentReceiveSync = void 0;
 const prisma_1 = require("../barrel/prisma");
 const errors_1 = require("../errors/errors");
 const callerScope_1 = require("../service/callerScope");
@@ -470,3 +503,123 @@ const documentReceivePageServe = (req, res) => __awaiter(void 0, void 0, void 0,
     return res.send(Buffer.from(img.bytes));
 });
 exports.documentReceivePageServe = documentReceivePageServe;
+// ─── Send a received document on to other offices ──────────────────────
+//
+// A document arrives at the receiving desk, gets a barcode sticker and a
+// row in the log. Sending it onward means handing it to Document Routing,
+// which needs an actual file to route — and the only file a received
+// document has is the scan.
+//
+// So the rule is not a policy bolted on top: a record with no pages has
+// nothing to send. Until somebody has scanned it the barcode is a promise
+// that a piece of paper exists somewhere, and routing that promise to five
+// offices would give each of them a title and no document.
+const documentReceiveDisseminate = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a, _b;
+    const body = req.body;
+    if (!body.recordId || !body.roomId) {
+        throw new errors_1.ValidationError("BAD_REQUEST: recordId and roomId required");
+    }
+    // The routing is sent FROM a room, so it has to be your room.
+    const { actorId } = yield (0, callerScope_1.requireRoomMember)(req, body.roomId);
+    const record = yield prisma_1.prisma.documentReceiveRecord.findUnique({
+        where: { id: body.recordId },
+        select: {
+            id: true,
+            lineId: true,
+            barcode: true,
+            title: true,
+            senderUnitName: true,
+            senderName: true,
+            deletedAt: true,
+        },
+    });
+    if (!record || record.deletedAt)
+        throw new errors_1.ValidationError("NOT_FOUND");
+    // …and the record has to be on your line, read off the record itself.
+    yield (0, callerScope_1.requireSameLine)(req, record.lineId);
+    const pages = yield prisma_1.prisma.documentReceivePage.findMany({
+        where: { recordId: record.id },
+        orderBy: { page: "asc" },
+        select: { id: true, page: true, mime: true, bytes: true },
+    });
+    if (pages.length === 0) {
+        throw new errors_1.ValidationError("This document has not been scanned yet. Scan it with the mobile " +
+            "app first — there is nothing to send until it has pages.");
+    }
+    // The scanned pages become one PDF, which is what Document Routing
+    // signs and delivers. Each page is sized to its own image rather than
+    // forced onto A4, so nothing is cropped or letterboxed.
+    const { PDFDocument } = yield Promise.resolve().then(() => __importStar(require("pdf-lib")));
+    const pdf = yield PDFDocument.create();
+    for (const p of pages) {
+        const buf = Buffer.from(p.bytes);
+        let img;
+        try {
+            img = /png/i.test(p.mime)
+                ? yield pdf.embedPng(buf)
+                : yield pdf.embedJpg(buf);
+        }
+        catch (_c) {
+            // A mime can lie, or a scanner can relabel. Try the other one before
+            // giving up on the page.
+            try {
+                img = /png/i.test(p.mime)
+                    ? yield pdf.embedJpg(buf)
+                    : yield pdf.embedPng(buf);
+            }
+            catch (_d) {
+                throw new errors_1.ValidationError(`Page ${p.page} of this scan is not a readable image.`);
+            }
+        }
+        const page = pdf.addPage([img.width, img.height]);
+        page.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
+    }
+    const pdfBytes = Buffer.from(yield pdf.save());
+    const from = (_b = (_a = record.senderUnitName) !== null && _a !== void 0 ? _a : record.senderName) !== null && _b !== void 0 ? _b : "an external sender";
+    const title = record.title || record.barcode;
+    const created = yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
+        const queue = yield tx.signatureQueueRoom.create({
+            data: {
+                title,
+                userId: actorId,
+                receivingRoomId: body.roomId,
+                status: 0,
+                step: 0,
+            },
+            select: { id: true },
+        });
+        const doc = yield tx.document.create({
+            data: {
+                title,
+                lineId: record.lineId,
+                userId: actorId,
+                signatureQueueRoomId: queue.id,
+                original: 1,
+            },
+            select: { id: true },
+        });
+        yield tx.decodedFile.create({
+            data: {
+                documentId: doc.id,
+                fileName: `${record.barcode}.pdf`,
+                fileSize: String(pdfBytes.length),
+                fileType: "application/pdf",
+                fileDecoded: pdfBytes,
+            },
+        });
+        yield tx.documentActivityLogs.create({
+            data: {
+                userId: actorId,
+                lineId: record.lineId,
+                title: "Routed a received document",
+                desc: `Barcode ${record.barcode} ("${title}") from ${from}, ` +
+                    `${pages.length} scanned page${pages.length === 1 ? "" : "s"}.`,
+                action: 1,
+            },
+        });
+        return { queueRoomId: queue.id, documentId: doc.id };
+    }));
+    return res.code(200).send(Object.assign(Object.assign({ message: "OK" }, created), { pages: pages.length }));
+});
+exports.documentReceiveDisseminate = documentReceiveDisseminate;

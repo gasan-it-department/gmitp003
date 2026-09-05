@@ -1,7 +1,7 @@
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
 import { prisma } from "../barrel/prisma";
 import { ValidationError } from "../errors/errors";
-import { requireSameLine } from "../service/callerScope";
+import { requireSameLine, requireRoomMember } from "../service/callerScope";
 
 /**
  * Document Receiving — barcode-stickered physical documents logged by the
@@ -492,4 +492,140 @@ export const documentReceivePageServe = async (
   res.header("Content-Type", img.mime);
   res.header("Cache-Control", "private, max-age=31536000, immutable");
   return res.send(Buffer.from(img.bytes));
+};
+
+// ─── Send a received document on to other offices ──────────────────────
+//
+// A document arrives at the receiving desk, gets a barcode sticker and a
+// row in the log. Sending it onward means handing it to Document Routing,
+// which needs an actual file to route — and the only file a received
+// document has is the scan.
+//
+// So the rule is not a policy bolted on top: a record with no pages has
+// nothing to send. Until somebody has scanned it the barcode is a promise
+// that a piece of paper exists somewhere, and routing that promise to five
+// offices would give each of them a title and no document.
+export const documentReceiveDisseminate = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as { recordId?: string; roomId?: string };
+  if (!body.recordId || !body.roomId) {
+    throw new ValidationError("BAD_REQUEST: recordId and roomId required");
+  }
+
+  // The routing is sent FROM a room, so it has to be your room.
+  const { actorId } = await requireRoomMember(req, body.roomId);
+
+  const record = await prisma.documentReceiveRecord.findUnique({
+    where: { id: body.recordId },
+    select: {
+      id: true,
+      lineId: true,
+      barcode: true,
+      title: true,
+      senderUnitName: true,
+      senderName: true,
+      deletedAt: true,
+    },
+  });
+  if (!record || record.deletedAt) throw new ValidationError("NOT_FOUND");
+  // …and the record has to be on your line, read off the record itself.
+  await requireSameLine(req, record.lineId);
+
+  const pages = await prisma.documentReceivePage.findMany({
+    where: { recordId: record.id },
+    orderBy: { page: "asc" },
+    select: { id: true, page: true, mime: true, bytes: true },
+  });
+  if (pages.length === 0) {
+    throw new ValidationError(
+      "This document has not been scanned yet. Scan it with the mobile " +
+        "app first — there is nothing to send until it has pages.",
+    );
+  }
+
+  // The scanned pages become one PDF, which is what Document Routing
+  // signs and delivers. Each page is sized to its own image rather than
+  // forced onto A4, so nothing is cropped or letterboxed.
+  const { PDFDocument } = await import("pdf-lib");
+  const pdf = await PDFDocument.create();
+  for (const p of pages) {
+    const buf = Buffer.from(p.bytes);
+    let img;
+    try {
+      img = /png/i.test(p.mime)
+        ? await pdf.embedPng(buf)
+        : await pdf.embedJpg(buf);
+    } catch {
+      // A mime can lie, or a scanner can relabel. Try the other one before
+      // giving up on the page.
+      try {
+        img = /png/i.test(p.mime)
+          ? await pdf.embedJpg(buf)
+          : await pdf.embedPng(buf);
+      } catch {
+        throw new ValidationError(
+          `Page ${p.page} of this scan is not a readable image.`,
+        );
+      }
+    }
+    const page = pdf.addPage([img.width, img.height]);
+    page.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
+  }
+  const pdfBytes = Buffer.from(await pdf.save());
+
+  const from =
+    record.senderUnitName ?? record.senderName ?? "an external sender";
+  const title = record.title || record.barcode;
+
+  const created = await prisma.$transaction(async (tx) => {
+    const queue = await tx.signatureQueueRoom.create({
+      data: {
+        title,
+        userId: actorId,
+        receivingRoomId: body.roomId!,
+        status: 0,
+        step: 0,
+      },
+      select: { id: true },
+    });
+    const doc = await tx.document.create({
+      data: {
+        title,
+        lineId: record.lineId,
+        userId: actorId,
+        signatureQueueRoomId: queue.id,
+        original: 1,
+      },
+      select: { id: true },
+    });
+    await tx.decodedFile.create({
+      data: {
+        documentId: doc.id,
+        fileName: `${record.barcode}.pdf`,
+        fileSize: String(pdfBytes.length),
+        fileType: "application/pdf",
+        fileDecoded: pdfBytes,
+      },
+    });
+    await tx.documentActivityLogs.create({
+      data: {
+        userId: actorId,
+        lineId: record.lineId,
+        title: "Routed a received document",
+        desc:
+          `Barcode ${record.barcode} ("${title}") from ${from}, ` +
+          `${pages.length} scanned page${pages.length === 1 ? "" : "s"}.`,
+        action: 1,
+      },
+    });
+    return { queueRoomId: queue.id, documentId: doc.id };
+  });
+
+  return res.code(200).send({
+    message: "OK",
+    ...created,
+    pages: pages.length,
+  });
 };

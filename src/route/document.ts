@@ -17,6 +17,7 @@ import {
   myDocMobileAccess,
   documentReceivePageUpload,
   documentReceivePageServe,
+  documentReceiveDisseminate,
 } from "../controller/documentReceiveController";
 
 import {
@@ -447,6 +448,11 @@ export const document = (fastify: FastifyInstance) => {
     "/document/receive/list",
     { preHandler: authenticated },
     documentReceiveList,
+  );
+  fastify.post(
+    "/document/receive/disseminate",
+    { preHandler: authenticated },
+    documentReceiveDisseminate,
   );
   fastify.post(
     "/document/receive/page",
