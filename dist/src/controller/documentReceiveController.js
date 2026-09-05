@@ -64,7 +64,7 @@ const callerScope_1 = require("../service/callerScope");
  *   list  : paged/searchable registry for the web tool
  */
 const shape = (r) => {
-    var _a, _b, _c, _d, _e, _f;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o;
     return ({
         id: r.id,
         lineId: r.lineId,
@@ -79,6 +79,15 @@ const shape = (r) => {
         createdAt: r.createdAt,
         updatedAt: r.updatedAt,
         deletedAt: (_f = r.deletedAt) !== null && _f !== void 0 ? _f : null,
+        // Sent onward. The link is the flag: a deleted draft nulls it, and the
+        // document really is un-routed again. The routing's own status rides
+        // along because "already out and being signed" is a different fact from
+        // "somebody made a draft once", and only the first should stop a resend.
+        routedQueueRoomId: (_g = r.routedQueueRoomId) !== null && _g !== void 0 ? _g : null,
+        routedAt: r.routedQueueRoomId ? ((_h = r.routedAt) !== null && _h !== void 0 ? _h : null) : null,
+        routedByName: r.routedQueueRoomId ? ((_j = r.routedByName) !== null && _j !== void 0 ? _j : null) : null,
+        routedStatus: (_l = (_k = r.routedQueueRoom) === null || _k === void 0 ? void 0 : _k.status) !== null && _l !== void 0 ? _l : null,
+        routedTitle: (_o = (_m = r.routedQueueRoom) === null || _m === void 0 ? void 0 : _m.title) !== null && _o !== void 0 ? _o : null,
     });
 };
 // GET /document/receive/sync?lineId=&since=<ms>
@@ -91,6 +100,9 @@ const documentReceiveSync = (req, res) => __awaiter(void 0, void 0, void 0, func
     const sinceMs = q.since ? parseInt(q.since, 10) : 0;
     const sinceDate = sinceMs > 0 ? new Date(sinceMs) : undefined;
     const rows = yield prisma_1.prisma.documentReceiveRecord.findMany({
+        // the routing's own state, so the row can say whether it is merely
+        // drafted or actually out being signed
+        include: { routedQueueRoom: { select: { status: true, title: true } } },
         where: Object.assign({ lineId: q.lineId }, (sinceDate ? { updatedAt: { gt: sinceDate } } : {})),
         orderBy: { updatedAt: "asc" },
         take: 2000,
@@ -111,6 +123,9 @@ const documentReceiveFind = (req, res) => __awaiter(void 0, void 0, void 0, func
     // Including looking one up by barcode.
     yield (0, callerScope_1.requireSameLine)(req, req.query.lineId);
     const row = yield prisma_1.prisma.documentReceiveRecord.findUnique({
+        // the routing's own state, so the row can say whether it is merely
+        // drafted or actually out being signed
+        include: { routedQueueRoom: { select: { status: true, title: true } } },
         where: { lineId_barcode: { lineId: q.lineId, barcode: q.barcode.trim() } },
     });
     if (!row || row.deletedAt)
@@ -136,6 +151,9 @@ const documentReceiveCreate = (req, res) => __awaiter(void 0, void 0, void 0, fu
     // Replay of the same offline op → return what it created.
     if (b.id) {
         const byId = yield prisma_1.prisma.documentReceiveRecord.findUnique({
+            // the routing's own state, so the row can say whether it is merely
+            // drafted or actually out being signed
+            include: { routedQueueRoom: { select: { status: true, title: true } } },
             where: { id: b.id },
         });
         if (byId)
@@ -143,6 +161,9 @@ const documentReceiveCreate = (req, res) => __awaiter(void 0, void 0, void 0, fu
     }
     // Barcode already registered on this line (e.g. another device won) → return it.
     const byCode = yield prisma_1.prisma.documentReceiveRecord.findUnique({
+        // the routing's own state, so the row can say whether it is merely
+        // drafted or actually out being signed
+        include: { routedQueueRoom: { select: { status: true, title: true } } },
         where: { lineId_barcode: { lineId, barcode } },
     });
     if (byCode)
@@ -203,7 +224,10 @@ const documentReceiveList = (req, res) => __awaiter(void 0, void 0, void 0, func
             { receivedByName: { contains: s, mode: "insensitive" } },
         ];
     }
-    const rows = yield prisma_1.prisma.documentReceiveRecord.findMany(Object.assign(Object.assign({ where,
+    const rows = yield prisma_1.prisma.documentReceiveRecord.findMany(Object.assign(Object.assign({ 
+        // the routing's own state, so the row can say whether it is merely
+        // drafted or actually out being signed
+        include: { routedQueueRoom: { select: { status: true, title: true } } }, where,
         take, skip: q.cursor ? 1 : 0 }, (q.cursor ? { cursor: { id: q.cursor } } : {})), { orderBy: { createdAt: "desc" } }));
     const pageMap = yield pagesFor(rows.map((r) => r.id));
     return res.code(200).send({
@@ -515,7 +539,7 @@ exports.documentReceivePageServe = documentReceivePageServe;
 // that a piece of paper exists somewhere, and routing that promise to five
 // offices would give each of them a title and no document.
 const documentReceiveDisseminate = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    var _a, _b;
+    var _a, _b, _c, _d;
     const body = req.body;
     if (!body.recordId || !body.roomId) {
         throw new errors_1.ValidationError("BAD_REQUEST: recordId and roomId required");
@@ -560,7 +584,7 @@ const documentReceiveDisseminate = (req, res) => __awaiter(void 0, void 0, void 
                 ? yield pdf.embedPng(buf)
                 : yield pdf.embedJpg(buf);
         }
-        catch (_c) {
+        catch (_e) {
             // A mime can lie, or a scanner can relabel. Try the other one before
             // giving up on the page.
             try {
@@ -568,7 +592,7 @@ const documentReceiveDisseminate = (req, res) => __awaiter(void 0, void 0, void 
                     ? yield pdf.embedJpg(buf)
                     : yield pdf.embedPng(buf);
             }
-            catch (_d) {
+            catch (_f) {
                 throw new errors_1.ValidationError(`Page ${p.page} of this scan is not a readable image.`);
             }
         }
@@ -576,7 +600,14 @@ const documentReceiveDisseminate = (req, res) => __awaiter(void 0, void 0, void 
         page.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
     }
     const pdfBytes = Buffer.from(yield pdf.save());
-    const from = (_b = (_a = record.senderUnitName) !== null && _a !== void 0 ? _a : record.senderName) !== null && _b !== void 0 ? _b : "an external sender";
+    const actor = yield prisma_1.prisma.user.findUnique({
+        where: { id: actorId },
+        select: { firstName: true, lastName: true, username: true },
+    });
+    const actorName = `${(_a = actor === null || actor === void 0 ? void 0 : actor.firstName) !== null && _a !== void 0 ? _a : ""} ${(_b = actor === null || actor === void 0 ? void 0 : actor.lastName) !== null && _b !== void 0 ? _b : ""}`.trim() ||
+        (actor === null || actor === void 0 ? void 0 : actor.username) ||
+        null;
+    const from = (_d = (_c = record.senderUnitName) !== null && _c !== void 0 ? _c : record.senderName) !== null && _d !== void 0 ? _d : "an external sender";
     const title = record.title || record.barcode;
     const created = yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
         const queue = yield tx.signatureQueueRoom.create({
@@ -606,6 +637,18 @@ const documentReceiveDisseminate = (req, res) => __awaiter(void 0, void 0, void 
                 fileSize: String(pdfBytes.length),
                 fileType: "application/pdf",
                 fileDecoded: pdfBytes,
+            },
+        });
+        // Mark the record so the desk can see it has gone out. Inside the same
+        // transaction as the draft: a routing that exists without the mark, or
+        // a mark without a routing, would both be lies.
+        yield tx.documentReceiveRecord.update({
+            where: { id: record.id },
+            data: {
+                routedQueueRoomId: queue.id,
+                routedAt: new Date(),
+                routedById: actorId,
+                routedByName: actorName,
             },
         });
         yield tx.documentActivityLogs.create({

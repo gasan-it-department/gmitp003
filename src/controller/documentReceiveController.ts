@@ -28,6 +28,15 @@ const shape = (r: any) => ({
   createdAt: r.createdAt,
   updatedAt: r.updatedAt,
   deletedAt: r.deletedAt ?? null,
+  // Sent onward. The link is the flag: a deleted draft nulls it, and the
+  // document really is un-routed again. The routing's own status rides
+  // along because "already out and being signed" is a different fact from
+  // "somebody made a draft once", and only the first should stop a resend.
+  routedQueueRoomId: r.routedQueueRoomId ?? null,
+  routedAt: r.routedQueueRoomId ? (r.routedAt ?? null) : null,
+  routedByName: r.routedQueueRoomId ? (r.routedByName ?? null) : null,
+  routedStatus: r.routedQueueRoom?.status ?? null,
+  routedTitle: r.routedQueueRoom?.title ?? null,
 });
 
 // GET /document/receive/sync?lineId=&since=<ms>
@@ -43,6 +52,9 @@ export const documentReceiveSync = async (
   const sinceDate = sinceMs > 0 ? new Date(sinceMs) : undefined;
 
   const rows = await prisma.documentReceiveRecord.findMany({
+    // the routing's own state, so the row can say whether it is merely
+    // drafted or actually out being signed
+    include: { routedQueueRoom: { select: { status: true, title: true } } },
     where: {
       lineId: q.lineId,
       ...(sinceDate ? { updatedAt: { gt: sinceDate } } : {}),
@@ -67,6 +79,9 @@ export const documentReceiveFind = async (
   // Including looking one up by barcode.
   await requireSameLine(req, (req.query as { lineId?: string }).lineId);
   const row = await prisma.documentReceiveRecord.findUnique({
+    // the routing's own state, so the row can say whether it is merely
+    // drafted or actually out being signed
+    include: { routedQueueRoom: { select: { status: true, title: true } } },
     where: { lineId_barcode: { lineId: q.lineId, barcode: q.barcode.trim() } },
   });
   if (!row || row.deletedAt) return res.code(200).send({ record: null });
@@ -104,12 +119,18 @@ export const documentReceiveCreate = async (
   // Replay of the same offline op → return what it created.
   if (b.id) {
     const byId = await prisma.documentReceiveRecord.findUnique({
+    // the routing's own state, so the row can say whether it is merely
+    // drafted or actually out being signed
+    include: { routedQueueRoom: { select: { status: true, title: true } } },
       where: { id: b.id },
     });
     if (byId) return res.code(200).send({ record: shape(byId), existing: true });
   }
   // Barcode already registered on this line (e.g. another device won) → return it.
   const byCode = await prisma.documentReceiveRecord.findUnique({
+    // the routing's own state, so the row can say whether it is merely
+    // drafted or actually out being signed
+    include: { routedQueueRoom: { select: { status: true, title: true } } },
     where: { lineId_barcode: { lineId, barcode } },
   });
   if (byCode)
@@ -187,6 +208,9 @@ export const documentReceiveList = async (
   }
 
   const rows = await prisma.documentReceiveRecord.findMany({
+    // the routing's own state, so the row can say whether it is merely
+    // drafted or actually out being signed
+    include: { routedQueueRoom: { select: { status: true, title: true } } },
     where,
     take,
     skip: q.cursor ? 1 : 0,
@@ -575,6 +599,15 @@ export const documentReceiveDisseminate = async (
   }
   const pdfBytes = Buffer.from(await pdf.save());
 
+  const actor = await prisma.user.findUnique({
+    where: { id: actorId },
+    select: { firstName: true, lastName: true, username: true },
+  });
+  const actorName =
+    `${actor?.firstName ?? ""} ${actor?.lastName ?? ""}`.trim() ||
+    actor?.username ||
+    null;
+
   const from =
     record.senderUnitName ?? record.senderName ?? "an external sender";
   const title = record.title || record.barcode;
@@ -607,6 +640,18 @@ export const documentReceiveDisseminate = async (
         fileSize: String(pdfBytes.length),
         fileType: "application/pdf",
         fileDecoded: pdfBytes,
+      },
+    });
+    // Mark the record so the desk can see it has gone out. Inside the same
+    // transaction as the draft: a routing that exists without the mark, or
+    // a mark without a routing, would both be lies.
+    await tx.documentReceiveRecord.update({
+      where: { id: record.id },
+      data: {
+        routedQueueRoomId: queue.id,
+        routedAt: new Date(),
+        routedById: actorId,
+        routedByName: actorName,
       },
     });
     await tx.documentActivityLogs.create({

@@ -1952,6 +1952,22 @@ model DocumentReceiveRecord {
   updatedAt      DateTime  @updatedAt
   deletedAt      DateTime?
 
+  // ── Sent onward ─────────────────────────────────────────────────────
+  // Which routing this received document was handed to, so the desk can
+  // see at a glance that it has already gone out and does not send it
+  // twice.
+  //
+  // The link is the flag, not the timestamp: if the draft is deleted the
+  // FK nulls itself and the document is genuinely un-routed again, which
+  // is the truthful answer. routedAt and routedByName survive as history
+  // of the attempt, and are only shown while the link still holds.
+  routedQueueRoomId String?
+  routedQueueRoom   SignatureQueueRoom? @relation("ReceivedDocumentRouting", fields: [routedQueueRoomId], references: [id], onDelete: SetNull)
+  routedAt          DateTime?
+  routedById        String?
+  /// Denormalised, like receivedByName, so mobile renders without a join.
+  routedByName      String?
+
   @@unique([lineId, barcode])
   @@index([lineId, updatedAt])
 }
@@ -2095,6 +2111,8 @@ model SignatureQueueRoom {
   unit                 Department?                  @relation(fields: [departmentId], references: [id], onDelete: SetDefault)
   user                 User                         @relation(fields: [userId], references: [id])
   endorser             SignatureQueueRoomApprover[]
+  /// Received documents that were sent onward through this routing.
+  receivedDocuments    DocumentReceiveRecord[] @relation("ReceivedDocumentRouting")
   targetRooms          TargetRoom[]
   fromRoom             ReceivingRoom?               @relation(fields: [receivingRoomId], references: [id], onDelete: SetNull)
   receivingRoomId      String?

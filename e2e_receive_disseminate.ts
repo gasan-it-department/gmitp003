@@ -21,7 +21,10 @@ require.cache[entry] = {
 } as any;
 
 import { prisma } from "./src/barrel/prisma";
-import { documentReceiveDisseminate } from "./src/controller/documentReceiveController";
+import {
+  documentReceiveDisseminate,
+  documentReceiveList,
+} from "./src/controller/documentReceiveController";
 import { ROOM_MEMBER_TYPES } from "./src/controller/roomConfigController";
 
 const TS = Date.now();
@@ -168,6 +171,55 @@ const PNG_1PX = Buffer.from(
       String(parsed.getPageCount()));
     ok("…named after the barcode, so the paper can be found again",
       file?.fileName === `QA${TS}S.pdf`, file?.fileName);
+
+    // ── The record remembers it went out ────────────────────────────────
+    const listed = async (id: string) => {
+      const r = mockRes();
+      await documentReceiveList(
+        { user: { id: CLERK.accountId }, query: { lineId: LINE_A.id, limit: "50" } } as any,
+        r,
+      );
+      return ((r._body?.list ?? []) as any[]).find((x) => x.id === id);
+    };
+    let row = await listed(SCANNED.id);
+    ok("the log shows the record as routed", !!row?.routedQueueRoomId);
+    ok("…pointing at the routing it created",
+      row?.routedQueueRoomId === out.body.queueRoomId);
+    ok("…naming who sent it", !!row?.routedByName, JSON.stringify(row?.routedByName));
+    ok("…and carrying the routing's own state, not just 'sent'",
+      row?.routedStatus === 0, JSON.stringify(row?.routedStatus));
+
+    const unscannedRow = await listed(UNSCANNED.id);
+    ok("an unscanned record is not marked routed",
+      !unscannedRow?.routedQueueRoomId);
+
+    // The routing's state is what a clerk needs: dispatched is a different
+    // fact from drafted, and only the first should really stop a resend.
+    await prisma.signatureQueueRoom.update({
+      where: { id: out.body.queueRoomId }, data: { status: 1 } });
+    row = await listed(SCANNED.id);
+    ok("…and it follows the routing as it is dispatched", row?.routedStatus === 1);
+
+    // Routing again is allowed — the desk may have deleted the first draft
+    // or may genuinely need a second one — and the mark follows the newest.
+    const second = await call(CLERK.accountId, SCANNED.id, ROOM.id);
+    ok("a routed document can still be routed again", second.okd,
+      second.threw?.message);
+    row = await listed(SCANNED.id);
+    ok("…and the mark moves to the newer routing",
+      row?.routedQueueRoomId === second.body.queueRoomId);
+
+    // Deleting the draft un-routes the document, which is the honest
+    // answer: there is no routing any more, so the flag must not claim one.
+    await prisma.document.deleteMany({
+      where: { signatureQueueRoomId: second.body.queueRoomId } });
+    await prisma.signatureQueueRoom.delete({
+      where: { id: second.body.queueRoomId } });
+    row = await listed(SCANNED.id);
+    ok("deleting the routing clears the mark", !row?.routedQueueRoomId,
+      JSON.stringify(row?.routedQueueRoomId));
+    ok("…and the record survives it",
+      (await prisma.documentReceiveRecord.count({ where: { id: SCANNED.id } })) === 1);
 
     // ── Who may do it ───────────────────────────────────────────────────
     out = await call(OUTSIDE.accountId, SCANNED.id, ROOM.id);

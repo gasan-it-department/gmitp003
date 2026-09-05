@@ -1477,7 +1477,11 @@ exports.DocumentReceiveRecordScalarFieldEnum = {
     clientOpId: 'clientOpId',
     createdAt: 'createdAt',
     updatedAt: 'updatedAt',
-    deletedAt: 'deletedAt'
+    deletedAt: 'deletedAt',
+    routedQueueRoomId: 'routedQueueRoomId',
+    routedAt: 'routedAt',
+    routedById: 'routedById',
+    routedByName: 'routedByName'
 };
 exports.DocumentReceivePageScalarFieldEnum = {
     id: 'id',
