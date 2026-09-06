@@ -1160,6 +1160,7 @@ model User {
   roomAuthorizedUsers              RoomAuthorizedUser[]
   /// Documents this person confirmed their office had received.
   acknowledgedTargetRooms          TargetRoom[]              @relation("TargetRoomAcknowledger")
+  viewedTargetRooms                TargetRoom[]              @relation("TargetRoomViewer")
   roomRegistrations                RoomRegistration[]
   roomRegistrationReceivers        RoomRegistrationAuthorizedUser[]
   RoomRegistrationConversationFrom RoomRegistrationConversation[]   @relation("RoomRegistrationConversationFrom")
@@ -2156,11 +2157,25 @@ model TargetRoom {
   /// Optional remark from the office: "2 copies", "received by front desk".
   acknowledgedNote     String?
   acknowledgedBy       User?               @relation("TargetRoomAcknowledger", fields: [acknowledgedById], references: [id])
+  // ── Opened ──────────────────────────────────────────────────────────
+  // The step between the two above. Delivery is the system's doing and a
+  // receipt is a deliberate act somebody has to remember to perform; in
+  // between sits "somebody in that office has at least LOOKED at it",
+  // which is what the sender actually wants to know at 4pm on a Friday.
+  //
+  // Stamped once, on the first open by anybody in the receiving room, and
+  // never cleared — "this office has seen it" does not become untrue.
+  /// When the receiving office first opened it. Null = nobody has looked.
+  viewedAt             DateTime?
+  /// Who opened it first.
+  viewedById           String?
+  viewedBy             User?               @relation("TargetRoomViewer", fields: [viewedById], references: [id])
   roomReceiver         ReceivingRoom?      @relation(fields: [receivingRoomId], references: [id])
   queueRoom            SignatureQueueRoom? @relation(fields: [signatureQueueRoomId], references: [id])
   submittedDocuments   SubmittedDocument?  @relation(fields: [submittedDocumentId], references: [id])
 
   @@index([receivingRoomId, acknowledgedAt])
+  @@index([receivingRoomId, viewedAt])
 }
 
 model DocumentRoute {

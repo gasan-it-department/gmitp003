@@ -81,6 +81,10 @@ import {
   verifySignatureData,
 } from "../controller/disseminationController";
 import {
+  documentActivityPanel,
+  documentActivityLog,
+} from "../controller/documentActivityController";
+import {
   selfSignUpload,
   selfSignSavePlacements,
   selfSignAll,
@@ -340,6 +344,16 @@ export const document = (fastify: FastifyInstance) => {
     "/document/overview",
     { preHandler: authenticated },
     documentOverview,
+  );
+  fastify.get(
+    "/document/activity",
+    { preHandler: authenticated },
+    documentActivityPanel,
+  );
+  fastify.get(
+    "/document/activity/log",
+    { preHandler: authenticated },
+    documentActivityLog,
   );
   fastify.get(
     "/document/dissemination/view",

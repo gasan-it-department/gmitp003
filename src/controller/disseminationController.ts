@@ -102,6 +102,49 @@ const requireCanSeeRouting = async (req: FastifyRequest, queueId: string) => {
 };
 
 /**
+ * Record that the receiving office has now LOOKED at this.
+ *
+ * Called on open, for the rooms the reader actually belongs to. The sender
+ * of a routing has one question all afternoon — "did they even see it?" —
+ * and until now the only answer available was the receipt, which somebody
+ * has to remember to tick. This is the cheaper signal: it costs the
+ * recipient nothing and it is true the moment it is stamped.
+ *
+ * Stamped once and never cleared. It is deliberately NOT a substitute for
+ * the receipt: "opened" is a fact about a screen, "received" is a person
+ * putting their name to it, and the panel shows both because they answer
+ * different questions.
+ *
+ * Best-effort by design — this is a side effect of a read, and a failure
+ * to write a breadcrumb must never stop somebody opening their document.
+ */
+const markRoutingOpened = async (actorId: string, queueId: string) => {
+  try {
+    const mine = await prisma.roomAuthorizedUser.findMany({
+      where: { userId: actorId, status: 1 },
+      select: { receivingRoomId: true },
+    });
+    const roomIds = mine
+      .map((m) => m.receivingRoomId)
+      .filter((x): x is string => !!x);
+    if (!roomIds.length) return;
+    await prisma.targetRoom.updateMany({
+      where: {
+        signatureQueueRoomId: queueId,
+        receivingRoomId: { in: roomIds },
+        viewedAt: null,
+        // A held copy-furnished row has not been delivered; opening the
+        // routing some other way must not mark it as seen.
+        ...VISIBLE_TO_ROOM,
+      },
+      data: { viewedAt: new Date(), viewedById: actorId },
+    });
+  } catch (e) {
+    console.warn("[routing] could not stamp opened:", e);
+  }
+};
+
+/**
  * Who may CHANGE a routing — attach a file, remove one, move the
  * signature boxes. Only the office that is sending it. A recipient being
  * able to delete the sender's attachment is a different bug entirely.
@@ -223,6 +266,7 @@ export const disseminationOutbox = async (
             copyFurnished: true,
             releasedAt: true,
             acknowledgedAt: true,
+            viewedAt: true,
             roomReceiver: { select: { id: true, code: true, address: true } },
           },
         },
@@ -1767,7 +1811,9 @@ export const viewDissemination = async (
   const params = req.query as { id: string };
   if (!params.id) throw new ValidationError("INVALID REQUIRED ID");
   // Only the people this routing actually involves.
-  await requireCanSeeRouting(req, params.id);
+  const viewerId = await requireCanSeeRouting(req, params.id);
+  // They are allowed to see it and they are looking at it now.
+  await markRoutingOpened(viewerId, params.id);
 
   try {
     const row = await prisma.signatureQueueRoom.findUnique({
@@ -1784,6 +1830,10 @@ export const viewDissemination = async (
             acknowledgedAt: true,
             acknowledgedNote: true,
             acknowledgedBy: {
+              select: { id: true, firstName: true, lastName: true },
+            },
+            viewedAt: true,
+            viewedBy: {
               select: { id: true, firstName: true, lastName: true },
             },
             roomReceiver: { select: { id: true, code: true } },
