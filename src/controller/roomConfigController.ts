@@ -71,6 +71,119 @@ const ownedRoom = async (req: FastifyRequest, roomId: string) => {
   return { room, lineId };
 };
 
+/**
+ * Is this a super-admin impersonation session?
+ *
+ * Same check `userModuleAccess` makes: an `imp` claim on the token means
+ * a platform admin is operating inside somebody's line and must not be
+ * blocked by that line's own permission rows.
+ */
+const isImpersonating = (req: FastifyRequest): boolean => {
+  try {
+    const authz = req.headers.authorization?.split(" ")[1];
+    const decoded = authz
+      ? (req.server.jwt.decode(authz) as { imp?: boolean } | null)
+      : null;
+    return decoded?.imp === true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Does this person administer HR for their line?
+ *
+ * Deliberately the SAME predicate the app uses to decide whether to open
+ * the HR module at all (`userModuleAccess`: moduleName + userId, nothing
+ * else). Tightening it here — adding a status or line filter — would mean
+ * somebody who can open the HR screen is refused by the endpoint behind
+ * it, which is a worse failure than the looseness it fixes. If that
+ * predicate is ever tightened, tighten it in one place for both.
+ */
+const hasHrModule = async (userId: string): Promise<boolean> =>
+  !!(await prisma.module.findFirst({
+    where: { userId, moduleName: "human-resources" },
+    select: { id: true },
+  }));
+
+/**
+ * Who may CHANGE a room's membership.
+ *
+ * Until now: anybody on the line, because `ownedRoom` checks only that
+ * the room belongs to your municipality. That was survivable while the
+ * only door was an HR screen behind a module guard. It stops being
+ * survivable the moment the same controls appear in the Document module,
+ * which every line user can open — so the check moves to the server,
+ * where it should always have been.
+ *
+ * Two legitimate authorities, and they are genuinely different people:
+ *
+ *   - the room's OWNER, running their own office. They belong to it.
+ *   - HR, who administer every office's room and belong to none of them.
+ *
+ * A signatory or a receiver is neither: being trusted to sign documents
+ * is not being trusted to decide who else may sign them.
+ */
+const requireRoomAdmin = async (
+  req: FastifyRequest,
+  roomId: string,
+): Promise<{ room: Awaited<ReturnType<typeof ownedRoom>>["room"]; lineId: string; actorId: string }> => {
+  const { room, lineId } = await ownedRoom(req, roomId);
+  const actorId = await callerUserId(req);
+  if (!actorId) throw new UnauthorizedError("Not signed in");
+  if (isImpersonating(req)) return { room, lineId, actorId };
+
+  const owner = await prisma.roomAuthorizedUser.findFirst({
+    where: {
+      receivingRoomId: roomId,
+      userId: actorId,
+      status: 1,
+      type: ROOM_MEMBER_TYPES.owner,
+    },
+    select: { id: true },
+  });
+  if (owner) return { room, lineId, actorId };
+
+  if (await hasHrModule(actorId)) return { room, lineId, actorId };
+
+  console.warn(
+    `[roomConfig] refused: user ${actorId} tried to administer room ${roomId}`,
+  );
+  throw new UnauthorizedError(
+    "Only this office's owner or HR can change its members.",
+  );
+};
+
+/**
+ * Who may READ a room's membership.
+ *
+ * Wider than the above on purpose: anyone who works in the room can see
+ * who else does. Knowing your colleagues' roles is not a privilege, and
+ * the Document module already shows the list elsewhere.
+ */
+const requireRoomReader = async (
+  req: FastifyRequest,
+  roomId: string,
+): Promise<{ room: Awaited<ReturnType<typeof ownedRoom>>["room"]; lineId: string; actorId: string }> => {
+  const { room, lineId } = await ownedRoom(req, roomId);
+  const actorId = await callerUserId(req);
+  if (!actorId) throw new UnauthorizedError("Not signed in");
+  if (isImpersonating(req)) return { room, lineId, actorId };
+
+  const member = await prisma.roomAuthorizedUser.findFirst({
+    where: { receivingRoomId: roomId, userId: actorId, status: 1 },
+    select: { id: true },
+  });
+  if (member) return { room, lineId, actorId };
+
+  if (await hasHrModule(actorId)) return { room, lineId, actorId };
+
+  console.warn(
+    `[roomConfig] refused: user ${actorId} asked to read room ${roomId}`,
+  );
+  throw new NotFoundError("Document room not found");
+};
+
 /** Best-effort notify + email. Never lets a delivery failure undo the change. */
 const tellMember = async (
   userId: string,
@@ -118,7 +231,7 @@ LGU Gasan`,
 export const roomConfig = async (req: FastifyRequest, res: FastifyReply) => {
   const { roomId } = req.query as { roomId?: string };
   if (!roomId) throw new ValidationError("roomId is required");
-  const { room } = await ownedRoom(req, roomId);
+  const { room } = await requireRoomReader(req, roomId);
 
   const members = await prisma.roomAuthorizedUser.findMany({
     where: { receivingRoomId: room.id, status: 1 },
@@ -216,7 +329,7 @@ const otherRoomOf = async (
 export const roomCandidates = async (req: FastifyRequest, res: FastifyReply) => {
   const q = req.query as { roomId?: string; query?: string };
   if (!q.roomId) throw new ValidationError("roomId is required");
-  const { room, lineId } = await ownedRoom(req, q.roomId);
+  const { room, lineId } = await requireRoomAdmin(req, q.roomId);
   const term = (q.query || "").trim().toLowerCase();
 
   const already = new Set(
@@ -292,7 +405,7 @@ export const updateRoomConfig = async (
 ) => {
   const b = req.body as { roomId?: string; code?: string; address?: string };
   if (!b.roomId) throw new ValidationError("roomId is required");
-  const { room, lineId } = await ownedRoom(req, b.roomId);
+  const { room, lineId } = await requireRoomAdmin(req, b.roomId);
   const actorId = await callerUserId(req);
 
   const data: Prisma.ReceivingRoomUpdateInput = {};
@@ -359,7 +472,7 @@ export const addRoomMembers = async (
     type?: number | string;
   };
   if (!b.roomId) throw new ValidationError("roomId is required");
-  const { room, lineId } = await ownedRoom(req, b.roomId);
+  const { room, lineId } = await requireRoomAdmin(req, b.roomId);
   const actorId = await callerUserId(req);
 
   const type = Number(b.type ?? ROOM_MEMBER_TYPES.signatory);
@@ -447,7 +560,7 @@ export const updateRoomMember = async (
   const b = req.body as { roomId?: string; memberId?: string; type?: number };
   if (!b.roomId || !b.memberId)
     throw new ValidationError("roomId and memberId are required");
-  const { room } = await ownedRoom(req, b.roomId);
+  const { room } = await requireRoomAdmin(req, b.roomId);
   const actorId = await callerUserId(req);
 
   const type = Number(b.type);
@@ -499,7 +612,7 @@ export const removeRoomMember = async (
   const q = req.query as { roomId?: string; memberId?: string };
   if (!q.roomId || !q.memberId)
     throw new ValidationError("roomId and memberId are required");
-  const { room } = await ownedRoom(req, q.roomId);
+  const { room } = await requireRoomAdmin(req, q.roomId);
   const actorId = await callerUserId(req);
 
   const member = await prisma.roomAuthorizedUser.findFirst({

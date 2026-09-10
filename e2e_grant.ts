@@ -3,6 +3,17 @@
  * "Has access" badges read shows that user immediately, a stale/mismatched
  * row is REFUSED with no grant to anyone, and cross-line grants stay
  * refused. Runs the real controllers against the local dev DB. */
+import path from "path";
+
+// Stub the entry module before anything imports it: pulling in a
+// controller otherwise boots the real Fastify server and the suite dies
+// on EADDRINUSE against whatever already holds :3000.
+const entry = path.join(__dirname, "src", "index.ts");
+require.cache[entry] = {
+  id: entry, filename: entry, loaded: true,
+  exports: { notificationSocket: { emitUserNotification: () => undefined } },
+} as any;
+
 import { prisma } from "./src/barrel/prisma";
 import { addModuleAccess, moduleUsers } from "./src/controller/moduleController";
 

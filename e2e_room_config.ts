@@ -5,6 +5,18 @@
  * leaving a room without an owner.
  *
  * Run: npx ts-node --transpile-only e2e_room_config.ts */
+import path from "path";
+
+// Stub the entry module before anything imports it. Without this, pulling
+// in a controller boots the real Fastify server and the suite dies on
+// EADDRINUSE against whatever already holds :3000 — every other suite
+// here does the same.
+const entry = path.join(__dirname, "src", "index.ts");
+require.cache[entry] = {
+  id: entry, filename: entry, loaded: true,
+  exports: { notificationSocket: { emitUserNotification: () => undefined } },
+} as any;
+
 import { prisma } from "./src/barrel/prisma";
 import {
   roomConfig,
@@ -70,6 +82,16 @@ const mockRes = () => {
     };
 
     const HR = await mkUser("hr");
+    // This actor is called HR and drives every request below, but it used
+    // to be an ordinary line user with no authority at all — it passed
+    // only because the endpoints let any colleague on the line through.
+    // Now that they do not, give it the authority its name always claimed.
+    await prisma.module.create({
+      data: {
+        moduleName: "human-resources", moduleIndex: "0",
+        userId: HR.userId, lineId: LINE, privilege: 1, status: 1,
+      },
+    });
     const OWNER = await mkUser("owner");
     const SIG = await mkUser("sig");
     const RCV = await mkUser("rcv");
@@ -336,6 +358,9 @@ const mockRes = () => {
           })
           .catch(() => undefined);
         await prisma.humanResourcesLogs
+          .deleteMany({ where: { userId: { in: made.userIds } } })
+          .catch(() => undefined);
+        await prisma.module
           .deleteMany({ where: { userId: { in: made.userIds } } })
           .catch(() => undefined);
         await prisma.user.deleteMany({ where: { id: { in: made.userIds } } });
