@@ -279,8 +279,40 @@ app.get("/test/ai", async (request: FastifyRequest, reply: FastifyReply) => {
 // Public build marker — lets anyone (including the assistant) CONFIRM which
 // build is actually serving, instead of trusting deploy timers. Bump the
 // tag with each meaningful deploy.
-const BUILD_TAG = "2026-09-10-sign-view";
-app.get("/health/build", async () => ({ status: "ok", build: BUILD_TAG }));
+const BUILD_TAG = "2026-09-10-sign-view-probe";
+
+/**
+ * Can this container actually rasterise a PDF page?
+ *
+ * The document viewer renders pages server-side with a WASM build of
+ * mupdf. WASM is meant to behave identically everywhere, but "meant to"
+ * is the phrase that precedes a dev/prod difference, and the alternative
+ * to checking is a signee opening a memo and getting blank pages. Probed
+ * once, lazily, on a PDF built here — no user data touches it — and the
+ * answer is cached.
+ */
+let pdfProbe: Promise<string> | null = null;
+const probeRaster = (): Promise<string> =>
+  (pdfProbe ??= (async () => {
+    try {
+      const { PDFDocument } = await import("pdf-lib");
+      const { renderPdfPage } = await import("./service/pdfRaster");
+      const doc = await PDFDocument.create();
+      doc.addPage([200, 200]);
+      const out = await renderPdfPage(Buffer.from(await doc.save()), 1, 320);
+      const isPng = out.png.subarray(0, 4).toString("hex") === "89504e47";
+      return isPng && out.widthPx === 320 ? "ok" : "bad-output";
+    } catch (e) {
+      console.warn("[health] pdf raster probe failed:", e);
+      return `failed: ${(e as Error)?.message ?? "unknown"}`.slice(0, 120);
+    }
+  })());
+
+app.get("/health/build", async () => ({
+  status: "ok",
+  build: BUILD_TAG,
+  pdfRaster: await probeRaster(),
+}));
 
 app.listen({ port: 3000, host: "0.0.0.0" }, (err, address) => {
   if (err) {
