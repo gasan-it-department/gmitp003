@@ -823,6 +823,53 @@ export const finalizeDissemination = async (
           path: `documents/dissemination?tab=inbox`,
         });
       }
+
+      // And the offices it was actually addressed TO.
+      //
+      // Until now only signatories were told. An addressed office learned
+      // a memo had arrived by somebody opening the Inbox and looking,
+      // which is precisely the habit this module exists to replace — and
+      // it is the half that ends in "we never received that".
+      //
+      // Held copy-furnished rows are excluded: that office has not been
+      // given the document yet and must not learn it exists. They are
+      // notified by releaseCopyFurnished when the last signature lands.
+      const addressed = await tx.targetRoom.findMany({
+        where: {
+          signatureQueueRoomId: body.queueRoomId,
+          copyFurnished: false,
+          receivingRoomId: { not: null },
+        },
+        select: { receivingRoomId: true },
+      });
+      const addressedRoomIds = addressed
+        .map((t) => t.receivingRoomId)
+        .filter((x): x is string => !!x);
+      if (addressedRoomIds.length) {
+        const staff = await tx.roomAuthorizedUser.findMany({
+          where: {
+            receivingRoomId: { in: addressedRoomIds },
+            status: 1,
+            userId: { not: null },
+          },
+          select: { userId: true },
+        });
+        for (const m of staff) {
+          // Not the person who just pressed Dispatch — they know.
+          if (!m.userId || m.userId === body.userId || seen.has(m.userId))
+            continue;
+          seen.add(m.userId);
+          await createUserNotification(tx, {
+            recipientId: m.userId,
+            senderId: body.userId,
+            title: "Document received",
+            content:
+              `"${queue.title ?? "A document"}" was routed to your office. ` +
+              `Open it and mark it received.`,
+            path: `documents/dissemination?tab=inbox`,
+          });
+        }
+      }
       return updated;
     });
     return res.code(200).send({ message: "OK", id: result.id });

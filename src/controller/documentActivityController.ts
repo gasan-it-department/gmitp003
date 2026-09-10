@@ -17,7 +17,7 @@
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
 import { prisma, Prisma } from "../barrel/prisma";
 import { AppError, ValidationError } from "../errors/errors";
-import { requireRoomMember } from "../service/callerScope";
+import { callerContext, requireRoomMember } from "../service/callerScope";
 import { VISIBLE_TO_ROOM } from "../service/copyFurnish";
 import { ROOM_MEMBER_TYPES } from "./roomConfigController";
 
@@ -372,6 +372,157 @@ export const documentActivityLog = async (
       })),
       lastCursor: rows.length ? rows[rows.length - 1].id : null,
       hasMore: rows.length === limit,
+    });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
+    }
+    throw error;
+  }
+};
+
+/**
+ * Everything the CALLER personally owes, across every office they work in.
+ *
+ * The panel endpoint above is office-shaped: it needs a room id, because
+ * "waiting on you" on a desktop means "waiting on this office". A phone
+ * has no room picker and its owner does not think in rooms — they think
+ * "do I have anything to sign". So this one is person-shaped: it takes no
+ * room, walks the caller's memberships itself, and answers that question.
+ *
+ * It is also what the mobile badge counts, so it stays cheap: two lists
+ * capped short, and the true totals alongside them.
+ */
+const PENDING_PEEK = 25;
+
+export const documentMyPending = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const { actorId } = await callerContext(req);
+
+  try {
+    // The offices this person actually works in, and in which role. Only
+    // an owner or a receiver can sign for a document, so only their rooms
+    // contribute to the "to receive" pile — showing a signatory a receipt
+    // they are not allowed to make is worse than showing them nothing.
+    const memberships = await prisma.roomAuthorizedUser.findMany({
+      where: { userId: actorId, status: 1 },
+      select: { receivingRoomId: true, type: true },
+    });
+    const receiptRoomIds = memberships
+      .filter(
+        (m) =>
+          m.type === ROOM_MEMBER_TYPES.owner ||
+          m.type === ROOM_MEMBER_TYPES.receiver,
+      )
+      .map((m) => m.receivingRoomId)
+      .filter((x): x is string => !!x);
+
+    const owedHere: Prisma.TargetRoomWhereInput = {
+      receivingRoomId: { in: receiptRoomIds },
+      queueRoom: { is: { status: { gte: 1 } } },
+      acknowledgedAt: null,
+      ...VISIBLE_TO_ROOM,
+    };
+    const mineToSign: Prisma.SignatoryArrangementWhereInput = {
+      userId: actorId,
+      status: 0,
+      signatureQueueRoom: { is: { status: 1 } },
+    };
+
+    const [signRows, signTotal, recvRows, recvTotal] = await Promise.all([
+      prisma.signatoryArrangement.findMany({
+        where: mineToSign,
+        orderBy: { timestamp: "asc" },
+        take: PENDING_PEEK,
+        select: {
+          id: true,
+          index: true,
+          timestamp: true,
+          signatureQueueRoom: {
+            select: {
+              id: true,
+              title: true,
+              timestamp: true,
+              fromRoom: { select: { code: true } },
+              user: { select: { firstName: true, lastName: true } },
+              signatotyArrangement: { select: { status: true } },
+              _count: { select: { documents: true } },
+            },
+          },
+        },
+      }),
+      prisma.signatoryArrangement.count({ where: mineToSign }),
+      receiptRoomIds.length
+        ? prisma.targetRoom.findMany({
+            where: owedHere,
+            orderBy: { timestamp: "asc" },
+            take: PENDING_PEEK,
+            select: {
+              id: true,
+              timestamp: true,
+              releasedAt: true,
+              viewedAt: true,
+              copyFurnished: true,
+              roomReceiver: { select: { id: true, code: true } },
+              queueRoom: {
+                select: {
+                  id: true,
+                  title: true,
+                  user: { select: { firstName: true, lastName: true } },
+                  fromRoom: { select: { code: true } },
+                  _count: { select: { documents: true } },
+                },
+              },
+            },
+          })
+        : Promise.resolve([]),
+      receiptRoomIds.length
+        ? prisma.targetRoom.count({ where: owedHere })
+        : Promise.resolve(0),
+    ]);
+
+    const toSign = signRows.map((a) => {
+      const slots = a.signatureQueueRoom?.signatotyArrangement ?? [];
+      return {
+        arrangementId: a.id,
+        queueId: a.signatureQueueRoom?.id ?? null,
+        title: a.signatureQueueRoom?.title ?? "Untitled routing",
+        from:
+          a.signatureQueueRoom?.fromRoom?.code ??
+          fullName(a.signatureQueueRoom?.user) ??
+          "—",
+        sentAt: a.signatureQueueRoom?.timestamp ?? a.timestamp,
+        position: a.index + 1,
+        totalSignatories: slots.length,
+        signed: slots.filter((s) => s.status === 1).length,
+        files: a.signatureQueueRoom?._count.documents ?? 0,
+      };
+    });
+
+    const toReceive = recvRows.map((r) => ({
+      targetId: r.id,
+      queueId: r.queueRoom?.id ?? null,
+      title: r.queueRoom?.title ?? "Untitled routing",
+      from: r.queueRoom?.fromRoom?.code ?? fullName(r.queueRoom?.user) ?? "—",
+      // Which of your offices owes this one. Somebody who sits in two
+      // rooms cannot act on the list without being told.
+      office: r.roomReceiver?.code ?? null,
+      arrivedAt: r.releasedAt ?? r.timestamp,
+      copyFurnished: r.copyFurnished,
+      opened: r.viewedAt !== null,
+      files: r.queueRoom?._count.documents ?? 0,
+    }));
+
+    return res.code(200).send({
+      toSign,
+      toReceive,
+      counts: {
+        toSign: signTotal,
+        toReceive: recvTotal,
+        total: signTotal + recvTotal,
+      },
     });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {

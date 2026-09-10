@@ -83,6 +83,7 @@ import {
 import {
   documentActivityPanel,
   documentActivityLog,
+  documentMyPending,
 } from "../controller/documentActivityController";
 import {
   selfSignUpload,
@@ -354,6 +355,11 @@ export const document = (fastify: FastifyInstance) => {
     "/document/activity/log",
     { preHandler: authenticated },
     documentActivityLog,
+  );
+  fastify.get(
+    "/document/my-pending",
+    { preHandler: authenticated },
+    documentMyPending,
   );
   fastify.get(
     "/document/dissemination/view",
