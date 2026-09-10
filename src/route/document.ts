@@ -86,6 +86,10 @@ import {
   documentMyPending,
 } from "../controller/documentActivityController";
 import {
+  routingSignSheet,
+  routingPageImage,
+} from "../controller/documentSignViewController";
+import {
   selfSignUpload,
   selfSignSavePlacements,
   selfSignAll,
@@ -360,6 +364,16 @@ export const document = (fastify: FastifyInstance) => {
     "/document/my-pending",
     { preHandler: authenticated },
     documentMyPending,
+  );
+  fastify.get(
+    "/document/routing/sign-sheet",
+    { preHandler: authenticated },
+    routingSignSheet,
+  );
+  fastify.get(
+    "/document/routing/page-image",
+    { preHandler: authenticated },
+    routingPageImage,
   );
   fastify.get(
     "/document/dissemination/view",

@@ -91,7 +91,7 @@ const canSeeRouting = async (
 };
 
 /** Read gate. Refuses without confirming the routing exists. */
-const requireCanSeeRouting = async (req: FastifyRequest, queueId: string) => {
+export const requireCanSeeRouting = async (req: FastifyRequest, queueId: string) => {
   const actorId = await callerUserId(req);
   if (!actorId) throw new UnauthorizedError("Not signed in");
   if (!(await canSeeRouting(actorId, queueId))) {
@@ -181,7 +181,7 @@ const requireOwnsRouting = async (req: FastifyRequest, queueId: string) => {
  * hole of its own: this endpoint is shared with Self Sign, so every
  * private upload in the municipality was one id away from anybody.
  */
-const requireCanSeeDocument = async (
+export const requireCanSeeDocument = async (
   req: FastifyRequest,
   documentId: string,
 ) => {
