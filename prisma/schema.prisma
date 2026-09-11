@@ -2092,10 +2092,22 @@ model SignatoryArrangement {
   // The signature the signer chose at sign time. Null = use the signer's
   // active signature at download time (legacy behavior).
   signatureId          String?
+  // ── Reminders ───────────────────────────────────────────────────────
+  // A document waiting on one person's signature is the commonest way a
+  // routing dies quietly. These two columns are the whole mechanism: the
+  // sweep claims a row by writing remindedAt conditionally, which makes a
+  // nudge exactly-once even if two workers wake at the same instant.
+  /// When this person was last nudged about signing. Null = never.
+  remindedAt           DateTime?
+  /// How many nudges have gone out. Capped, so it stops being a reminder
+  /// and starts being noise.
+  reminderCount        Int                 @default(0)
   signatureQueueRoom   SignatureQueueRoom? @relation(fields: [signatureQueueRoomId], references: [id], onDelete: Cascade)
   user                 User?               @relation("SignatoryArrangementUser", fields: [userId], references: [id])
   chosenSignature      Signature?          @relation(fields: [signatureId], references: [id])
   sign                 SignatureCoor[]
+
+  @@index([status, remindedAt])
 }
 
 model SignatureQueueRoom {
@@ -2107,6 +2119,13 @@ model SignatureQueueRoom {
   step                 Int                          @default(0)
   title                String?
   index                Int                          @default(0)
+  /// When it was DISPATCHED, which is not `timestamp` — that is when the
+  /// draft was created, and a draft can sit for a fortnight first. The
+  /// reminder clock has to start from the moment somebody was actually
+  /// asked to sign. Null on routings dispatched before this existed.
+  dispatchedAt         DateTime?
+  /// When the sender was told nobody is signing. Once, at the cap.
+  stalledNoticeAt      DateTime?
   documents            Document[]
   signatotyArrangement SignatoryArrangement[]
   unit                 Department?                  @relation(fields: [departmentId], references: [id], onDelete: SetDefault)

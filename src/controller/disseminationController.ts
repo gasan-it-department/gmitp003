@@ -31,6 +31,7 @@ import {
   releaseCopyFurnished,
   VISIBLE_TO_ROOM,
 } from "../service/copyFurnish";
+import { resetReminderClock } from "../service/signatureReminders";
 
 /**
  * Somebody who can actually open what lands in a room.
@@ -744,8 +745,14 @@ export const finalizeDissemination = async (
 
       const updated = await tx.signatureQueueRoom.update({
         where: { id: body.queueRoomId },
-        data: { status: 1, step: 1 },
+        // dispatchedAt, not timestamp: a draft can sit for a fortnight
+        // before somebody sends it, and the reminder clock has to start
+        // from the moment a signatory was actually asked.
+        data: { status: 1, step: 1, dispatchedAt: new Date() },
       });
+      // A routing that was cancelled and re-sent must not inherit an old
+      // nudge count and open on "last reminder".
+      await resetReminderClock(tx, body.queueRoomId);
       console.log("[finalize] queue updated:", {
         id: updated.id,
         status: updated.status,

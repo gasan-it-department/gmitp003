@@ -65,6 +65,7 @@ import errorHandlerPlugin from "./plugin/errorHandlers";
 //
 import { EncryptionService } from "./service/encryption";
 import { testGemini } from "./utils/gemini";
+import { startSignatureReminders } from "./service/signatureReminders";
 // ── Last-line crash guards ──────────────────────────────────────────────
 // Without these, ONE leaked promise rejection anywhere kills the whole
 // process (Node's default), severing every in-flight request — mobile
@@ -279,7 +280,7 @@ app.get("/test/ai", async (request: FastifyRequest, reply: FastifyReply) => {
 // Public build marker — lets anyone (including the assistant) CONFIRM which
 // build is actually serving, instead of trusting deploy timers. Bump the
 // tag with each meaningful deploy.
-const BUILD_TAG = "2026-09-11-recall-memo";
+const BUILD_TAG = "2026-09-11-sign-reminders";
 
 /**
  * Can this container actually rasterise a PDF page?
@@ -313,6 +314,11 @@ app.get("/health/build", async () => ({
   build: BUILD_TAG,
   pdfRaster: await probeRaster(),
 }));
+
+// Nudge signatories who have not got round to it. Paced by columns on
+// SignatoryArrangement rather than by this timer, so the interval only
+// has to be roughly frequent enough.
+startSignatureReminders();
 
 app.listen({ port: 3000, host: "0.0.0.0" }, (err, address) => {
   if (err) {
