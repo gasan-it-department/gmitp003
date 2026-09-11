@@ -280,7 +280,7 @@ app.get("/test/ai", async (request: FastifyRequest, reply: FastifyReply) => {
 // Public build marker — lets anyone (including the assistant) CONFIRM which
 // build is actually serving, instead of trusting deploy timers. Bump the
 // tag with each meaningful deploy.
-const BUILD_TAG = "2026-09-11-sign-reminders";
+const BUILD_TAG = "2026-09-11-reminders-probe";
 
 /**
  * Can this container actually rasterise a PDF page?
@@ -309,11 +309,42 @@ const probeRaster = (): Promise<string> =>
     }
   })());
 
-app.get("/health/build", async () => ({
-  status: "ok",
-  build: BUILD_TAG,
-  pdfRaster: await probeRaster(),
-}));
+/**
+ * Are the reminder columns actually on this database?
+ *
+ * They arrive by `prisma db push` at boot. If that ever does not happen,
+ * the sweep throws every fifteen minutes into a log nobody is reading and
+ * the reminders simply never come — the exact failure the feature exists
+ * to prevent, in the feature itself. One read settles it.
+ */
+let remindersProbe: Promise<string> | null = null;
+const probeReminders = (): Promise<string> =>
+  (remindersProbe ??= (async () => {
+    try {
+      const { prisma } = await import("./barrel/prisma");
+      await prisma.signatoryArrangement.findFirst({
+        select: { remindedAt: true, reminderCount: true },
+      });
+      await prisma.signatureQueueRoom.findFirst({
+        select: { dispatchedAt: true, stalledNoticeAt: true },
+      });
+      return "ok";
+    } catch (e) {
+      console.warn("[health] reminder columns probe failed:", e);
+      return `failed: ${(e as Error)?.message ?? "unknown"}`.slice(0, 120);
+    }
+  })());
+
+app.get("/health/build", async () => {
+  const { lastSweep } = await import("./service/signatureReminders");
+  return {
+    status: "ok",
+    build: BUILD_TAG,
+    pdfRaster: await probeRaster(),
+    reminders: await probeReminders(),
+    lastSweep,
+  };
+});
 
 // Nudge signatories who have not got round to it. Paced by columns on
 // SignatoryArrangement rather than by this timer, so the interval only

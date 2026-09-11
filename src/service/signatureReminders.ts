@@ -63,6 +63,23 @@ export const isWorkingHours = (now = new Date()): boolean => {
   return hour >= 8 && hour < 17;
 };
 
+/**
+ * What the last sweep did, for /health/build.
+ *
+ * The sweep swallows its own errors so a bad pass cannot take the server
+ * down — which also means a sweep that fails every fifteen minutes is
+ * completely silent from outside. This is how you find out. Reported
+ * rather than logged because Railway logs are not somewhere you look
+ * unless you already suspect something.
+ */
+export let lastSweep: {
+  at: string;
+  nudged: number;
+  stalled: number;
+  skipped?: string;
+  error?: string;
+} | null = null;
+
 export interface SweepResult {
   /** Signatories nudged this run. */
   nudged: number;
@@ -93,6 +110,10 @@ export const runSignatureReminders = async (
   now = new Date(),
 ): Promise<SweepResult> => {
   if (!isWorkingHours(now)) {
+    lastSweep = {
+      at: now.toISOString(), nudged: 0, stalled: 0,
+      skipped: "outside-working-hours",
+    };
     return { nudged: 0, stalled: 0, skipped: "outside-working-hours" };
   }
 
@@ -269,6 +290,7 @@ export const runSignatureReminders = async (
   if (nudged || stalled) {
     console.log(`[reminders] nudged=${nudged} stalled=${stalled}`);
   }
+  lastSweep = { at: now.toISOString(), nudged, stalled };
   return { nudged, stalled };
 };
 
@@ -304,9 +326,13 @@ let timer: ReturnType<typeof setInterval> | null = null;
 export const startSignatureReminders = (): void => {
   if (timer) return;
   const tick = () => {
-    runSignatureReminders().catch((e) =>
-      console.warn("[reminders] sweep failed:", e),
-    );
+    runSignatureReminders().catch((e) => {
+      console.warn("[reminders] sweep failed:", e);
+      lastSweep = {
+        at: new Date().toISOString(), nudged: 0, stalled: 0,
+        error: String((e as Error)?.message ?? e).slice(0, 160),
+      };
+    });
   };
   // Not immediately on boot: a deploy restarts the process, and a crash
   // loop would otherwise sweep on every restart.
