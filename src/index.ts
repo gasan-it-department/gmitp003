@@ -279,7 +279,7 @@ app.get("/test/ai", async (request: FastifyRequest, reply: FastifyReply) => {
 // Public build marker — lets anyone (including the assistant) CONFIRM which
 // build is actually serving, instead of trusting deploy timers. Bump the
 // tag with each meaningful deploy.
-const BUILD_TAG = "2026-09-11-route-no-esign";
+const BUILD_TAG = "2026-09-11-recall-memo";
 
 /**
  * Can this container actually rasterise a PDF page?

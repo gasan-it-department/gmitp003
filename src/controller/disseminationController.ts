@@ -3050,10 +3050,33 @@ export const cancelDispatchedDissemination = async (
           "This routing is still a draft — remove it instead.",
         );
       }
-      if (queue.status >= 2) {
-        throw new ValidationError(
-          "Already concluded or cancelled — nothing to do.",
-        );
+      if (queue.status === 3) {
+        throw new ValidationError("Already cancelled — nothing to do.");
+      }
+      if (queue.status === 2) {
+        // "Completed" is earned two different ways, and only one of them
+        // is irreversible.
+        //
+        // A routing WITH signatories reaches 2 because every signature
+        // was collected. Those signatures are attested and sealed; there
+        // is no honest way to un-sign a document, so it stays final.
+        //
+        // A routing with NO signatories reaches 2 the moment it is
+        // dispatched, vacuously — nothing was signed because nothing was
+        // ever going to be. Refusing to recall a memo on the strength of
+        // a completion that never happened is just the status code
+        // getting in the way of the office. Recalling is still a real
+        // act: every room that received it is told, and the record shows
+        // cancelled rather than the document quietly vanishing.
+        const signed = await tx.signatoryArrangement.count({
+          where: { signatureQueueRoomId: queue.id },
+        });
+        if (signed > 0) {
+          throw new ValidationError(
+            "This routing is fully signed — a signed document cannot be " +
+              "recalled.",
+          );
+        }
       }
 
       await tx.signatureQueueRoom.update({

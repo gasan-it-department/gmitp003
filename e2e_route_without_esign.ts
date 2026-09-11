@@ -38,8 +38,10 @@ import {
   finalizeDissemination,
   setSignatoryArrangement,
   acknowledgeReceipt,
+  cancelDispatchedDissemination,
   disseminationInbox,
   disseminationOutbox,
+  signMine,
 } from "./src/controller/disseminationController";
 import { documentActivityPanel } from "./src/controller/documentActivityController";
 import { ROOM_MEMBER_TYPES } from "./src/controller/roomConfigController";
@@ -263,6 +265,37 @@ const mockRes = () => {
       "body");
     ok("remove the boxes and it dispatches", out.okd, out.threw?.message);
 
+    // ── Recalling one ───────────────────────────────────────────────────
+    // "Completed" is earned two ways and only one is irreversible. A memo
+    // reached it vacuously, so the sender can still recall it.
+    const recall = await draft(`QA NS RECALL ${TS}`);
+    out = await call(finalizeDissemination, SENDER.accountId,
+      { queueRoomId: recall.queueId, userId: SENDER.userId, lineId: LINE.id },
+      "body");
+    ok("a memo dispatches", out.okd, out.threw?.message);
+
+    out = await call(cancelDispatchedDissemination, SENDER.accountId,
+      { queueRoomId: recall.queueId, userId: SENDER.userId,
+        reason: "wrong office" }, "body");
+    ok("…and can be recalled even though it says Completed", out.okd,
+      out.threw?.message);
+    ok("…leaving it cancelled",
+      (await prisma.signatureQueueRoom.findUnique({
+        where: { id: recall.queueId }, select: { status: true } }))?.status === 3);
+    ok("…with every recipient row cancelled too",
+      (await prisma.targetRoom.findMany({
+        where: { signatureQueueRoomId: recall.queueId },
+        select: { status: true } })).every((r) => r.status === 3));
+    ok("…and the offices that already had it were told",
+      (await prisma.notification.findMany({
+        where: { recipientId: { in: [RECV.userId, CFSTAFF.userId] },
+                 title: "Routing cancelled" },
+        select: { recipientId: true } })).length === 2,
+      "including the copy-furnished office, which really did receive it");
+    ok("recalling twice is refused",
+      !!(await call(cancelDispatchedDissemination, SENDER.accountId,
+        { queueRoomId: recall.queueId, userId: SENDER.userId }, "body")).threw);
+
     // ── The ordinary path is untouched ──────────────────────────────────
     const signed = await draft(`QA NS SIGNED ${TS}`);
     await prisma.signatoryArrangement.create({
@@ -281,6 +314,39 @@ const mockRes = () => {
         where: { id: signed.furnishedId },
         select: { releasedAt: true } }))?.releasedAt === null,
       "the whole point of copy furnished when something IS being signed");
+
+    // An active routing has always been cancellable; that must not change.
+    out = await call(cancelDispatchedDissemination, SENDER.accountId,
+      { queueRoomId: signed.queueId, userId: SENDER.userId }, "body");
+    ok("an active routing is still cancellable", out.okd, out.threw?.message);
+
+    // And the case the whole distinction exists for: once the signatures
+    // really were collected, there is no honest way to un-sign it.
+    const sealed = await draft(`QA NS SEALED ${TS}`);
+    await prisma.signatoryArrangement.create({
+      data: { signatureQueueRoomId: sealed.queueId, userId: SENDER.userId,
+              index: 0, status: 0 } });
+    await call(finalizeDissemination, SENDER.accountId,
+      { queueRoomId: sealed.queueId, userId: SENDER.userId, lineId: LINE.id },
+      "body");
+    const sig = await prisma.signature.create({
+      data: { userId: SENDER.userId, title: `QA NS SIG ${TS}`,
+              signature: Buffer.from("x"), active: true },
+      select: { id: true } });
+    out = await call(signMine, SENDER.accountId,
+      { queueRoomId: sealed.queueId, userId: SENDER.userId }, "body");
+    ok("signing it completes it", out.okd, out.threw?.message);
+    ok("…genuinely Completed",
+      (await prisma.signatureQueueRoom.findUnique({
+        where: { id: sealed.queueId }, select: { status: true } }))?.status === 2);
+    out = await call(cancelDispatchedDissemination, SENDER.accountId,
+      { queueRoomId: sealed.queueId, userId: SENDER.userId }, "body");
+    ok("a FULLY SIGNED routing cannot be recalled", !!out.threw,
+      "this is the half of the rule that must not have loosened");
+    ok("…and says why", /signed/i.test(out.threw?.message ?? ""),
+      out.threw?.message);
+    await prisma.signature.delete({ where: { id: sig.id } })
+      .catch(() => undefined);
   } catch (e: any) {
     fail++;
     console.log("FAIL  threw: " + (e?.stack ?? e?.message ?? String(e)));
@@ -310,6 +376,7 @@ const mockRes = () => {
       }
       if (made.userIds.length) {
         const w = { in: made.userIds };
+        await prisma.signature.deleteMany({ where: { userId: w } });
         await prisma.documentActivityLogs.deleteMany({ where: { userId: w } });
         await prisma.humanResourcesLogs.deleteMany({ where: { userId: w } })
           .catch(() => undefined);
