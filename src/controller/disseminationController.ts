@@ -768,14 +768,38 @@ export const finalizeDissemination = async (
       });
       console.log("[finalize] target rows present:", targetsAfter);
 
-      // A dissemination with no signatories is routed without e-sign, so
-      // it is final the moment it is dispatched. "Once it is signed" with
-      // nothing to sign means now — otherwise the copy-furnished offices
-      // would wait on a signature that is never coming.
+      // A routing with no signatories is sent without e-sign — a memo, a
+      // transmittal, an advisory: things an office needs to have, not to
+      // sign. It is final the moment it is dispatched. "Once it is signed"
+      // with nothing to sign means now, otherwise the copy-furnished
+      // offices would wait on a signature that is never coming.
       const willBeSigned = await tx.signatoryArrangement.count({
         where: { signatureQueueRoomId: body.queueRoomId },
       });
       if (willBeSigned === 0) {
+        // Boxes with nobody to fill them. The placement editor offers a
+        // free-form 1..8 slot picker when no signatories are chosen yet,
+        // so it is possible to draw signature boxes and then skip the
+        // signatories step — and the result would be a document that
+        // dispatches with empty rectangles on it forever. Refuse instead,
+        // because both readings of the intent are recoverable and neither
+        // is what the sender meant.
+        const orphanBoxes = await tx.signatureCoor.count({
+          where: {
+            documentPage: {
+              is: { document: { is: { signatureQueueRoomId: body.queueRoomId } } },
+            },
+          },
+        });
+        if (orphanBoxes > 0) {
+          throw new ValidationError(
+            `These documents have ${orphanBoxes} signature box` +
+              `${orphanBoxes === 1 ? "" : "es"} on them but no signatories. ` +
+              "Either add the signatories who should sign, or remove the " +
+              "boxes and send it without e-sign.",
+          );
+        }
+
         const early = await releaseCopyFurnished(
           tx,
           body.queueRoomId,
@@ -787,6 +811,18 @@ export const finalizeDissemination = async (
             early.rooms.join(", "),
           );
         }
+
+        // Nothing is pending, so it is not "active". Leaving it at 1 would
+        // park it in the Outbox and the Activity panel's "Out for
+        // signature" pile forever, reading 0 of 0 signed — a routing that
+        // can never finish because there was never anything to finish.
+        // Completed here means exactly what it means everywhere else:
+        // every signature this document needs has been collected.
+        await tx.signatureQueueRoom.update({
+          where: { id: body.queueRoomId },
+          data: { status: 2 },
+        });
+        console.log("[finalize] no signatories — dispatched as completed");
       }
 
       if (body.userId) {
