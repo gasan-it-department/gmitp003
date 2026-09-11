@@ -107,6 +107,7 @@ const attendance_1 = require("./route/attendance");
 const hrMessage_1 = require("./route/hrMessage");
 const errorHandlers_1 = __importDefault(require("./plugin/errorHandlers"));
 const gemini_1 = require("./utils/gemini");
+const signatureReminders_1 = require("./service/signatureReminders");
 // ── Last-line crash guards ──────────────────────────────────────────────
 // Without these, ONE leaked promise rejection anywhere kills the whole
 // process (Node's default), severing every in-flight request — mobile
@@ -313,8 +314,74 @@ app.get("/test/ai", (request, reply) => __awaiter(void 0, void 0, void 0, functi
 // Public build marker — lets anyone (including the assistant) CONFIRM which
 // build is actually serving, instead of trusting deploy timers. Bump the
 // tag with each meaningful deploy.
-const BUILD_TAG = "2026-09-03-routed-marker";
-app.get("/health/build", () => __awaiter(void 0, void 0, void 0, function* () { return ({ status: "ok", build: BUILD_TAG }); }));
+const BUILD_TAG = "2026-09-11-reminders-probe";
+/**
+ * Can this container actually rasterise a PDF page?
+ *
+ * The document viewer renders pages server-side with a WASM build of
+ * mupdf. WASM is meant to behave identically everywhere, but "meant to"
+ * is the phrase that precedes a dev/prod difference, and the alternative
+ * to checking is a signee opening a memo and getting blank pages. Probed
+ * once, lazily, on a PDF built here — no user data touches it — and the
+ * answer is cached.
+ */
+let pdfProbe = null;
+const probeRaster = () => (pdfProbe !== null && pdfProbe !== void 0 ? pdfProbe : (pdfProbe = (() => __awaiter(void 0, void 0, void 0, function* () {
+    var _a;
+    try {
+        const { PDFDocument } = yield Promise.resolve().then(() => __importStar(require("pdf-lib")));
+        const { renderPdfPage } = yield Promise.resolve().then(() => __importStar(require("./service/pdfRaster")));
+        const doc = yield PDFDocument.create();
+        doc.addPage([200, 200]);
+        const out = yield renderPdfPage(Buffer.from(yield doc.save()), 1, 320);
+        const isPng = out.png.subarray(0, 4).toString("hex") === "89504e47";
+        return isPng && out.widthPx === 320 ? "ok" : "bad-output";
+    }
+    catch (e) {
+        console.warn("[health] pdf raster probe failed:", e);
+        return `failed: ${(_a = e === null || e === void 0 ? void 0 : e.message) !== null && _a !== void 0 ? _a : "unknown"}`.slice(0, 120);
+    }
+}))()));
+/**
+ * Are the reminder columns actually on this database?
+ *
+ * They arrive by `prisma db push` at boot. If that ever does not happen,
+ * the sweep throws every fifteen minutes into a log nobody is reading and
+ * the reminders simply never come — the exact failure the feature exists
+ * to prevent, in the feature itself. One read settles it.
+ */
+let remindersProbe = null;
+const probeReminders = () => (remindersProbe !== null && remindersProbe !== void 0 ? remindersProbe : (remindersProbe = (() => __awaiter(void 0, void 0, void 0, function* () {
+    var _a;
+    try {
+        const { prisma } = yield Promise.resolve().then(() => __importStar(require("./barrel/prisma")));
+        yield prisma.signatoryArrangement.findFirst({
+            select: { remindedAt: true, reminderCount: true },
+        });
+        yield prisma.signatureQueueRoom.findFirst({
+            select: { dispatchedAt: true, stalledNoticeAt: true },
+        });
+        return "ok";
+    }
+    catch (e) {
+        console.warn("[health] reminder columns probe failed:", e);
+        return `failed: ${(_a = e === null || e === void 0 ? void 0 : e.message) !== null && _a !== void 0 ? _a : "unknown"}`.slice(0, 120);
+    }
+}))()));
+app.get("/health/build", () => __awaiter(void 0, void 0, void 0, function* () {
+    const { lastSweep } = yield Promise.resolve().then(() => __importStar(require("./service/signatureReminders")));
+    return {
+        status: "ok",
+        build: BUILD_TAG,
+        pdfRaster: yield probeRaster(),
+        reminders: yield probeReminders(),
+        lastSweep,
+    };
+}));
+// Nudge signatories who have not got round to it. Paced by columns on
+// SignatoryArrangement rather than by this timer, so the interval only
+// has to be roughly frequent enough.
+(0, signatureReminders_1.startSignatureReminders)();
 app.listen({ port: 3000, host: "0.0.0.0" }, (err, address) => {
     if (err) {
         console.error(err);

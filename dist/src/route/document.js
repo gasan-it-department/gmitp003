@@ -7,6 +7,8 @@ const documentReceiveController_1 = require("../controller/documentReceiveContro
 const documentController_1 = require("../controller/documentController");
 const signatureController_1 = require("../controller/signatureController");
 const disseminationController_1 = require("../controller/disseminationController");
+const documentActivityController_1 = require("../controller/documentActivityController");
+const documentSignViewController_1 = require("../controller/documentSignViewController");
 const selfSignController_1 = require("../controller/selfSignController");
 const roomConfigController_1 = require("../controller/roomConfigController");
 const document = (fastify) => {
@@ -65,6 +67,11 @@ const document = (fastify) => {
     fastify.post("/document/room/repair-membership", { preHandler: handler_1.authenticated }, disseminationController_1.repairRoomMembership);
     fastify.post("/document/room/reset-membership", { preHandler: handler_1.authenticated }, disseminationController_1.resetRoomMembership);
     fastify.get("/document/overview", { preHandler: handler_1.authenticated }, disseminationController_1.documentOverview);
+    fastify.get("/document/activity", { preHandler: handler_1.authenticated }, documentActivityController_1.documentActivityPanel);
+    fastify.get("/document/activity/log", { preHandler: handler_1.authenticated }, documentActivityController_1.documentActivityLog);
+    fastify.get("/document/my-pending", { preHandler: handler_1.authenticated }, documentActivityController_1.documentMyPending);
+    fastify.get("/document/routing/sign-sheet", { preHandler: handler_1.authenticated }, documentSignViewController_1.routingSignSheet);
+    fastify.get("/document/routing/page-image", { preHandler: handler_1.authenticated }, documentSignViewController_1.routingPageImage);
     fastify.get("/document/dissemination/view", { preHandler: handler_1.authenticated }, disseminationController_1.viewDissemination);
     fastify.post("/document/dissemination/sign-mine", { preHandler: handler_1.authenticated }, disseminationController_1.signMine);
     fastify.post("/document/dissemination/claim-slot", { preHandler: handler_1.authenticated }, disseminationController_1.claimSignatorySlot);

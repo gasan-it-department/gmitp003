@@ -78,6 +78,108 @@ const ownedRoom = (req, roomId) => __awaiter(void 0, void 0, void 0, function* (
         throw new errors_1.NotFoundError("Document room not found");
     return { room, lineId };
 });
+/**
+ * Is this a super-admin impersonation session?
+ *
+ * Same check `userModuleAccess` makes: an `imp` claim on the token means
+ * a platform admin is operating inside somebody's line and must not be
+ * blocked by that line's own permission rows.
+ */
+const isImpersonating = (req) => {
+    var _a;
+    try {
+        const authz = (_a = req.headers.authorization) === null || _a === void 0 ? void 0 : _a.split(" ")[1];
+        const decoded = authz
+            ? req.server.jwt.decode(authz)
+            : null;
+        return (decoded === null || decoded === void 0 ? void 0 : decoded.imp) === true;
+    }
+    catch (_b) {
+        return false;
+    }
+};
+/**
+ * Does this person administer HR for their line?
+ *
+ * Deliberately the SAME predicate the app uses to decide whether to open
+ * the HR module at all (`userModuleAccess`: moduleName + userId, nothing
+ * else). Tightening it here — adding a status or line filter — would mean
+ * somebody who can open the HR screen is refused by the endpoint behind
+ * it, which is a worse failure than the looseness it fixes. If that
+ * predicate is ever tightened, tighten it in one place for both.
+ */
+const hasHrModule = (userId) => __awaiter(void 0, void 0, void 0, function* () {
+    return !!(yield prisma_1.prisma.module.findFirst({
+        where: { userId, moduleName: "human-resources" },
+        select: { id: true },
+    }));
+});
+/**
+ * Who may CHANGE a room's membership.
+ *
+ * Until now: anybody on the line, because `ownedRoom` checks only that
+ * the room belongs to your municipality. That was survivable while the
+ * only door was an HR screen behind a module guard. It stops being
+ * survivable the moment the same controls appear in the Document module,
+ * which every line user can open — so the check moves to the server,
+ * where it should always have been.
+ *
+ * Two legitimate authorities, and they are genuinely different people:
+ *
+ *   - the room's OWNER, running their own office. They belong to it.
+ *   - HR, who administer every office's room and belong to none of them.
+ *
+ * A signatory or a receiver is neither: being trusted to sign documents
+ * is not being trusted to decide who else may sign them.
+ */
+const requireRoomAdmin = (req, roomId) => __awaiter(void 0, void 0, void 0, function* () {
+    const { room, lineId } = yield ownedRoom(req, roomId);
+    const actorId = yield (0, handler_1.callerUserId)(req);
+    if (!actorId)
+        throw new errors_1.UnauthorizedError("Not signed in");
+    if (isImpersonating(req))
+        return { room, lineId, actorId };
+    const owner = yield prisma_1.prisma.roomAuthorizedUser.findFirst({
+        where: {
+            receivingRoomId: roomId,
+            userId: actorId,
+            status: 1,
+            type: exports.ROOM_MEMBER_TYPES.owner,
+        },
+        select: { id: true },
+    });
+    if (owner)
+        return { room, lineId, actorId };
+    if (yield hasHrModule(actorId))
+        return { room, lineId, actorId };
+    console.warn(`[roomConfig] refused: user ${actorId} tried to administer room ${roomId}`);
+    throw new errors_1.UnauthorizedError("Only this office's owner or HR can change its members.");
+});
+/**
+ * Who may READ a room's membership.
+ *
+ * Wider than the above on purpose: anyone who works in the room can see
+ * who else does. Knowing your colleagues' roles is not a privilege, and
+ * the Document module already shows the list elsewhere.
+ */
+const requireRoomReader = (req, roomId) => __awaiter(void 0, void 0, void 0, function* () {
+    const { room, lineId } = yield ownedRoom(req, roomId);
+    const actorId = yield (0, handler_1.callerUserId)(req);
+    if (!actorId)
+        throw new errors_1.UnauthorizedError("Not signed in");
+    if (isImpersonating(req))
+        return { room, lineId, actorId };
+    const member = yield prisma_1.prisma.roomAuthorizedUser.findFirst({
+        where: { receivingRoomId: roomId, userId: actorId, status: 1 },
+        select: { id: true },
+    });
+    if (member)
+        return { room, lineId, actorId };
+    if (yield hasHrModule(actorId))
+        return { room, lineId, actorId };
+    console.warn(`[roomConfig] refused: user ${actorId} asked to read room ${roomId}`);
+    throw new errors_1.NotFoundError("Document room not found");
+});
 /** Best-effort notify + email. Never lets a delivery failure undo the change. */
 const tellMember = (userId, actorId, title, content) => __awaiter(void 0, void 0, void 0, function* () {
     var _a, _b;
@@ -120,7 +222,7 @@ const roomConfig = (req, res) => __awaiter(void 0, void 0, void 0, function* () 
     const { roomId } = req.query;
     if (!roomId)
         throw new errors_1.ValidationError("roomId is required");
-    const { room } = yield ownedRoom(req, roomId);
+    const { room } = yield requireRoomReader(req, roomId);
     const members = yield prisma_1.prisma.roomAuthorizedUser.findMany({
         where: { receivingRoomId: room.id, status: 1 },
         select: {
@@ -216,7 +318,7 @@ const roomCandidates = (req, res) => __awaiter(void 0, void 0, void 0, function*
     const q = req.query;
     if (!q.roomId)
         throw new errors_1.ValidationError("roomId is required");
-    const { room, lineId } = yield ownedRoom(req, q.roomId);
+    const { room, lineId } = yield requireRoomAdmin(req, q.roomId);
     const term = (q.query || "").trim().toLowerCase();
     const already = new Set((yield prisma_1.prisma.roomAuthorizedUser.findMany({
         where: { receivingRoomId: room.id, status: 1 },
@@ -277,7 +379,7 @@ const updateRoomConfig = (req, res) => __awaiter(void 0, void 0, void 0, functio
     const b = req.body;
     if (!b.roomId)
         throw new errors_1.ValidationError("roomId is required");
-    const { room, lineId } = yield ownedRoom(req, b.roomId);
+    const { room, lineId } = yield requireRoomAdmin(req, b.roomId);
     const actorId = yield (0, handler_1.callerUserId)(req);
     const data = {};
     if (b.code !== undefined) {
@@ -334,7 +436,7 @@ const addRoomMembers = (req, res) => __awaiter(void 0, void 0, void 0, function*
     const b = req.body;
     if (!b.roomId)
         throw new errors_1.ValidationError("roomId is required");
-    const { room, lineId } = yield ownedRoom(req, b.roomId);
+    const { room, lineId } = yield requireRoomAdmin(req, b.roomId);
     const actorId = yield (0, handler_1.callerUserId)(req);
     const type = Number((_a = b.type) !== null && _a !== void 0 ? _a : exports.ROOM_MEMBER_TYPES.signatory);
     if (![0, 1, 2].includes(type))
@@ -406,7 +508,7 @@ const updateRoomMember = (req, res) => __awaiter(void 0, void 0, void 0, functio
     const b = req.body;
     if (!b.roomId || !b.memberId)
         throw new errors_1.ValidationError("roomId and memberId are required");
-    const { room } = yield ownedRoom(req, b.roomId);
+    const { room } = yield requireRoomAdmin(req, b.roomId);
     const actorId = yield (0, handler_1.callerUserId)(req);
     const type = Number(b.type);
     if (![0, 1, 2].includes(type))
@@ -445,7 +547,7 @@ const removeRoomMember = (req, res) => __awaiter(void 0, void 0, void 0, functio
     const q = req.query;
     if (!q.roomId || !q.memberId)
         throw new errors_1.ValidationError("roomId and memberId are required");
-    const { room } = yield ownedRoom(req, q.roomId);
+    const { room } = yield requireRoomAdmin(req, q.roomId);
     const actorId = yield (0, handler_1.callerUserId)(req);
     const member = yield prisma_1.prisma.roomAuthorizedUser.findFirst({
         where: { id: q.memberId, receivingRoomId: room.id },

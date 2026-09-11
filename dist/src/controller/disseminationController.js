@@ -63,7 +63,7 @@ var __asyncValues = (this && this.__asyncValues) || function (o) {
     function settle(resolve, reject, d, v) { Promise.resolve(v).then(function(v) { resolve({ value: v, done: d }); }, reject); }
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.acknowledgeReceipt = exports.verifySignatureData = exports.verifySignaturePage = exports.cancelDispatchedDissemination = exports.downloadSignedDocument = exports.archiveDissemination = exports.claimSignatorySlot = exports.signMine = exports.viewDissemination = exports.resetRoomMembership = exports.documentOverview = exports.repairRoomMembership = exports.removeDisseminationDocument = exports.uploadDisseminationDocument = exports.saveSignaturePlacements = exports.streamDocumentFile = exports.disseminationDocuments = exports.signatoryCandidates = exports.targetRoomCandidates = exports.removeDissemination = exports.finalizeDissemination = exports.setSignatoryArrangement = exports.setTargetRooms = exports.disseminationDetail = exports.disseminationInbox = exports.disseminationOutbox = void 0;
+exports.acknowledgeReceipt = exports.verifySignatureData = exports.verifySignaturePage = exports.cancelDispatchedDissemination = exports.downloadSignedDocument = exports.archiveDissemination = exports.claimSignatorySlot = exports.signMine = exports.viewDissemination = exports.resetRoomMembership = exports.documentOverview = exports.repairRoomMembership = exports.removeDisseminationDocument = exports.uploadDisseminationDocument = exports.saveSignaturePlacements = exports.streamDocumentFile = exports.disseminationDocuments = exports.signatoryCandidates = exports.targetRoomCandidates = exports.removeDissemination = exports.finalizeDissemination = exports.setSignatoryArrangement = exports.setTargetRooms = exports.disseminationDetail = exports.disseminationInbox = exports.disseminationOutbox = exports.requireCanSeeDocument = exports.requireCanSeeRouting = void 0;
 const prisma_1 = require("../barrel/prisma");
 const errors_1 = require("../errors/errors");
 const notificationEvents_1 = require("../service/notificationEvents");
@@ -74,6 +74,7 @@ const roomConfigController_1 = require("./roomConfigController");
 const callerScope_1 = require("../service/callerScope");
 const signaturePlacement_1 = require("../service/signaturePlacement");
 const copyFurnish_1 = require("../service/copyFurnish");
+const signatureReminders_1 = require("../service/signatureReminders");
 /**
  * Somebody who can actually open what lands in a room.
  *
@@ -138,6 +139,44 @@ const requireCanSeeRouting = (req, queueId) => __awaiter(void 0, void 0, void 0,
     }
     return actorId;
 });
+exports.requireCanSeeRouting = requireCanSeeRouting;
+/**
+ * Record that the receiving office has now LOOKED at this.
+ *
+ * Called on open, for the rooms the reader actually belongs to. The sender
+ * of a routing has one question all afternoon — "did they even see it?" —
+ * and until now the only answer available was the receipt, which somebody
+ * has to remember to tick. This is the cheaper signal: it costs the
+ * recipient nothing and it is true the moment it is stamped.
+ *
+ * Stamped once and never cleared. It is deliberately NOT a substitute for
+ * the receipt: "opened" is a fact about a screen, "received" is a person
+ * putting their name to it, and the panel shows both because they answer
+ * different questions.
+ *
+ * Best-effort by design — this is a side effect of a read, and a failure
+ * to write a breadcrumb must never stop somebody opening their document.
+ */
+const markRoutingOpened = (actorId, queueId) => __awaiter(void 0, void 0, void 0, function* () {
+    try {
+        const mine = yield prisma_1.prisma.roomAuthorizedUser.findMany({
+            where: { userId: actorId, status: 1 },
+            select: { receivingRoomId: true },
+        });
+        const roomIds = mine
+            .map((m) => m.receivingRoomId)
+            .filter((x) => !!x);
+        if (!roomIds.length)
+            return;
+        yield prisma_1.prisma.targetRoom.updateMany({
+            where: Object.assign({ signatureQueueRoomId: queueId, receivingRoomId: { in: roomIds }, viewedAt: null }, copyFurnish_1.VISIBLE_TO_ROOM),
+            data: { viewedAt: new Date(), viewedById: actorId },
+        });
+    }
+    catch (e) {
+        console.warn("[routing] could not stamp opened:", e);
+    }
+});
 /**
  * Who may CHANGE a routing — attach a file, remove one, move the
  * signature boxes. Only the office that is sending it. A recipient being
@@ -184,7 +223,7 @@ const requireCanSeeDocument = (req, documentId) => __awaiter(void 0, void 0, voi
     if (!doc)
         throw new errors_1.NotFoundError("Not found");
     if (doc.signatureQueueRoomId) {
-        return requireCanSeeRouting(req, doc.signatureQueueRoomId);
+        return (0, exports.requireCanSeeRouting)(req, doc.signatureQueueRoomId);
     }
     const actorId = yield (0, handler_1.callerUserId)(req);
     if (!actorId)
@@ -195,6 +234,7 @@ const requireCanSeeDocument = (req, documentId) => __awaiter(void 0, void 0, voi
     }
     return actorId;
 });
+exports.requireCanSeeDocument = requireCanSeeDocument;
 // ── Outbox: disseminations created BY this room ────────────────────────
 const disseminationOutbox = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     var _a;
@@ -249,6 +289,7 @@ const disseminationOutbox = (req, res) => __awaiter(void 0, void 0, void 0, func
                         copyFurnished: true,
                         releasedAt: true,
                         acknowledgedAt: true,
+                        viewedAt: true,
                         roomReceiver: { select: { id: true, code: true, address: true } },
                     },
                 },
@@ -363,7 +404,7 @@ const disseminationDetail = (req, res) => __awaiter(void 0, void 0, void 0, func
     if (!params.id)
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
     // Only the people this routing actually involves.
-    yield requireCanSeeRouting(req, params.id);
+    yield (0, exports.requireCanSeeRouting)(req, params.id);
     try {
         const row = yield prisma_1.prisma.signatureQueueRoom.findUnique({
             where: { id: params.id },
@@ -640,7 +681,7 @@ const finalizeDissemination = (req, res) => __awaiter(void 0, void 0, void 0, fu
     yield requireOwnsRouting(req, body.queueRoomId);
     try {
         const result = yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
-            var _a, _b, _c, _d, _e, _f, _g;
+            var _a, _b, _c, _d, _e, _f, _g, _h;
             const queue = yield tx.signatureQueueRoom.findUnique({
                 where: { id: body.queueRoomId },
                 include: {
@@ -660,8 +701,14 @@ const finalizeDissemination = (req, res) => __awaiter(void 0, void 0, void 0, fu
             }
             const updated = yield tx.signatureQueueRoom.update({
                 where: { id: body.queueRoomId },
-                data: { status: 1, step: 1 },
+                // dispatchedAt, not timestamp: a draft can sit for a fortnight
+                // before somebody sends it, and the reminder clock has to start
+                // from the moment a signatory was actually asked.
+                data: { status: 1, step: 1, dispatchedAt: new Date() },
             });
+            // A routing that was cancelled and re-sent must not inherit an old
+            // nudge count and open on "last reminder".
+            yield (0, signatureReminders_1.resetReminderClock)(tx, body.queueRoomId);
             console.log("[finalize] queue updated:", {
                 id: updated.id,
                 status: updated.status,
@@ -681,18 +728,50 @@ const finalizeDissemination = (req, res) => __awaiter(void 0, void 0, void 0, fu
                 select: { id: true, receivingRoomId: true, status: true },
             });
             console.log("[finalize] target rows present:", targetsAfter);
-            // A dissemination with no signatories is routed without e-sign, so
-            // it is final the moment it is dispatched. "Once it is signed" with
-            // nothing to sign means now — otherwise the copy-furnished offices
-            // would wait on a signature that is never coming.
+            // A routing with no signatories is sent without e-sign — a memo, a
+            // transmittal, an advisory: things an office needs to have, not to
+            // sign. It is final the moment it is dispatched. "Once it is signed"
+            // with nothing to sign means now, otherwise the copy-furnished
+            // offices would wait on a signature that is never coming.
             const willBeSigned = yield tx.signatoryArrangement.count({
                 where: { signatureQueueRoomId: body.queueRoomId },
             });
             if (willBeSigned === 0) {
+                // Boxes with nobody to fill them. The placement editor offers a
+                // free-form 1..8 slot picker when no signatories are chosen yet,
+                // so it is possible to draw signature boxes and then skip the
+                // signatories step — and the result would be a document that
+                // dispatches with empty rectangles on it forever. Refuse instead,
+                // because both readings of the intent are recoverable and neither
+                // is what the sender meant.
+                const orphanBoxes = yield tx.signatureCoor.count({
+                    where: {
+                        documentPage: {
+                            is: { document: { is: { signatureQueueRoomId: body.queueRoomId } } },
+                        },
+                    },
+                });
+                if (orphanBoxes > 0) {
+                    throw new errors_1.ValidationError(`These documents have ${orphanBoxes} signature box` +
+                        `${orphanBoxes === 1 ? "" : "es"} on them but no signatories. ` +
+                        "Either add the signatories who should sign, or remove the " +
+                        "boxes and send it without e-sign.");
+                }
                 const early = yield (0, copyFurnish_1.releaseCopyFurnished)(tx, body.queueRoomId, (_e = body.userId) !== null && _e !== void 0 ? _e : null);
                 if (early.released > 0) {
                     console.log("[finalize] no signatories — copy furnished immediately to:", early.rooms.join(", "));
                 }
+                // Nothing is pending, so it is not "active". Leaving it at 1 would
+                // park it in the Outbox and the Activity panel's "Out for
+                // signature" pile forever, reading 0 of 0 signed — a routing that
+                // can never finish because there was never anything to finish.
+                // Completed here means exactly what it means everywhere else:
+                // every signature this document needs has been collected.
+                yield tx.signatureQueueRoom.update({
+                    where: { id: body.queueRoomId },
+                    data: { status: 2 },
+                });
+                console.log("[finalize] no signatories — dispatched as completed");
             }
             if (body.userId) {
                 yield tx.documentActivityLogs.create({
@@ -727,6 +806,51 @@ const finalizeDissemination = (req, res) => __awaiter(void 0, void 0, void 0, fu
                     content: `You're a signatory on "${(_g = queue.title) !== null && _g !== void 0 ? _g : "a document"}". Open it from your Inbox to sign.`,
                     path: `documents/dissemination?tab=inbox`,
                 });
+            }
+            // And the offices it was actually addressed TO.
+            //
+            // Until now only signatories were told. An addressed office learned
+            // a memo had arrived by somebody opening the Inbox and looking,
+            // which is precisely the habit this module exists to replace — and
+            // it is the half that ends in "we never received that".
+            //
+            // Held copy-furnished rows are excluded: that office has not been
+            // given the document yet and must not learn it exists. They are
+            // notified by releaseCopyFurnished when the last signature lands.
+            const addressed = yield tx.targetRoom.findMany({
+                where: {
+                    signatureQueueRoomId: body.queueRoomId,
+                    copyFurnished: false,
+                    receivingRoomId: { not: null },
+                },
+                select: { receivingRoomId: true },
+            });
+            const addressedRoomIds = addressed
+                .map((t) => t.receivingRoomId)
+                .filter((x) => !!x);
+            if (addressedRoomIds.length) {
+                const staff = yield tx.roomAuthorizedUser.findMany({
+                    where: {
+                        receivingRoomId: { in: addressedRoomIds },
+                        status: 1,
+                        userId: { not: null },
+                    },
+                    select: { userId: true },
+                });
+                for (const m of staff) {
+                    // Not the person who just pressed Dispatch — they know.
+                    if (!m.userId || m.userId === body.userId || seen.has(m.userId))
+                        continue;
+                    seen.add(m.userId);
+                    yield (0, notificationEvents_1.createUserNotification)(tx, {
+                        recipientId: m.userId,
+                        senderId: body.userId,
+                        title: "Document received",
+                        content: `"${(_h = queue.title) !== null && _h !== void 0 ? _h : "A document"}" was routed to your office. ` +
+                            `Open it and mark it received.`,
+                        path: `documents/dissemination?tab=inbox`,
+                    });
+                }
             }
             return updated;
         }));
@@ -936,7 +1060,7 @@ const disseminationDocuments = (req, res) => __awaiter(void 0, void 0, void 0, f
     if (!params.queueRoomId)
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
     // Only the people this routing actually involves.
-    yield requireCanSeeRouting(req, params.queueRoomId);
+    yield (0, exports.requireCanSeeRouting)(req, params.queueRoomId);
     try {
         const docs = yield prisma_1.prisma.document.findMany({
             where: { signatureQueueRoomId: params.queueRoomId },
@@ -987,7 +1111,7 @@ const streamDocumentFile = (req, res) => __awaiter(void 0, void 0, void 0, funct
     if (!params.id)
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
     // Routing file or a private Self Sign upload — the document decides.
-    yield requireCanSeeDocument(req, params.id);
+    yield (0, exports.requireCanSeeDocument)(req, params.id);
     try {
         const file = yield prisma_1.prisma.decodedFile.findFirst({
             where: { documentId: params.id },
@@ -1620,7 +1744,9 @@ const viewDissemination = (req, res) => __awaiter(void 0, void 0, void 0, functi
     if (!params.id)
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
     // Only the people this routing actually involves.
-    yield requireCanSeeRouting(req, params.id);
+    const viewerId = yield (0, exports.requireCanSeeRouting)(req, params.id);
+    // They are allowed to see it and they are looking at it now.
+    yield markRoutingOpened(viewerId, params.id);
     try {
         const row = yield prisma_1.prisma.signatureQueueRoom.findUnique({
             where: { id: params.id },
@@ -1636,6 +1762,10 @@ const viewDissemination = (req, res) => __awaiter(void 0, void 0, void 0, functi
                         acknowledgedAt: true,
                         acknowledgedNote: true,
                         acknowledgedBy: {
+                            select: { id: true, firstName: true, lastName: true },
+                        },
+                        viewedAt: true,
+                        viewedBy: {
                             select: { id: true, firstName: true, lastName: true },
                         },
                         roomReceiver: { select: { id: true, code: true } },
@@ -2052,7 +2182,7 @@ const claimSignatorySlot = (req, res) => __awaiter(void 0, void 0, void 0, funct
     });
     if (!(slot === null || slot === void 0 ? void 0 : slot.signatureQueueRoomId))
         throw new errors_1.NotFoundError("Not found");
-    yield requireCanSeeRouting(req, slot.signatureQueueRoomId);
+    yield (0, exports.requireCanSeeRouting)(req, slot.signatureQueueRoomId);
     try {
         const result = yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
             const arr = yield tx.signatoryArrangement.findUnique({
@@ -2190,7 +2320,7 @@ const downloadSignedDocument = (req, res) => __awaiter(void 0, void 0, void 0, f
     const params = req.query;
     if (!params.documentId)
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
-    yield requireCanSeeDocument(req, params.documentId);
+    yield (0, exports.requireCanSeeDocument)(req, params.documentId);
     try {
         const doc = yield prisma_1.prisma.document.findUnique({
             where: { id: params.documentId },
@@ -2644,8 +2774,31 @@ const cancelDispatchedDissemination = (req, res) => __awaiter(void 0, void 0, vo
             if (queue.status === 0) {
                 throw new errors_1.ValidationError("This routing is still a draft — remove it instead.");
             }
-            if (queue.status >= 2) {
-                throw new errors_1.ValidationError("Already concluded or cancelled — nothing to do.");
+            if (queue.status === 3) {
+                throw new errors_1.ValidationError("Already cancelled — nothing to do.");
+            }
+            if (queue.status === 2) {
+                // "Completed" is earned two different ways, and only one of them
+                // is irreversible.
+                //
+                // A routing WITH signatories reaches 2 because every signature
+                // was collected. Those signatures are attested and sealed; there
+                // is no honest way to un-sign a document, so it stays final.
+                //
+                // A routing with NO signatories reaches 2 the moment it is
+                // dispatched, vacuously — nothing was signed because nothing was
+                // ever going to be. Refusing to recall a memo on the strength of
+                // a completion that never happened is just the status code
+                // getting in the way of the office. Recalling is still a real
+                // act: every room that received it is told, and the record shows
+                // cancelled rather than the document quietly vanishing.
+                const signed = yield tx.signatoryArrangement.count({
+                    where: { signatureQueueRoomId: queue.id },
+                });
+                if (signed > 0) {
+                    throw new errors_1.ValidationError("This routing is fully signed — a signed document cannot be " +
+                        "recalled.");
+                }
             }
             yield tx.signatureQueueRoom.update({
                 where: { id: queue.id },

@@ -1552,7 +1552,9 @@ exports.SignatoryArrangementScalarFieldEnum = {
     signedLat: 'signedLat',
     signedLng: 'signedLng',
     signedAccuracy: 'signedAccuracy',
-    signatureId: 'signatureId'
+    signatureId: 'signatureId',
+    remindedAt: 'remindedAt',
+    reminderCount: 'reminderCount'
 };
 exports.SignatureQueueRoomScalarFieldEnum = {
     id: 'id',
@@ -1563,6 +1565,8 @@ exports.SignatureQueueRoomScalarFieldEnum = {
     step: 'step',
     title: 'title',
     index: 'index',
+    dispatchedAt: 'dispatchedAt',
+    stalledNoticeAt: 'stalledNoticeAt',
     receivingRoomId: 'receivingRoomId'
 };
 exports.TargetRoomScalarFieldEnum = {
@@ -1577,7 +1581,9 @@ exports.TargetRoomScalarFieldEnum = {
     releasedAt: 'releasedAt',
     acknowledgedAt: 'acknowledgedAt',
     acknowledgedById: 'acknowledgedById',
-    acknowledgedNote: 'acknowledgedNote'
+    acknowledgedNote: 'acknowledgedNote',
+    viewedAt: 'viewedAt',
+    viewedById: 'viewedById'
 };
 exports.DocumentRouteScalarFieldEnum = {
     id: 'id',
