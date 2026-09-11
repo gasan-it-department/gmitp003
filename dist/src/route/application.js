@@ -8,7 +8,7 @@ const application = (fastify) => {
     fastify.post("/submit-application", () => { });
     // Download a filled CS Form 212 (.xlsx). `?id=<applicationId>` for an
     // application, or `?userId=<userId>` for an onboarded employee.
-    fastify.get("/application/pds/export", pdsExportController_1.exportPdsExcel);
+    fastify.get("/application/pds/export", { preHandler: handler_1.authenticated }, pdsExportController_1.exportPdsExcel);
     fastify.post("/application/post", { preHandler: handler_1.authenticated }, applicationController_1.postJob);
     fastify.patch("/application/post/update/status", { preHandler: handler_1.authenticated }, applicationController_1.updatePostApplication);
     fastify.post("/application/post-requirement", { preHandler: handler_1.authenticated }, applicationController_1.createPobJobRequirements);

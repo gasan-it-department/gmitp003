@@ -15,8 +15,8 @@ const handler_1 = require("../middleware/handler");
 const lineController_2 = require("../controller/lineController");
 const lineRoutes = (fastify) => __awaiter(void 0, void 0, void 0, function* () {
     fastify.post("/create-line", { preHandler: handler_1.adminAuthenticated }, lineController_1.createLine);
-    fastify.get("/lines", lineController_2.getLines);
-    fastify.get("/line/list", lineController_2.getAllLine);
+    fastify.get("/lines", { preHandler: handler_1.adminAuthenticated }, lineController_2.getLines);
+    fastify.get("/line/list", { preHandler: handler_1.adminAuthenticated }, lineController_2.getAllLine);
     fastify.patch("/line/update/status", { preHandler: handler_1.adminAuthenticated }, lineController_2.lineUpdateStatus);
     fastify.delete("/line/delete", { preHandler: handler_1.adminAuthenticated }, lineController_2.deleteLine);
     fastify.post("/line/register", lineController_2.registerLine);

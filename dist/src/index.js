@@ -64,7 +64,6 @@ const NotificationSocket_1 = require("./class/NotificationSocket");
 //routes
 const auth_1 = require("./route/auth");
 const employee_1 = require("./route/employee");
-const test_1 = require("./route/test");
 const area_1 = require("./route/area");
 const position_1 = require("./route/position");
 const personnel_1 = require("./route/personnel");
@@ -212,7 +211,11 @@ app.register(cors_1.default, {
 });
 app.decorate("io", io);
 app.register(auth_1.auth);
-app.register(test_1.test);
+// route/test is NOT registered. It was six unauthenticated debug
+// endpoints, and GET /test/env returned 619KB of every submitted job
+// application — names and personal details — to anyone who asked. No
+// client calls any of them; the /test page in the portal is a web route,
+// not this. The file is left in the tree for reference and is unreachable.
 app.register(employee_1.employee);
 app.register(area_1.area);
 app.register(position_1.position);
@@ -314,7 +317,7 @@ app.get("/test/ai", (request, reply) => __awaiter(void 0, void 0, void 0, functi
 // Public build marker — lets anyone (including the assistant) CONFIRM which
 // build is actually serving, instead of trusting deploy timers. Bump the
 // tag with each meaningful deploy.
-const BUILD_TAG = "2026-09-11-reminders-probe";
+const BUILD_TAG = "2026-09-11-close-open-routes";
 /**
  * Can this container actually rasterise a PDF page?
  *

@@ -16,7 +16,6 @@ import { NotificationSocket } from "./class/NotificationSocket";
 //routes
 import { auth } from "./route/auth";
 import { employee } from "./route/employee";
-import { test } from "./route/test";
 import { area } from "./route/area";
 import { position } from "./route/position";
 import { personnel } from "./route/personnel";
@@ -169,7 +168,11 @@ app.register(cors, {
 });
 app.decorate("io", io);
 app.register(auth);
-app.register(test);
+// route/test is NOT registered. It was six unauthenticated debug
+// endpoints, and GET /test/env returned 619KB of every submitted job
+// application — names and personal details — to anyone who asked. No
+// client calls any of them; the /test page in the portal is a web route,
+// not this. The file is left in the tree for reference and is unreachable.
 app.register(employee);
 app.register(area);
 app.register(position);
@@ -280,7 +283,7 @@ app.get("/test/ai", async (request: FastifyRequest, reply: FastifyReply) => {
 // Public build marker — lets anyone (including the assistant) CONFIRM which
 // build is actually serving, instead of trusting deploy timers. Bump the
 // tag with each meaningful deploy.
-const BUILD_TAG = "2026-09-11-reminders-probe";
+const BUILD_TAG = "2026-09-11-close-open-routes";
 
 /**
  * Can this container actually rasterise a PDF page?

@@ -18,12 +18,12 @@ const request_1 = require("../models/request");
 const adminLineHrController_1 = require("../controller/adminLineHrController");
 const admin = (fastify) => {
     fastify.post("/admin-login", { schema: request_1.adminLoginScehma }, adminAuth_1.adminAuth);
-    fastify.post("/create-admin", { schema: request_1.adminLoginScehma }, adminAuth_1.creteAdmin);
-    fastify.get("/admin-inbox", (req, res) => __awaiter(void 0, void 0, void 0, function* () { }));
+    fastify.post("/create-admin", { preHandler: handler_1.adminAuthenticated, schema: request_1.adminLoginScehma }, adminAuth_1.creteAdmin);
+    fastify.get("/admin-inbox", { preHandler: handler_1.adminAuthenticated }, (req, res) => __awaiter(void 0, void 0, void 0, function* () { }));
     // Audit logs for the admin panel. Open, like the other admin-panel list
     // endpoints (/accounts, /line/list).
-    fastify.get("/admin/log-types", adminLogsController_1.adminLogTypes);
-    fastify.get("/admin/logs", adminLogsController_1.adminLogs);
+    fastify.get("/admin/log-types", { preHandler: handler_1.adminAuthenticated }, adminLogsController_1.adminLogTypes);
+    fastify.get("/admin/logs", { preHandler: handler_1.adminAuthenticated }, adminLogsController_1.adminLogs);
     // Full-database backup / restore — gated by the admin token, and the import
     // accepts a large JSON body.
     fastify.get("/admin/backup/export", { preHandler: handler_1.adminAuthenticated }, adminBackupController_1.adminBackupExport);

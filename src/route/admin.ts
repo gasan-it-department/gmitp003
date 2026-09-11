@@ -10,12 +10,12 @@ import { adminLoginScehma } from "../models/request";
 import { openLineHrSession } from "../controller/adminLineHrController";
 export const admin = (fastify: FastifyInstance) => {
   fastify.post("/admin-login", { schema: adminLoginScehma }, adminAuth);
-  fastify.post("/create-admin", { schema: adminLoginScehma }, creteAdmin);
-  fastify.get("/admin-inbox", async (req, res) => {});
+  fastify.post("/create-admin", { preHandler: adminAuthenticated, schema: adminLoginScehma }, creteAdmin);
+  fastify.get("/admin-inbox", { preHandler: adminAuthenticated }, async (req, res) => {});
   // Audit logs for the admin panel. Open, like the other admin-panel list
   // endpoints (/accounts, /line/list).
-  fastify.get("/admin/log-types", adminLogTypes);
-  fastify.get("/admin/logs", adminLogs);
+  fastify.get("/admin/log-types", { preHandler: adminAuthenticated }, adminLogTypes);
+  fastify.get("/admin/logs", { preHandler: adminAuthenticated }, adminLogs);
   // Full-database backup / restore — gated by the admin token, and the import
   // accepts a large JSON body.
   fastify.get(

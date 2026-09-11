@@ -5,6 +5,16 @@
  * destroy public records by tapping Delete.
  *
  * Run: npx ts-node --transpile-only e2e_self_delete.ts */
+import path from "path";
+
+// Stub the entry module: importing a controller otherwise boots the real
+// Fastify server and the suite dies on EADDRINUSE.
+const entry = path.join(__dirname, "src", "index.ts");
+require.cache[entry] = {
+  id: entry, filename: entry, loaded: true,
+  exports: { notificationSocket: { emitUserNotification: () => undefined } },
+} as any;
+
 import argon from "argon2";
 import { prisma } from "./src/barrel/prisma";
 import { selfDeleteAccount } from "./src/controller/accountSelfDeleteController";

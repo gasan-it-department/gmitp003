@@ -1,5 +1,5 @@
 import { FastifyInstance } from "../barrel/fastify";
-import { authenticated } from "../middleware/handler";
+import { adminAuthenticated, authenticated } from "../middleware/handler";
 import { controllerListSchema } from "../models/request";
 import {
   accountList,
@@ -12,7 +12,7 @@ import {
 import { selfDeleteAccount } from "../controller/accountSelfDeleteController";
 export const accounts = (fastify: FastifyInstance) => {
   fastify.get(
-    "/accounts",
+    "/accounts", { preHandler: adminAuthenticated },
 
     accountList,
   );
@@ -26,8 +26,8 @@ export const accounts = (fastify: FastifyInstance) => {
   // username; emails a one-time reset link to the account's on-file email.
   fastify.post("/account/forgot-password", forgotPassword);
   // Admin-panel account management (open, like /accounts).
-  fastify.patch("/account/status", adminSetAccountStatus);
-  fastify.delete("/account/delete", adminDeleteAccount);
+  fastify.patch("/account/status", { preHandler: adminAuthenticated }, adminSetAccountStatus);
+  fastify.delete("/account/delete", { preHandler: adminAuthenticated }, adminDeleteAccount);
   // Self-service deletion, required by App Store Review 5.1.1(v). Distinct
   // from the admin route above: it acts on the CALLER's own account and
   // re-checks their password first.
