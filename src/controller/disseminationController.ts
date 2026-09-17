@@ -431,6 +431,15 @@ export const disseminationDetail = async (
         documents: {
           select: { id: true, title: true, timestamp: true },
         },
+        /**
+         * Who signs, in order — including WHO, which this used to leave out.
+         *
+         * Without the user on each row the wizard could not redraw the
+         * signatory chips when somebody reopened their own draft, so it
+         * showed an empty list. Stepping past that screen then posted the
+         * empty list and deleted the signatories for real. The payload has
+         * to carry enough to rebuild exactly what was chosen.
+         */
         signatotyArrangement: {
           orderBy: { index: "asc" },
           select: {
@@ -439,6 +448,16 @@ export const disseminationDetail = async (
             status: true,
             signedAt: true,
             timestamp: true,
+            userId: true,
+            user: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                username: true,
+                Position: { select: { name: true } },
+              },
+            },
           },
         },
         user: { select: { id: true, firstName: true, lastName: true } },
@@ -589,10 +608,16 @@ export const setSignatoryArrangement = async (
   const body = req.body as {
     queueRoomId: string;
     /**
-     * Caller-defined ordered list of signatories. Each entry refers to a
-     * RoomAuthorizedUser.id; the index is the signing order (0-based).
-     */
-    signatories: { roomAuthorizedUserId: string }[];
+      * Caller-defined ordered list of signatories. Each entry refers to a
+      * RoomAuthorizedUser.id; the index is the signing order (0-based).
+      *
+      * `userId` is an optional fallback for the one case the membership id
+      * cannot cover: somebody already on the routing who has since lost the
+      * room they were picked from. They are still the signatory — the
+      * arrangement says so — but there is no membership row left to name
+      * them by, and resolving to nothing would quietly blank the slot.
+      */
+     signatories: { roomAuthorizedUserId: string; userId?: string | null }[];
     userId: string;
     lineId: string;
   };
@@ -646,7 +671,9 @@ export const setSignatoryArrangement = async (
 
       for (let i = 0; i < body.signatories.length; i++) {
         const userIdForSlot =
-          authToUserId.get(body.signatories[i].roomAuthorizedUserId) ?? null;
+          authToUserId.get(body.signatories[i].roomAuthorizedUserId) ??
+          body.signatories[i].userId ??
+          null;
         const arrId = byIndex.get(i);
         console.log("[setSignatories] slot", i, {
           roomAuthUserId: body.signatories[i].roomAuthorizedUserId,

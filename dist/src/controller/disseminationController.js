@@ -431,6 +431,15 @@ const disseminationDetail = (req, res) => __awaiter(void 0, void 0, void 0, func
                 documents: {
                     select: { id: true, title: true, timestamp: true },
                 },
+                /**
+                 * Who signs, in order — including WHO, which this used to leave out.
+                 *
+                 * Without the user on each row the wizard could not redraw the
+                 * signatory chips when somebody reopened their own draft, so it
+                 * showed an empty list. Stepping past that screen then posted the
+                 * empty list and deleted the signatories for real. The payload has
+                 * to carry enough to rebuild exactly what was chosen.
+                 */
                 signatotyArrangement: {
                     orderBy: { index: "asc" },
                     select: {
@@ -439,6 +448,16 @@ const disseminationDetail = (req, res) => __awaiter(void 0, void 0, void 0, func
                         status: true,
                         signedAt: true,
                         timestamp: true,
+                        userId: true,
+                        user: {
+                            select: {
+                                id: true,
+                                firstName: true,
+                                lastName: true,
+                                username: true,
+                                Position: { select: { name: true } },
+                            },
+                        },
                     },
                 },
                 user: { select: { id: true, firstName: true, lastName: true } },
@@ -575,7 +594,7 @@ const setSignatoryArrangement = (req, res) => __awaiter(void 0, void 0, void 0, 
     yield requireOwnsRouting(req, body.queueRoomId);
     try {
         yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
-            var _a;
+            var _a, _b;
             const queue = yield tx.signatureQueueRoom.findUnique({
                 where: { id: body.queueRoomId },
             });
@@ -609,7 +628,7 @@ const setSignatoryArrangement = (req, res) => __awaiter(void 0, void 0, void 0, 
             });
             const byIndex = new Map(existing.map((r) => [r.index, r.id]));
             for (let i = 0; i < body.signatories.length; i++) {
-                const userIdForSlot = (_a = authToUserId.get(body.signatories[i].roomAuthorizedUserId)) !== null && _a !== void 0 ? _a : null;
+                const userIdForSlot = (_b = (_a = authToUserId.get(body.signatories[i].roomAuthorizedUserId)) !== null && _a !== void 0 ? _a : body.signatories[i].userId) !== null && _b !== void 0 ? _b : null;
                 const arrId = byIndex.get(i);
                 console.log("[setSignatories] slot", i, {
                     roomAuthUserId: body.signatories[i].roomAuthorizedUserId,
