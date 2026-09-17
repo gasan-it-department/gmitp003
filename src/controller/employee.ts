@@ -14,6 +14,8 @@ import QRCode from "qrcode";
 import { randomUUID } from "crypto";
 import { tempURL } from "../service/url";
 import { getCardExtras } from "./idCardController";
+import { callerContext } from "../service/callerScope";
+import { UnauthorizedError } from "../errors/errors";
 
 export const getAllEmpoyees = async (
   req: FastifyRequest,
@@ -773,6 +775,150 @@ export const decryptUserData = async (
     throw error;
   }
 };
+
+/**
+ * PATCH /user/username   { userId, accountId, username }
+ *
+ * HR renames an employee's login.
+ *
+ * The username lives in TWO places and both matter: `Account.username` is
+ * what the login form looks up, and `User.username` is what the rest of the
+ * app displays and joins on. Writing one without the other leaves somebody
+ * who is shown one name and must type another, so this writes both or
+ * neither.
+ *
+ * Uniqueness has to be enforced HERE. `User.username` carries a database
+ * unique, but `Account.username` — the one login actually resolves — does
+ * not, and login uses findFirst. Two accounts sharing a username would mean
+ * a password that opens an arbitrary one of them, so the check is explicit
+ * and runs inside the transaction.
+ */
+export const changeEmployeeUsername = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const body = req.body as { accountId?: string; username?: string };
+  if (!body.accountId || !body.username) {
+    throw new ValidationError("INVALID REQUIRED FIELDS");
+  }
+
+  const username = body.username.trim();
+  /**
+   * What a username may be.
+   *
+   * Deliberately narrow: it is typed into a login box, sometimes read off
+   * paper and sometimes dictated over the phone. No spaces (invisible at
+   * both ends of a copy-paste), no case games, nothing that needs escaping.
+   */
+  if (username.length < 4 || username.length > 32) {
+    throw new ValidationError("Username must be 4 to 32 characters.");
+  }
+  if (!/^[a-zA-Z0-9._-]+$/.test(username)) {
+    throw new ValidationError(
+      "Username may use letters, numbers, dots, dashes and underscores only — no spaces.",
+    );
+  }
+
+  /**
+   * Who is being renamed, and who is asking.
+   *
+   * The target is identified by accountId ALONE. The HR screen's other
+   * actions take a `userId` in the body that is the ACTING HR person, not
+   * the employee — suspend and delete both read it that way — so a handler
+   * that treated it as the target would rename the wrong person, or more
+   * likely refuse everything. The actor comes from the token, which is the
+   * only place it can be trusted from anyway.
+   */
+  const caller = await callerContext(req);
+  const target = await prisma.user.findFirst({
+    where: { accountId: body.accountId },
+    select: {
+      id: true,
+      lineId: true,
+      username: true,
+      accountId: true,
+      firstName: true,
+      lastName: true,
+    },
+  });
+  if (!target) throw new NotFoundError("Employee not found");
+  if (!caller.lineId || caller.lineId !== target.lineId) {
+    console.warn(
+      `[username] refused: user ${caller.actorId} (line ${caller.lineId}) ` +
+        `tried to rename ${target.id} (line ${target.lineId})`,
+    );
+    throw new UnauthorizedError("This is not your municipality's employee.");
+  }
+  const hr = await prisma.module.findFirst({
+    where: { userId: caller.actorId, moduleName: "human-resources" },
+    select: { id: true },
+  });
+  if (!hr) throw new UnauthorizedError("Only HR can change a username.");
+
+  if (target.username === username) {
+    return res.code(200).send({ message: "OK", username, changed: false });
+  }
+
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      // Case-insensitively taken by anyone else, on either table.
+      const clashUser = await tx.user.findFirst({
+        where: {
+          username: { equals: username, mode: "insensitive" },
+          NOT: { id: target.id },
+        },
+        select: { id: true },
+      });
+      const clashAccount = await tx.account.findFirst({
+        where: {
+          username: { equals: username, mode: "insensitive" },
+          NOT: { id: body.accountId! },
+        },
+        select: { id: true },
+      });
+      if (clashUser || clashAccount) {
+        throw new ValidationError("That username is already taken.");
+      }
+
+      await tx.account.update({
+        where: { id: body.accountId! },
+        data: { username },
+      });
+      await tx.user.update({
+        where: { id: target.id },
+        data: { username },
+      });
+
+      await tx.humanResourcesLogs.create({
+        data: {
+          desc:
+            `Changed username of ${target.firstName} ${target.lastName} ` +
+            `from "${target.username}" to "${username}".`,
+          userId: caller.actorId,
+          lineId: target.lineId ?? caller.lineId!,
+          action: "UPDATE",
+        },
+      });
+
+      return { previous: target.username };
+    });
+
+    return res
+      .code(200)
+      .send({ message: "OK", username, changed: true, previous: result.previous });
+  } catch (error) {
+    if (error instanceof ValidationError || error instanceof NotFoundError)
+      throw error;
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      // The unique on User.username, if two renames race each other.
+      if (error.code === "P2002")
+        throw new ValidationError("That username is already taken.");
+      throw dbError(error);
+    }
+    throw error;
+  }
+};
+
 export const supsendAccount = async (
   req: FastifyRequest,
   res: FastifyReply,

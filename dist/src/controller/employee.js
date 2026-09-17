@@ -30,7 +30,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.servePhoto = exports.updateProfilePicture = exports.verifyId = exports.userVerifyInfo = exports.restorePersonnel = exports.archivedPersonnel = exports.userRecord = exports.deleteUser = exports.userModuleAccess = exports.supsendAccount = exports.decryptUserData = exports.viewUserProfile = exports.employees = exports.searchUser = exports.getAllEmpoyees = void 0;
+exports.servePhoto = exports.updateProfilePicture = exports.verifyId = exports.userVerifyInfo = exports.restorePersonnel = exports.archivedPersonnel = exports.userRecord = exports.deleteUser = exports.userModuleAccess = exports.supsendAccount = exports.changeEmployeeUsername = exports.decryptUserData = exports.viewUserProfile = exports.employees = exports.searchUser = exports.getAllEmpoyees = void 0;
 const prisma_1 = require("../barrel/prisma");
 const errors_1 = require("../errors/errors");
 const date_1 = require("../utils/date");
@@ -41,6 +41,8 @@ const qrcode_1 = __importDefault(require("qrcode"));
 const crypto_1 = require("crypto");
 const url_1 = require("../service/url");
 const idCardController_1 = require("./idCardController");
+const callerScope_1 = require("../service/callerScope");
+const errors_2 = require("../errors/errors");
 const getAllEmpoyees = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const { page, office, sgFrom, sgTo, year, dateApp, dateLast, lastCursorId, query, } = req.body;
@@ -656,6 +658,137 @@ const decryptUserData = (req, res) => __awaiter(void 0, void 0, void 0, function
     }
 });
 exports.decryptUserData = decryptUserData;
+/**
+ * PATCH /user/username   { userId, accountId, username }
+ *
+ * HR renames an employee's login.
+ *
+ * The username lives in TWO places and both matter: `Account.username` is
+ * what the login form looks up, and `User.username` is what the rest of the
+ * app displays and joins on. Writing one without the other leaves somebody
+ * who is shown one name and must type another, so this writes both or
+ * neither.
+ *
+ * Uniqueness has to be enforced HERE. `User.username` carries a database
+ * unique, but `Account.username` — the one login actually resolves — does
+ * not, and login uses findFirst. Two accounts sharing a username would mean
+ * a password that opens an arbitrary one of them, so the check is explicit
+ * and runs inside the transaction.
+ */
+const changeEmployeeUsername = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    const body = req.body;
+    if (!body.accountId || !body.username) {
+        throw new errors_1.ValidationError("INVALID REQUIRED FIELDS");
+    }
+    const username = body.username.trim();
+    /**
+     * What a username may be.
+     *
+     * Deliberately narrow: it is typed into a login box, sometimes read off
+     * paper and sometimes dictated over the phone. No spaces (invisible at
+     * both ends of a copy-paste), no case games, nothing that needs escaping.
+     */
+    if (username.length < 4 || username.length > 32) {
+        throw new errors_1.ValidationError("Username must be 4 to 32 characters.");
+    }
+    if (!/^[a-zA-Z0-9._-]+$/.test(username)) {
+        throw new errors_1.ValidationError("Username may use letters, numbers, dots, dashes and underscores only — no spaces.");
+    }
+    /**
+     * Who is being renamed, and who is asking.
+     *
+     * The target is identified by accountId ALONE. The HR screen's other
+     * actions take a `userId` in the body that is the ACTING HR person, not
+     * the employee — suspend and delete both read it that way — so a handler
+     * that treated it as the target would rename the wrong person, or more
+     * likely refuse everything. The actor comes from the token, which is the
+     * only place it can be trusted from anyway.
+     */
+    const caller = yield (0, callerScope_1.callerContext)(req);
+    const target = yield prisma_1.prisma.user.findFirst({
+        where: { accountId: body.accountId },
+        select: {
+            id: true,
+            lineId: true,
+            username: true,
+            accountId: true,
+            firstName: true,
+            lastName: true,
+        },
+    });
+    if (!target)
+        throw new errors_1.NotFoundError("Employee not found");
+    if (!caller.lineId || caller.lineId !== target.lineId) {
+        console.warn(`[username] refused: user ${caller.actorId} (line ${caller.lineId}) ` +
+            `tried to rename ${target.id} (line ${target.lineId})`);
+        throw new errors_2.UnauthorizedError("This is not your municipality's employee.");
+    }
+    const hr = yield prisma_1.prisma.module.findFirst({
+        where: { userId: caller.actorId, moduleName: "human-resources" },
+        select: { id: true },
+    });
+    if (!hr)
+        throw new errors_2.UnauthorizedError("Only HR can change a username.");
+    if (target.username === username) {
+        return res.code(200).send({ message: "OK", username, changed: false });
+    }
+    try {
+        const result = yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
+            var _a;
+            // Case-insensitively taken by anyone else, on either table.
+            const clashUser = yield tx.user.findFirst({
+                where: {
+                    username: { equals: username, mode: "insensitive" },
+                    NOT: { id: target.id },
+                },
+                select: { id: true },
+            });
+            const clashAccount = yield tx.account.findFirst({
+                where: {
+                    username: { equals: username, mode: "insensitive" },
+                    NOT: { id: body.accountId },
+                },
+                select: { id: true },
+            });
+            if (clashUser || clashAccount) {
+                throw new errors_1.ValidationError("That username is already taken.");
+            }
+            yield tx.account.update({
+                where: { id: body.accountId },
+                data: { username },
+            });
+            yield tx.user.update({
+                where: { id: target.id },
+                data: { username },
+            });
+            yield tx.humanResourcesLogs.create({
+                data: {
+                    desc: `Changed username of ${target.firstName} ${target.lastName} ` +
+                        `from "${target.username}" to "${username}".`,
+                    userId: caller.actorId,
+                    lineId: (_a = target.lineId) !== null && _a !== void 0 ? _a : caller.lineId,
+                    action: "UPDATE",
+                },
+            });
+            return { previous: target.username };
+        }));
+        return res
+            .code(200)
+            .send({ message: "OK", username, changed: true, previous: result.previous });
+    }
+    catch (error) {
+        if (error instanceof errors_1.ValidationError || error instanceof errors_1.NotFoundError)
+            throw error;
+        if (error instanceof prisma_1.Prisma.PrismaClientKnownRequestError) {
+            // The unique on User.username, if two renames race each other.
+            if (error.code === "P2002")
+                throw new errors_1.ValidationError("That username is already taken.");
+            throw (0, errors_1.dbError)(error);
+        }
+        throw error;
+    }
+});
+exports.changeEmployeeUsername = changeEmployeeUsername;
 const supsendAccount = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     const body = req.body;
     console.log({ body });

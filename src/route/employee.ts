@@ -12,6 +12,7 @@ import {
   decryptUserData,
   userModuleAccess,
   supsendAccount,
+  changeEmployeeUsername,
   deleteUser,
   userRecord,
   archivedPersonnel,
@@ -48,6 +49,13 @@ export const employee = (fastify: FastifyInstance) => {
   // The logged-in employee's ID-card verify QR (mobile profile screen).
   fastify.get("/user/my-verify-qr", { preHandler: authenticated }, myVerifyQr);
   fastify.patch("/user/suspend", { preHandler: authenticated }, supsendAccount);
+  // HR renames an employee's login. The handler checks the caller runs HR
+  // for that employee's municipality; `authenticated` only gets it a token.
+  fastify.patch(
+    "/user/username",
+    { preHandler: authenticated },
+    changeEmployeeUsername,
+  );
   fastify.delete("/user/delete", { preHandler: authenticated }, deleteUser);
   fastify.get("/user/record", { preHandler: authenticated }, userRecord);
   fastify.get(

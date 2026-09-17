@@ -682,13 +682,28 @@ const deliver = async (
       return { ok: true };
     }
     const num = phNumberFormat(to);
-    if (!num) return { ok: false, error: "Invalid mobile number" };
-    const r = (await semaphoreService.sendSingleSMS(num, text)) as {
-      success?: boolean;
-      message?: string;
-    };
+    /**
+     * Check the number here, not at the gateway.
+     *
+     * phNumberFormat returns anything it cannot parse UNCHANGED, and this
+     * only rejected the empty string — so a number with the wrong digit
+     * count went to Semaphore, came back "The number format is invalid.",
+     * and the person reading the queue was told "SMS gateway rejected the
+     * message" with no clue which recipient or why. Saying it here names
+     * the number and costs no credit.
+     */
+    if (!num) return { ok: false, error: "No mobile number on file" };
+    if (!/^09\d{9}$/.test(num)) {
+      return {
+        ok: false,
+        error: `Not a valid PH mobile number (${num}) — expected 11 digits starting 09`,
+      };
+    }
+    const r = await semaphoreService.sendSingleSMS(num, text);
+    // `error` is the field this service sets; reading `message` — which it
+    // never sets on a failure — is what produced the generic rejection.
     return r?.success === false
-      ? { ok: false, error: r?.message ?? "SMS gateway rejected the message" }
+      ? { ok: false, error: r?.error || "SMS gateway rejected the message" }
       : { ok: true };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "Send failed" };

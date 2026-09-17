@@ -18,6 +18,9 @@ const employee = (fastify) => {
     // The logged-in employee's ID-card verify QR (mobile profile screen).
     fastify.get("/user/my-verify-qr", { preHandler: handler_1.authenticated }, idCardController_1.myVerifyQr);
     fastify.patch("/user/suspend", { preHandler: handler_1.authenticated }, employee_1.supsendAccount);
+    // HR renames an employee's login. The handler checks the caller runs HR
+    // for that employee's municipality; `authenticated` only gets it a token.
+    fastify.patch("/user/username", { preHandler: handler_1.authenticated }, employee_1.changeEmployeeUsername);
     fastify.delete("/user/delete", { preHandler: handler_1.authenticated }, employee_1.deleteUser);
     fastify.get("/user/record", { preHandler: handler_1.authenticated }, employee_1.userRecord);
     fastify.get("/archived-personnel", { preHandler: handler_1.authenticated }, employee_1.archivedPersonnel);

@@ -1634,7 +1634,11 @@ const contactApplicant = (req, res) => __awaiter(void 0, void 0, void 0, functio
         if (sendTo === "phoneNumber" || sendTo === "both") {
             const formatted = (0, handler_1.phNumberFormat)(phoneNumber !== null && phoneNumber !== void 0 ? phoneNumber : "");
             if (formatted) {
-                communicationPromises.push(Semaphore_2.semaphoreService.sendSingleSMS(formatted, message, "Gasan"));
+                communicationPromises.push(
+                // "Gasan" is not registered to this Semaphore account, so every
+                // one of these was rejected. The account's own name comes from
+                // env — see SEMAPHORE_SENDER.
+                Semaphore_2.semaphoreService.sendSingleSMS(formatted, message));
             }
         }
         yield Promise.all(communicationPromises);
@@ -1748,7 +1752,7 @@ const contactManyApplicants = (req, res) => __awaiter(void 0, void 0, void 0, fu
                 .map((a) => { var _a; return (0, handler_1.phNumberFormat)((_a = a.phoneNumber) !== null && _a !== void 0 ? _a : ""); })
                 .filter((n) => n.length > 0);
             if (numbers.length) {
-                const smsResult = yield Semaphore_2.semaphoreService.sendBulkSMS(numbers, message.replace(/{{name}}/g, "Applicant"), "Gasan");
+                const smsResult = yield Semaphore_2.semaphoreService.sendBulkSMS(numbers, message.replace(/{{name}}/g, "Applicant"));
                 smsOk = smsResult.success;
                 smsSent = smsOk ? numbers.length : 0;
             }

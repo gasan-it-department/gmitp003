@@ -1830,7 +1830,10 @@ export const contactApplicant = async (
       const formatted = phNumberFormat(phoneNumber ?? "");
       if (formatted) {
         communicationPromises.push(
-          semaphoreService.sendSingleSMS(formatted, message, "Gasan"),
+          // "Gasan" is not registered to this Semaphore account, so every
+          // one of these was rejected. The account's own name comes from
+          // env — see SEMAPHORE_SENDER.
+          semaphoreService.sendSingleSMS(formatted, message),
         );
       }
     }
@@ -1986,7 +1989,6 @@ export const contactManyApplicants = async (
         const smsResult = await semaphoreService.sendBulkSMS(
           numbers,
           message.replace(/{{name}}/g, "Applicant"),
-          "Gasan",
         );
         smsOk = smsResult.success;
         smsSent = smsOk ? numbers.length : 0;
