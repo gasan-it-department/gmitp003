@@ -718,6 +718,37 @@ const finalizeDissemination = (req, res) => __awaiter(void 0, void 0, void 0, fu
             if (((_d = (_c = queue._count) === null || _c === void 0 ? void 0 : _c.documents) !== null && _d !== void 0 ? _d : 0) === 0) {
                 throw new errors_1.ValidationError("Attach at least one document first.");
             }
+            /**
+             * Every signatory needs a box, or their signature lands nowhere.
+             *
+             * A signature is only ever drawn where a SignatureCoor says to draw
+             * it — in the download, which stamps the PDF, and in the on-screen
+             * viewer, which overlays the same placements. A signatory with no box
+             * therefore signs successfully, is recorded as having signed, and
+             * produces nothing visible on the document. The person gets a green
+             * tick and then cannot find their own signature.
+             *
+             * The opposite case — a box with no signatory — is refused when the
+             * placements are saved. This is that rule's other half, and it has to
+             * live at dispatch because the boxes and the signatories are chosen in
+             * different steps and either can be edited after the other.
+             */
+            const forSlots = yield tx.signatoryArrangement.findMany({
+                where: { signatureQueueRoomId: queue.id },
+                select: { index: true, sign: { select: { id: true }, take: 1 } },
+            });
+            const naked = forSlots
+                .filter((s) => s.sign.length === 0)
+                .map((s) => s.index + 1)
+                .sort((a, b) => a - b);
+            if (naked.length > 0) {
+                throw new errors_1.ValidationError(`Signatory ${naked.length === 1 ? "slot" : "slots"} ` +
+                    `${naked.map((n) => `#${n}`).join(", ")} ` +
+                    `${naked.length === 1 ? "has" : "have"} no signature box on any ` +
+                    `document, so ${naked.length === 1 ? "that signature" : "those signatures"} ` +
+                    `would never appear. Add a box in the Documents step, or remove ` +
+                    `${naked.length === 1 ? "the signatory" : "them"} from the list.`);
+            }
             const updated = yield tx.signatureQueueRoom.update({
                 where: { id: body.queueRoomId },
                 // dispatchedAt, not timestamp: a draft can sit for a fortnight
@@ -2086,12 +2117,27 @@ const signMine = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
                     status: 0,
                     OR: [{ userId: body.userId }, { userId: null }],
                 },
-                select: { id: true, userId: true, index: true },
+                // `sign` comes along so we can tell the signer whether their
+                // signature has anywhere to appear. Routings dispatched from now on
+                // cannot be in this state — finalize refuses them — but ones already
+                // out there can, and silently producing nothing is how this was
+                // discovered in the first place.
+                select: {
+                    id: true,
+                    userId: true,
+                    index: true,
+                    sign: { select: { id: true }, take: 1 },
+                },
             });
             console.log("[signMine] pending matches:", pending);
             if (pending.length === 0) {
-                return { signed: 0, completed: false };
+                return { signed: 0, completed: false, unstamped: [] };
             }
+            // Slots being signed that have no box to be drawn in.
+            const unstamped = pending
+                .filter((p) => p.sign.length === 0)
+                .map((p) => p.index + 1)
+                .sort((a, b) => a - b);
             const now = new Date();
             // Stamp signedAt + status + userId + geolocation in one updateMany
             // so unassigned slots end up owned by the signer and the geo lands
@@ -2187,6 +2233,10 @@ const signMine = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
                 completed,
                 signedAt: now,
                 copyFurnished: furnished.released,
+                // Slot numbers that were signed but have no box to be drawn in, so
+                // the caller can say so instead of reporting a plain success for a
+                // signature nobody will ever see.
+                unstamped,
             };
         }));
         // Cryptographic attestation runs AFTER the transaction commits, and is
