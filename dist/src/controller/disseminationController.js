@@ -1135,6 +1135,8 @@ const streamDocumentFile = (req, res) => __awaiter(void 0, void 0, void 0, funct
     }
 });
 exports.streamDocumentFile = streamDocumentFile;
+/** How long one "editing session" lasts for the activity log, below. */
+const PLACEMENT_LOG_WINDOW_MS = 10 * 60 * 1000;
 // ── Save signature placements (per document, replace strategy) ─────────
 // Each placement is anchored to a page number. We create the DocumentPage
 // row lazily if it doesn't exist yet. Coordinates are basis points (0-10000)
@@ -1190,32 +1192,37 @@ const saveSignaturePlacements = (req, res) => __awaiter(void 0, void 0, void 0, 
                     where: { documentPageId: { in: allPageIds } },
                 });
             }
-            // Resolve slot indexes to SignatoryArrangement rows (creating any
-            // that don't exist yet on this queue).
+            /**
+             * Resolve slot numbers to the signatories already on this routing.
+             *
+             * This used to CREATE a SignatoryArrangement for any slot it did not
+             * recognise, so that boxes could be drawn before anyone was picked.
+             * The wizard now picks signatories first, and the on-the-fly create
+             * turned out to be the hole: it let a routing with nobody signing
+             * accumulate boxes, each one minting an empty arrangement that no
+             * person was ever attached to. A box nobody can fill is not a box.
+             *
+             * Clearing every box is still allowed — that is how they are removed.
+             */
             const slots = Array.from(new Set(body.placements.map((p) => p.slotIndex))).filter((n) => Number.isFinite(n) && n >= 1);
             const slotToArrId = new Map();
             if (slots.length > 0) {
                 const arr = yield tx.signatoryArrangement.findMany({
-                    where: {
-                        signatureQueueRoomId: body.queueRoomId,
-                        index: { in: slots.map((s) => s - 1) },
-                    },
+                    where: { signatureQueueRoomId: body.queueRoomId },
                     select: { id: true, index: true },
                 });
+                if (arr.length === 0) {
+                    throw new errors_1.ValidationError("This routing has no signatories, so there is nothing to sign. " +
+                        "Choose who signs before placing signature boxes.");
+                }
                 for (const r of arr)
                     slotToArrId.set(r.index + 1, r.id);
-                for (const s of slots) {
-                    if (!slotToArrId.has(s)) {
-                        const created = yield tx.signatoryArrangement.create({
-                            data: {
-                                signatureQueueRoomId: body.queueRoomId,
-                                index: s - 1,
-                                status: 0,
-                            },
-                            select: { id: true },
-                        });
-                        slotToArrId.set(s, created.id);
-                    }
+                const unknown = slots.filter((s) => !slotToArrId.has(s)).sort();
+                if (unknown.length > 0) {
+                    throw new errors_1.ValidationError(`Signature slot${unknown.length === 1 ? "" : "s"} ` +
+                        `${unknown.map((s) => `#${s}`).join(", ")} ` +
+                        `${unknown.length === 1 ? "has" : "have"} no signatory. ` +
+                        `This routing has ${arr.length} signator${arr.length === 1 ? "y" : "ies"} — use slot${arr.length === 1 ? " #1" : `s #1–#${arr.length}`}.`);
                 }
             }
             if (body.placements.length > 0) {
@@ -1230,17 +1237,47 @@ const saveSignaturePlacements = (req, res) => __awaiter(void 0, void 0, void 0, 
                     })),
                 });
             }
+            /**
+             * One line per editing session, not one per keystroke.
+             *
+             * The editor auto-saves, so a person drawing eight boxes used to
+             * leave eight identical-looking rows in the audit trail (and a bug
+             * in that auto-save left sixty-five). What a reader wants to know is
+             * that this document's placements were edited and where they ended
+             * up, so the most recent entry for the same document is rewritten
+             * while the person is still working, and a new one starts once they
+             * have been away for a while.
+             */
             if (body.userId) {
-                yield tx.documentActivityLogs.create({
-                    data: {
+                const desc = `Saved ${body.placements.length} placement` +
+                    `${body.placements.length === 1 ? "" : "s"} for document ${body.documentId}`;
+                const recent = yield tx.documentActivityLogs.findFirst({
+                    where: {
                         userId: body.userId,
-                        lineId: body.lineId,
                         title: "Updated signature placements",
-                        desc: `Saved ${body.placements.length} placement` +
-                            `${body.placements.length === 1 ? "" : "s"} for document ${body.documentId}`,
-                        action: 2,
+                        desc: { endsWith: `for document ${body.documentId}` },
+                        timestamp: { gte: new Date(Date.now() - PLACEMENT_LOG_WINDOW_MS) },
                     },
+                    orderBy: { timestamp: "desc" },
+                    select: { id: true },
                 });
+                if (recent) {
+                    yield tx.documentActivityLogs.update({
+                        where: { id: recent.id },
+                        data: { desc, timestamp: new Date() },
+                    });
+                }
+                else {
+                    yield tx.documentActivityLogs.create({
+                        data: {
+                            userId: body.userId,
+                            lineId: body.lineId,
+                            title: "Updated signature placements",
+                            desc,
+                            action: 2,
+                        },
+                    });
+                }
             }
         }));
         return res.code(200).send({ message: "OK" });
