@@ -683,28 +683,64 @@ const sendBatch = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
             ? "Those recipients are no longer on this batch."
             : "Everyone here has been contacted. Tick the people you want to message again, or add more recipients.");
     const resent = wave.filter((r) => r.status !== "pending").length;
+    /**
+     * One recipient at a time, and one recipient's problem stays theirs.
+     *
+     * This loop used to be unguarded. `renderFor` reads and decrypts the
+     * employee's own record, so a single unreadable row — a bad ciphertext, a
+     * relation that has gone — threw out of the whole handler. Everybody
+     * already sent in that wave stayed sent, the rest stayed pending, and the
+     * caller got a bare 500 that named neither the person nor the reason.
+     *
+     * Now the failure is written to the row it belongs to and the wave
+     * continues. A send of forty people reports thirty-nine sent and one
+     * failed with a reason, which is both true and actionable.
+     */
     for (const r of wave) {
-        const rendered = yield (0, exports.renderFor)(batch.body, r.userId);
-        const out = r.toAddress
-            ? yield deliver(batch.channel, r.toAddress, batch.subject, rendered)
-            : {
+        let rendered = "";
+        let out;
+        try {
+            rendered = yield (0, exports.renderFor)(batch.body, r.userId);
+            out = r.toAddress
+                ? yield deliver(batch.channel, r.toAddress, batch.subject, rendered)
+                : {
+                    ok: false,
+                    error: batch.channel === "email"
+                        ? "No email on file"
+                        : "No mobile number on file",
+                };
+        }
+        catch (e) {
+            // Log it properly: this is the one failure mode with no other trace.
+            console.error(`[hr-message] recipient ${r.id} (user ${r.userId}) on batch ${id}:`, e);
+            out = {
                 ok: false,
-                error: batch.channel === "email"
-                    ? "No email on file"
-                    : "No mobile number on file",
+                error: e instanceof Error
+                    ? `Could not prepare this message: ${e.message}`
+                    : "Could not prepare this message",
             };
+            if (!rendered)
+                rendered = batch.body;
+        }
         // renderedBody is frozen here: a later profile edit cannot rewrite what
         // was sent, and a retry reuses the exact same words and address.
-        yield prisma_1.prisma.hrMessageRecipient.update({
-            where: { id: r.id },
-            data: {
-                renderedBody: rendered,
-                status: out.ok ? "sent" : "failed",
-                error: out.ok ? null : ((_b = out.error) !== null && _b !== void 0 ? _b : "Send failed"),
-                attempts: { increment: 1 },
-                sentAt: out.ok ? new Date() : null,
-            },
-        });
+        try {
+            yield prisma_1.prisma.hrMessageRecipient.update({
+                where: { id: r.id },
+                data: {
+                    renderedBody: rendered,
+                    status: out.ok ? "sent" : "failed",
+                    error: out.ok ? null : ((_b = out.error) !== null && _b !== void 0 ? _b : "Send failed"),
+                    attempts: { increment: 1 },
+                    sentAt: out.ok ? new Date() : null,
+                },
+            });
+        }
+        catch (e) {
+            // The row went while we were working — deleted, or the batch was.
+            // Nothing to record it against; the counts below tell the truth.
+            console.error(`[hr-message] could not record recipient ${r.id}:`, e);
+        }
     }
     const counts = yield syncCounts(id);
     // "sent" just means nobody is waiting right now — the batch stays open to
@@ -735,21 +771,46 @@ const retryBatch = (req, res) => __awaiter(void 0, void 0, void 0, function* () 
     if (!rows.length)
         throw new errors_1.ValidationError("Nothing to retry");
     let fixed = 0;
+    // Same guard as the send loop, same reason: a retry is run precisely when
+    // something is already wrong, so it is the last place that should fall
+    // over on one unreadable row and take the rest of the batch with it.
     for (const r of rows) {
-        const rendered = r.renderedBody || (yield (0, exports.renderFor)(batch.body, r.userId));
-        const out = r.toAddress
-            ? yield deliver(batch.channel, r.toAddress, batch.subject, rendered)
-            : { ok: false, error: "No contact detail on file" };
-        yield prisma_1.prisma.hrMessageRecipient.update({
-            where: { id: r.id },
-            data: {
-                renderedBody: rendered,
-                status: out.ok ? "sent" : "failed",
-                error: out.ok ? null : ((_b = out.error) !== null && _b !== void 0 ? _b : "Send failed"),
-                attempts: { increment: 1 },
-                sentAt: out.ok ? new Date() : null,
-            },
-        });
+        let rendered = r.renderedBody || "";
+        let out;
+        try {
+            if (!rendered)
+                rendered = yield (0, exports.renderFor)(batch.body, r.userId);
+            out = r.toAddress
+                ? yield deliver(batch.channel, r.toAddress, batch.subject, rendered)
+                : { ok: false, error: "No contact detail on file" };
+        }
+        catch (e) {
+            console.error(`[hr-message] retry of recipient ${r.id} (user ${r.userId}) on batch ${id}:`, e);
+            out = {
+                ok: false,
+                error: e instanceof Error
+                    ? `Could not prepare this message: ${e.message}`
+                    : "Could not prepare this message",
+            };
+            if (!rendered)
+                rendered = batch.body;
+        }
+        try {
+            yield prisma_1.prisma.hrMessageRecipient.update({
+                where: { id: r.id },
+                data: {
+                    renderedBody: rendered,
+                    status: out.ok ? "sent" : "failed",
+                    error: out.ok ? null : ((_b = out.error) !== null && _b !== void 0 ? _b : "Send failed"),
+                    attempts: { increment: 1 },
+                    sentAt: out.ok ? new Date() : null,
+                },
+            });
+        }
+        catch (e) {
+            console.error(`[hr-message] could not record retry of ${r.id}:`, e);
+            continue;
+        }
         if (out.ok)
             fixed++;
     }

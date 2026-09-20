@@ -772,30 +772,67 @@ export const sendBatch = async (req: FastifyRequest, res: FastifyReply) => {
     );
   const resent = wave.filter((r) => r.status !== "pending").length;
 
+  /**
+   * One recipient at a time, and one recipient's problem stays theirs.
+   *
+   * This loop used to be unguarded. `renderFor` reads and decrypts the
+   * employee's own record, so a single unreadable row — a bad ciphertext, a
+   * relation that has gone — threw out of the whole handler. Everybody
+   * already sent in that wave stayed sent, the rest stayed pending, and the
+   * caller got a bare 500 that named neither the person nor the reason.
+   *
+   * Now the failure is written to the row it belongs to and the wave
+   * continues. A send of forty people reports thirty-nine sent and one
+   * failed with a reason, which is both true and actionable.
+   */
   for (const r of wave) {
-    const rendered = await renderFor(batch.body, r.userId);
-    const out = r.toAddress
-      ? await deliver(batch.channel, r.toAddress, batch.subject, rendered)
-      : {
-          ok: false,
-          error:
-            batch.channel === "email"
-              ? "No email on file"
-              : "No mobile number on file",
-        };
+    let rendered = "";
+    let out: { ok: boolean; error?: string };
+    try {
+      rendered = await renderFor(batch.body, r.userId);
+      out = r.toAddress
+        ? await deliver(batch.channel, r.toAddress, batch.subject, rendered)
+        : {
+            ok: false,
+            error:
+              batch.channel === "email"
+                ? "No email on file"
+                : "No mobile number on file",
+          };
+    } catch (e) {
+      // Log it properly: this is the one failure mode with no other trace.
+      console.error(
+        `[hr-message] recipient ${r.id} (user ${r.userId}) on batch ${id}:`,
+        e,
+      );
+      out = {
+        ok: false,
+        error:
+          e instanceof Error
+            ? `Could not prepare this message: ${e.message}`
+            : "Could not prepare this message",
+      };
+      if (!rendered) rendered = batch.body;
+    }
 
     // renderedBody is frozen here: a later profile edit cannot rewrite what
     // was sent, and a retry reuses the exact same words and address.
-    await prisma.hrMessageRecipient.update({
-      where: { id: r.id },
-      data: {
-        renderedBody: rendered,
-        status: out.ok ? "sent" : "failed",
-        error: out.ok ? null : (out.error ?? "Send failed"),
-        attempts: { increment: 1 },
-        sentAt: out.ok ? new Date() : null,
-      },
-    });
+    try {
+      await prisma.hrMessageRecipient.update({
+        where: { id: r.id },
+        data: {
+          renderedBody: rendered,
+          status: out.ok ? "sent" : "failed",
+          error: out.ok ? null : (out.error ?? "Send failed"),
+          attempts: { increment: 1 },
+          sentAt: out.ok ? new Date() : null,
+        },
+      });
+    } catch (e) {
+      // The row went while we were working — deleted, or the batch was.
+      // Nothing to record it against; the counts below tell the truth.
+      console.error(`[hr-message] could not record recipient ${r.id}:`, e);
+    }
   }
 
   const counts = await syncCounts(id);
@@ -837,21 +874,46 @@ export const retryBatch = async (req: FastifyRequest, res: FastifyReply) => {
   if (!rows.length) throw new ValidationError("Nothing to retry");
 
   let fixed = 0;
+  // Same guard as the send loop, same reason: a retry is run precisely when
+  // something is already wrong, so it is the last place that should fall
+  // over on one unreadable row and take the rest of the batch with it.
   for (const r of rows) {
-    const rendered = r.renderedBody || (await renderFor(batch.body, r.userId));
-    const out = r.toAddress
-      ? await deliver(batch.channel, r.toAddress, batch.subject, rendered)
-      : { ok: false, error: "No contact detail on file" };
-    await prisma.hrMessageRecipient.update({
-      where: { id: r.id },
-      data: {
-        renderedBody: rendered,
-        status: out.ok ? "sent" : "failed",
-        error: out.ok ? null : (out.error ?? "Send failed"),
-        attempts: { increment: 1 },
-        sentAt: out.ok ? new Date() : null,
-      },
-    });
+    let rendered = r.renderedBody || "";
+    let out: { ok: boolean; error?: string };
+    try {
+      if (!rendered) rendered = await renderFor(batch.body, r.userId);
+      out = r.toAddress
+        ? await deliver(batch.channel, r.toAddress, batch.subject, rendered)
+        : { ok: false, error: "No contact detail on file" };
+    } catch (e) {
+      console.error(
+        `[hr-message] retry of recipient ${r.id} (user ${r.userId}) on batch ${id}:`,
+        e,
+      );
+      out = {
+        ok: false,
+        error:
+          e instanceof Error
+            ? `Could not prepare this message: ${e.message}`
+            : "Could not prepare this message",
+      };
+      if (!rendered) rendered = batch.body;
+    }
+    try {
+      await prisma.hrMessageRecipient.update({
+        where: { id: r.id },
+        data: {
+          renderedBody: rendered,
+          status: out.ok ? "sent" : "failed",
+          error: out.ok ? null : (out.error ?? "Send failed"),
+          attempts: { increment: 1 },
+          sentAt: out.ok ? new Date() : null,
+        },
+      });
+    } catch (e) {
+      console.error(`[hr-message] could not record retry of ${r.id}:`, e);
+      continue;
+    }
     if (out.ok) fixed++;
   }
 
