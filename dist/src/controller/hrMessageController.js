@@ -684,6 +684,25 @@ const sendBatch = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
             : "Everyone here has been contacted. Tick the people you want to message again, or add more recipients.");
     const resent = wave.filter((r) => r.status !== "pending").length;
     /**
+     * How long this wave may run before it hands the rest back.
+     *
+     * Messages go out one at a time — twenty of them, each its own call to
+     * the SMS gateway — all inside a single HTTP request. Whatever sits in
+     * front of this API is timing that request, and when it gives up the
+     * caller gets a proxy error page with no message in it: "Request failed
+     * with status code 500", naming nothing, while the send is in fact still
+     * running and messages keep going out.
+     *
+     * So the loop watches the clock and stops cleanly instead. Whoever is
+     * left stays `pending`, the response says how many went and that there
+     * are more, and pressing Send again picks up exactly where it stopped —
+     * which is what the wave model was for.
+     */
+    const WAVE_BUDGET_MS = 45000;
+    const startedAt = Date.now();
+    let stoppedEarly = false;
+    let dispatched = 0;
+    /**
      * One recipient at a time, and one recipient's problem stays theirs.
      *
      * This loop used to be unguarded. `renderFor` reads and decrypts the
@@ -697,6 +716,13 @@ const sendBatch = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
      * failed with a reason, which is both true and actionable.
      */
     for (const r of wave) {
+        // Never abandon a wave before its first message — a single slow send
+        // would otherwise look like "nothing happened" forever.
+        if (dispatched > 0 && Date.now() - startedAt > WAVE_BUDGET_MS) {
+            stoppedEarly = true;
+            break;
+        }
+        dispatched++;
         let rendered = "";
         let out;
         try {
@@ -752,7 +778,11 @@ const sendBatch = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
             sentAt: new Date(),
         },
     });
-    return res.code(200).send(Object.assign(Object.assign({ batchId: id, dispatched: wave.length, resent }, counts), { done: counts.pending === 0 }));
+    return res.code(200).send(Object.assign(Object.assign({ batchId: id, dispatched,
+        resent }, counts), { 
+        // True when the clock ran out with people still to go. They are still
+        // pending; sending again continues from there.
+        stoppedEarly, remaining: wave.length - dispatched, done: counts.pending === 0 }));
 });
 exports.sendBatch = sendBatch;
 /** Retries ONLY the failed rows of a batch, reusing the frozen address/body. */

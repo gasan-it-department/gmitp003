@@ -13,7 +13,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 var _a;
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.semaphoreService = exports.SemaphoreService = exports.readGatewayError = exports.SEMAPHORE_SENDER = exports.semaphoreKey = void 0;
+exports.semaphoreService = exports.SemaphoreService = exports.readGatewayError = exports.SEND_TIMEOUT_MS = exports.SEMAPHORE_SENDER = exports.semaphoreKey = void 0;
 // services/semaphoreService.ts
 const axios_1 = __importDefault(require("axios"));
 exports.semaphoreKey = process.env.SEMAPHORE_API_KEY;
@@ -30,6 +30,8 @@ exports.semaphoreKey = process.env.SEMAPHORE_API_KEY;
  *   GET https://api.semaphore.co/api/v4/account/sendernames?apikey=…
  */
 exports.SEMAPHORE_SENDER = ((_a = process.env.SEMAPHORE_SENDER_NAME) === null || _a === void 0 ? void 0 : _a.trim()) || "SEMAPHORE";
+/** How long one message may take before it is somebody else's turn. */
+exports.SEND_TIMEOUT_MS = 20000;
 /**
  * Turn a Semaphore error body into one readable line.
  *
@@ -83,6 +85,13 @@ class SemaphoreService {
                     paramsSerializer: {
                         indexes: null, // Don't use array format for params
                     },
+                    /**
+                     * Without this there is no timeout at all, so one unanswered
+                     * connection holds the whole request open indefinitely — and the
+                     * HR queue makes up to twenty of these in a row, inside a single
+                     * HTTP request that something upstream is timing.
+                     */
+                    timeout: exports.SEND_TIMEOUT_MS,
                 });
                 /**
                   * A 2xx is not automatically a delivery.

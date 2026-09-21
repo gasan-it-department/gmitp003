@@ -18,6 +18,9 @@ export const semaphoreKey = process.env.SEMAPHORE_API_KEY;
 export const SEMAPHORE_SENDER =
   process.env.SEMAPHORE_SENDER_NAME?.trim() || "SEMAPHORE";
 
+/** How long one message may take before it is somebody else's turn. */
+export const SEND_TIMEOUT_MS = 20_000;
+
 /**
  * Turn a Semaphore error body into one readable line.
  *
@@ -106,6 +109,13 @@ export class SemaphoreService {
         paramsSerializer: {
           indexes: null, // Don't use array format for params
         },
+        /**
+         * Without this there is no timeout at all, so one unanswered
+         * connection holds the whole request open indefinitely — and the
+         * HR queue makes up to twenty of these in a row, inside a single
+         * HTTP request that something upstream is timing.
+         */
+        timeout: SEND_TIMEOUT_MS,
       });
       /**
         * A 2xx is not automatically a delivery.

@@ -99,6 +99,47 @@ const res = () => { const r: any = { _code:0,_body:null,
 
   Object.defineProperty(C, "renderFor", { configurable: true, value: realRender });
 
+  // ── the wave budget ───────────────────────────────────────────────────
+  // Twenty sequential gateway calls inside one HTTP request is how this
+  // outlives whatever is timing that request. The loop is supposed to stop
+  // cleanly and hand the rest back as still-pending, rather than run on and
+  // let the caller receive a proxy error page.
+  console.log("\n-- a wave that runs long --");
+  await prisma.hrMessageRecipient.updateMany({
+    where: { batchId: batch.id }, data: { status: "pending" },
+  });
+  // Make each render take longer than the whole budget, so the second
+  // recipient is past the deadline.
+  Object.defineProperty(C, "renderFor", {
+    configurable: true,
+    value: async (body: string, userId: string) => {
+      await new Promise((r) => setTimeout(r, 46_000));
+      return realRender(body, userId);
+    },
+  });
+  const t0 = Date.now();
+  const slow = res();
+  let slowThrew = false;
+  try { await C.sendBatch(req({ params:{id:batch.id}, body:{} }), slow); }
+  catch (e:any) { slowThrew = true; console.log("  THREW", e?.message); }
+  const elapsed = Date.now() - t0;
+  Object.defineProperty(C, "renderFor", { configurable: true, value: realRender });
+
+  ok("a long wave still returns", !slowThrew);
+  ok("...it stops at the budget instead of running through everyone",
+    slow._body?.stoppedEarly === true, JSON.stringify(slow._body));
+  ok("...having attempted only the first",
+    slow._body?.dispatched === 1, JSON.stringify(slow._body));
+  ok("...and says how many are left",
+    slow._body?.remaining === 2, JSON.stringify(slow._body));
+  ok("...in roughly one slow send, not three",
+    elapsed < 90_000, `${Math.round(elapsed/1000)}s`);
+  const left = await prisma.hrMessageRecipient.count({
+    where: { batchId: batch.id, status: "pending" } });
+  ok("...the untouched two are still pending, ready for the next press",
+    left === 2, `pending=${left}`);
+
+
   await prisma.hrMessageRecipient.deleteMany({ where:{batchId:batch.id} });
   await prisma.hrMessageBatch.delete({ where:{id:batch.id} });
   for (const id of made) await prisma.user.delete({where:{id}}).catch(()=>{});
