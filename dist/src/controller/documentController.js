@@ -265,6 +265,19 @@ const signatoryRegistry = (req, res) => __awaiter(void 0, void 0, void 0, functi
     // This is the caller's own room registration, not a lookup service.
     yield (0, callerScope_1.requireSelf)(req, params.userId);
     try {
+        /**
+          * Three independent facts, and the caller needs all of them.
+          *
+          * A person reaches a document room by one of TWO routes: they asked for
+          * one and HR approved it (roomRegistration), or somebody with room admin
+          * simply ADDED them as a signatory or receiver (roomAuthorizedUser).
+          * The second route creates no registration at all, which is why the
+          * membership is returned in its own right rather than as a detail of
+          * the registration.
+          *
+          * Membership is filtered on status 1 throughout: somebody removed from
+          * a room is not in it, and must not resolve to its room.
+          */
         const [roomRegistration, signatory, room] = yield prisma_1.prisma.$transaction([
             prisma_1.prisma.roomRegistration.findFirst({
                 where: {
@@ -274,6 +287,7 @@ const signatoryRegistry = (req, res) => __awaiter(void 0, void 0, void 0, functi
             prisma_1.prisma.roomAuthorizedUser.findFirst({
                 where: {
                     userId: params.userId,
+                    status: 1,
                 },
                 include: {
                     signature: {
@@ -290,12 +304,17 @@ const signatoryRegistry = (req, res) => __awaiter(void 0, void 0, void 0, functi
                     authorizedUser: {
                         some: {
                             userId: params.userId,
+                            status: 1,
                         },
                     },
                 },
             }),
         ]);
-        return res.code(200).send({ roomRegistration, signatory, room });
+        // `authorizedUser` is the name the client reads; `signatory` is kept so
+        // nothing older that still asks for it breaks. Same row either way.
+        return res
+            .code(200)
+            .send({ roomRegistration, signatory, authorizedUser: signatory, room });
     }
     catch (error) {
         if (error instanceof prisma_1.Prisma.PrismaClientKnownRequestError) {
