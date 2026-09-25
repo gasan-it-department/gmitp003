@@ -11,6 +11,7 @@ const documentActivityController_1 = require("../controller/documentActivityCont
 const documentSignViewController_1 = require("../controller/documentSignViewController");
 const selfSignController_1 = require("../controller/selfSignController");
 const roomConfigController_1 = require("../controller/roomConfigController");
+const receiveStampController_1 = require("../controller/receiveStampController");
 const document = (fastify) => {
     fastify.post("/document/create", { preHandler: handler_1.authenticated }, documentController_1.addDocument);
     fastify.get("/document/signatories", { preHandler: handler_1.authenticated }, documentController_1.authorizedUsers);
@@ -72,6 +73,15 @@ const document = (fastify) => {
     fastify.get("/document/my-pending", { preHandler: handler_1.authenticated }, documentActivityController_1.documentMyPending);
     fastify.get("/document/routing/sign-sheet", { preHandler: handler_1.authenticated }, documentSignViewController_1.routingSignSheet);
     fastify.get("/document/routing/page-image", { preHandler: handler_1.authenticated }, documentSignViewController_1.routingPageImage);
+    // ── Receiving stamp ─────────────────────────────────────────────────
+    // Each person's own; the handlers take the caller from the token and
+    // never from a parameter, so there is nothing to scope beyond signing in.
+    fastify.get("/document/receive-stamp", { preHandler: handler_1.authenticated }, receiveStampController_1.myReceiveStamp);
+    fastify.get("/document/receive-stamp/image", { preHandler: handler_1.authenticated }, receiveStampController_1.receiveStampImage);
+    fastify.post("/document/receive-stamp/image", { preHandler: handler_1.authenticated }, receiveStampController_1.uploadReceiveStampImage);
+    fastify.get("/document/receive-stamp/preview", { preHandler: handler_1.authenticated }, receiveStampController_1.receiveStampPreview);
+    fastify.patch("/document/receive-stamp", { preHandler: handler_1.authenticated }, receiveStampController_1.saveReceiveStamp);
+    fastify.delete("/document/receive-stamp", { preHandler: handler_1.authenticated }, receiveStampController_1.deleteReceiveStamp);
     // Turn the in-order signing rule on or off, while still a draft.
     fastify.patch("/document/dissemination/sequential", { preHandler: handler_1.authenticated }, disseminationController_1.setRoutingSequential);
     fastify.get("/document/dissemination/view", { preHandler: handler_1.authenticated }, disseminationController_1.viewDissemination);

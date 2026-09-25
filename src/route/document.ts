@@ -108,6 +108,14 @@ import {
   updateRoomMember,
   removeRoomMember,
 } from "../controller/roomConfigController";
+import {
+  myReceiveStamp,
+  receiveStampImage,
+  uploadReceiveStampImage,
+  receiveStampPreview,
+  saveReceiveStamp,
+  deleteReceiveStamp,
+} from "../controller/receiveStampController";
 
 export const document = (fastify: FastifyInstance) => {
   fastify.post("/document/create", { preHandler: authenticated }, addDocument);
@@ -376,6 +384,40 @@ export const document = (fastify: FastifyInstance) => {
     { preHandler: authenticated },
     routingPageImage,
   );
+  // ── Receiving stamp ─────────────────────────────────────────────────
+  // Each person's own; the handlers take the caller from the token and
+  // never from a parameter, so there is nothing to scope beyond signing in.
+  fastify.get(
+    "/document/receive-stamp",
+    { preHandler: authenticated },
+    myReceiveStamp,
+  );
+  fastify.get(
+    "/document/receive-stamp/image",
+    { preHandler: authenticated },
+    receiveStampImage,
+  );
+  fastify.post(
+    "/document/receive-stamp/image",
+    { preHandler: authenticated },
+    uploadReceiveStampImage,
+  );
+  fastify.get(
+    "/document/receive-stamp/preview",
+    { preHandler: authenticated },
+    receiveStampPreview,
+  );
+  fastify.patch(
+    "/document/receive-stamp",
+    { preHandler: authenticated },
+    saveReceiveStamp,
+  );
+  fastify.delete(
+    "/document/receive-stamp",
+    { preHandler: authenticated },
+    deleteReceiveStamp,
+  );
+
   // Turn the in-order signing rule on or off, while still a draft.
   fastify.patch(
     "/document/dissemination/sequential",

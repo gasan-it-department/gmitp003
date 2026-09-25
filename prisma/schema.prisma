@@ -8,6 +8,7 @@ datasource db {
 }
 
 model Line {
+  receiveStamps            ReceiveStamp[]
   id                      String                    @id @default(uuid())
   name                    String                    @unique
   barangayId              String
@@ -1046,6 +1047,7 @@ model Privilege {
 }
 
 model User {
+  receiveStamp             ReceiveStamp?                    @relation("ReceiveStampUser")
   id                               String                           @id @default(uuid())
   email                            String
   createdAt                        DateTime                         @default(now())
@@ -2030,6 +2032,52 @@ model UserKeyPair {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
   user       User     @relation(fields: [userId], references: [id])
+}
+
+/**
+ * A receiving stamp, as one office's rubber stamp scanned in.
+ *
+ * The artwork is the office's own 58mm x 30mm stamp — the box with
+ * RECEIVED, the office name, and empty DATE and BY lines. What the app adds
+ * is what a clerk would otherwise write by hand: the date, their name, and
+ * their signature, each placed exactly where it belongs on THEIR stamp.
+ *
+ * Placements are basis points of the artwork (0-10000, origin top-left),
+ * the same unit SignatureCoor uses, so the on-screen editor and the printed
+ * result divide by the same number and cannot drift apart.
+ */
+model ReceiveStamp {
+  id         String   @id @default(uuid())
+  userId     String   @unique
+  lineId     String?
+  /// The uploaded stamp artwork. PNG, 58mm x 30mm.
+  image      Bytes?
+  mime       String   @default("image/png")
+  imageW     Int      @default(0)
+  imageH     Int      @default(0)
+
+  /// Where the signature sits, and how big.
+  sigX       Int      @default(5200)
+  sigY       Int      @default(6200)
+  sigW       Int      @default(3600)
+  sigH       Int      @default(2600)
+
+  /// The name on the BY line — a nickname is fine, it is how colleagues
+  /// recognise who took delivery.
+  nickname   String   @default("")
+  nameX      Int      @default(2400)
+  nameY      Int      @default(8600)
+  nameSizePt Float    @default(9)
+
+  /// The date, filled in automatically the moment the stamp is applied.
+  dateX      Int      @default(2400)
+  dateY      Int      @default(7000)
+  dateSizePt Float    @default(9)
+
+  timestamp  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  user       User     @relation("ReceiveStampUser", fields: [userId], references: [id], onDelete: Cascade)
+  line       Line?    @relation(fields: [lineId], references: [id], onDelete: Cascade)
 }
 
 model Signature {
