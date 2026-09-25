@@ -258,6 +258,7 @@ const roomRegister = (req, res) => __awaiter(void 0, void 0, void 0, function* (
 });
 exports.roomRegister = roomRegister;
 const signatoryRegistry = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a;
     const params = req.query;
     if (!params.userId) {
         throw new errors_1.ValidationError("MISSING_USER_ID");
@@ -278,7 +279,7 @@ const signatoryRegistry = (req, res) => __awaiter(void 0, void 0, void 0, functi
           * Membership is filtered on status 1 throughout: somebody removed from
           * a room is not in it, and must not resolve to its room.
           */
-        const [roomRegistration, signatory, room] = yield prisma_1.prisma.$transaction([
+        const [roomRegistration, signatory, rooms] = yield prisma_1.prisma.$transaction([
             prisma_1.prisma.roomRegistration.findFirst({
                 where: {
                     userId: params.userId,
@@ -299,7 +300,17 @@ const signatoryRegistry = (req, res) => __awaiter(void 0, void 0, void 0, functi
                     },
                 },
             }),
-            prisma_1.prisma.receivingRoom.findFirst({
+            /**
+              * EVERY room this person belongs to, not one of them.
+              *
+              * findFirst with no ordering was picking arbitrarily, and a user who
+              * belongs to two rooms was shown one of them with no hint the other
+              * existed — eleven documents sitting in an inbox they could not
+              * reach. Ordered so the answer is at least stable: the rooms they
+              * own first, then oldest, so the primary never changes between two
+              * loads.
+              */
+            prisma_1.prisma.receivingRoom.findMany({
                 where: {
                     authorizedUser: {
                         some: {
@@ -308,13 +319,41 @@ const signatoryRegistry = (req, res) => __awaiter(void 0, void 0, void 0, functi
                         },
                     },
                 },
+                orderBy: { timestamp: "asc" },
             }),
         ]);
+        /**
+          * `rooms` is the full list; `room` is the one to open by default.
+          *
+          * Owned rooms win the default — that is the one you are responsible
+          * for — and ties break on age, so the choice is the same every time.
+          */
+        const memberships = yield prisma_1.prisma.roomAuthorizedUser.findMany({
+            where: { userId: params.userId, status: 1 },
+            select: { receivingRoomId: true, type: true },
+        });
+        const typeOf = new Map(memberships.map((m) => [m.receivingRoomId, m.type]));
+        const ordered = [...rooms].sort((a, b) => {
+            var _a, _b;
+            const ta = (_a = typeOf.get(a.id)) !== null && _a !== void 0 ? _a : 9;
+            const tb = (_b = typeOf.get(b.id)) !== null && _b !== void 0 ? _b : 9;
+            if (ta !== tb)
+                return ta - tb; // owner (0) before signatory (1)
+            return a.timestamp.getTime() - b.timestamp.getTime();
+        });
+        const roomsOut = ordered.map((r) => {
+            var _a;
+            return (Object.assign(Object.assign({}, r), { myType: (_a = typeOf.get(r.id)) !== null && _a !== void 0 ? _a : null }));
+        });
         // `authorizedUser` is the name the client reads; `signatory` is kept so
         // nothing older that still asks for it breaks. Same row either way.
-        return res
-            .code(200)
-            .send({ roomRegistration, signatory, authorizedUser: signatory, room });
+        return res.code(200).send({
+            roomRegistration,
+            signatory,
+            authorizedUser: signatory,
+            room: (_a = ordered[0]) !== null && _a !== void 0 ? _a : null,
+            rooms: roomsOut,
+        });
     }
     catch (error) {
         if (error instanceof prisma_1.Prisma.PrismaClientKnownRequestError) {

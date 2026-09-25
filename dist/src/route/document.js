@@ -72,6 +72,8 @@ const document = (fastify) => {
     fastify.get("/document/my-pending", { preHandler: handler_1.authenticated }, documentActivityController_1.documentMyPending);
     fastify.get("/document/routing/sign-sheet", { preHandler: handler_1.authenticated }, documentSignViewController_1.routingSignSheet);
     fastify.get("/document/routing/page-image", { preHandler: handler_1.authenticated }, documentSignViewController_1.routingPageImage);
+    // Turn the in-order signing rule on or off, while still a draft.
+    fastify.patch("/document/dissemination/sequential", { preHandler: handler_1.authenticated }, disseminationController_1.setRoutingSequential);
     fastify.get("/document/dissemination/view", { preHandler: handler_1.authenticated }, disseminationController_1.viewDissemination);
     fastify.post("/document/dissemination/sign-mine", { preHandler: handler_1.authenticated }, disseminationController_1.signMine);
     fastify.post("/document/dissemination/claim-slot", { preHandler: handler_1.authenticated }, disseminationController_1.claimSignatorySlot);

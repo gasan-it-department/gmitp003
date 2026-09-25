@@ -59,6 +59,7 @@ import {
   setTargetRooms,
   acknowledgeReceipt,
   setSignatoryArrangement,
+  setRoutingSequential,
   finalizeDissemination,
   removeDissemination,
   targetRoomCandidates,
@@ -374,6 +375,12 @@ export const document = (fastify: FastifyInstance) => {
     "/document/routing/page-image",
     { preHandler: authenticated },
     routingPageImage,
+  );
+  // Turn the in-order signing rule on or off, while still a draft.
+  fastify.patch(
+    "/document/dissemination/sequential",
+    { preHandler: authenticated },
+    setRoutingSequential,
   );
   fastify.get(
     "/document/dissemination/view",

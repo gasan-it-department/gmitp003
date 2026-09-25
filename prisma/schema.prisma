@@ -2126,6 +2126,13 @@ model SignatureQueueRoom {
   dispatchedAt         DateTime?
   /// When the sender was told nobody is signing. Once, at the cap.
   stalledNoticeAt      DateTime?
+  /// Signatures must be collected IN ORDER.
+  ///
+  /// Off by default, which is the old behaviour: anybody on the list may
+  /// sign whenever they like. On, slot N cannot be signed until every slot
+  /// before it has been, so an approval chain is a chain rather than a
+  /// suggestion. Decided by the sender at setup and fixed at dispatch.
+  sequential           Boolean                      @default(false)
   documents            Document[]
   signatotyArrangement SignatoryArrangement[]
   unit                 Department?                  @relation(fields: [departmentId], references: [id], onDelete: SetDefault)

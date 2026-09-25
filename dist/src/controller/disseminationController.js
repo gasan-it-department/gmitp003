@@ -63,7 +63,7 @@ var __asyncValues = (this && this.__asyncValues) || function (o) {
     function settle(resolve, reject, d, v) { Promise.resolve(v).then(function(v) { resolve({ value: v, done: d }); }, reject); }
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.acknowledgeReceipt = exports.verifySignatureData = exports.verifySignaturePage = exports.cancelDispatchedDissemination = exports.downloadSignedDocument = exports.archiveDissemination = exports.claimSignatorySlot = exports.signMine = exports.viewDissemination = exports.resetRoomMembership = exports.documentOverview = exports.repairRoomMembership = exports.removeDisseminationDocument = exports.uploadDisseminationDocument = exports.saveSignaturePlacements = exports.streamDocumentFile = exports.disseminationDocuments = exports.signatoryCandidates = exports.targetRoomCandidates = exports.removeDissemination = exports.finalizeDissemination = exports.setSignatoryArrangement = exports.setTargetRooms = exports.disseminationDetail = exports.disseminationInbox = exports.disseminationOutbox = exports.requireCanSeeDocument = exports.requireCanSeeRouting = void 0;
+exports.acknowledgeReceipt = exports.verifySignatureData = exports.verifySignaturePage = exports.cancelDispatchedDissemination = exports.downloadSignedDocument = exports.archiveDissemination = exports.claimSignatorySlot = exports.signMine = exports.viewDissemination = exports.resetRoomMembership = exports.documentOverview = exports.repairRoomMembership = exports.removeDisseminationDocument = exports.uploadDisseminationDocument = exports.saveSignaturePlacements = exports.streamDocumentFile = exports.disseminationDocuments = exports.signatoryCandidates = exports.targetRoomCandidates = exports.removeDissemination = exports.finalizeDissemination = exports.setSignatoryArrangement = exports.setRoutingSequential = exports.setTargetRooms = exports.disseminationDetail = exports.disseminationInbox = exports.disseminationOutbox = exports.requireCanSeeDocument = exports.requireCanSeeRouting = void 0;
 const prisma_1 = require("../barrel/prisma");
 const errors_1 = require("../errors/errors");
 const notificationEvents_1 = require("../service/notificationEvents");
@@ -585,6 +585,38 @@ const setTargetRooms = (req, res) => __awaiter(void 0, void 0, void 0, function*
 });
 exports.setTargetRooms = setTargetRooms;
 // ── Set signatories with order (replace) ───────────────────────────────
+/**
+ * PATCH /document/dissemination/sequential  { queueRoomId, sequential }
+ *
+ * Turn the in-order rule on or off while the routing is still a draft.
+ *
+ * Fixed at dispatch on purpose: signatories act on the rule they were given,
+ * and flipping it underneath a half-signed routing would either strand
+ * somebody who was told to wait or retroactively invalidate an order that
+ * was already followed.
+ */
+const setRoutingSequential = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    const body = req.body;
+    if (!body.queueRoomId)
+        throw new errors_1.ValidationError("INVALID REQUIRED ID");
+    yield requireOwnsRouting(req, body.queueRoomId);
+    const queue = yield prisma_1.prisma.signatureQueueRoom.findUnique({
+        where: { id: body.queueRoomId },
+        select: { id: true, status: true },
+    });
+    if (!queue)
+        throw new errors_1.NotFoundError("Routing not found");
+    if (queue.status !== 0) {
+        throw new errors_1.ValidationError("The signing order can only be changed before the routing is dispatched.");
+    }
+    const updated = yield prisma_1.prisma.signatureQueueRoom.update({
+        where: { id: queue.id },
+        data: { sequential: !!body.sequential },
+        select: { sequential: true },
+    });
+    return res.code(200).send({ message: "OK", sequential: updated.sequential });
+});
+exports.setRoutingSequential = setRoutingSequential;
 const setSignatoryArrangement = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     const body = req.body;
     if (!body.queueRoomId || !Array.isArray(body.signatories)) {
@@ -2138,6 +2170,34 @@ const signMine = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
                 .filter((p) => p.sign.length === 0)
                 .map((p) => p.index + 1)
                 .sort((a, b) => a - b);
+            /**
+             * In-order signing, when the sender asked for it.
+             *
+             * Slot N waits for every slot before it. Checked here rather than in
+             * the UI because the UI is one of two clients and neither is the
+             * authority on whether a signature is valid. An unassigned earlier
+             * slot counts as unsigned: nobody has signed it, so the chain has not
+             * reached this person yet.
+             */
+            if (queue.sequential) {
+                const earliest = Math.min(...pending.map((p) => p.index));
+                const blocking = yield tx.signatoryArrangement.findMany({
+                    where: {
+                        signatureQueueRoomId: body.queueRoomId,
+                        index: { lt: earliest },
+                        status: { not: 1 },
+                    },
+                    orderBy: { index: "asc" },
+                    select: { index: true },
+                });
+                if (blocking.length > 0) {
+                    const waiting = blocking.map((b) => `#${b.index + 1}`).join(", ");
+                    throw new errors_1.ValidationError(`This routing is signed in order. ` +
+                        `Signatory ${blocking.length === 1 ? "slot" : "slots"} ${waiting} ` +
+                        `${blocking.length === 1 ? "has" : "have"} not signed yet, so ` +
+                        `your turn has not come round.`);
+                }
+            }
             const now = new Date();
             // Stamp signedAt + status + userId + geolocation in one updateMany
             // so unassigned slots end up owned by the signer and the geo lands

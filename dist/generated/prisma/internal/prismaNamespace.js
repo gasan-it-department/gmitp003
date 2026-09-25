@@ -1567,6 +1567,7 @@ exports.SignatureQueueRoomScalarFieldEnum = {
     index: 'index',
     dispatchedAt: 'dispatchedAt',
     stalledNoticeAt: 'stalledNoticeAt',
+    sequential: 'sequential',
     receivingRoomId: 'receivingRoomId'
 };
 exports.TargetRoomScalarFieldEnum = {

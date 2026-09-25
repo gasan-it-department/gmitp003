@@ -273,7 +273,7 @@ export const signatoryRegistry = async (
       * Membership is filtered on status 1 throughout: somebody removed from
       * a room is not in it, and must not resolve to its room.
       */
-    const [roomRegistration, signatory, room] = await prisma.$transaction([
+    const [roomRegistration, signatory, rooms] = await prisma.$transaction([
       prisma.roomRegistration.findFirst({
         where: {
           userId: params.userId,
@@ -294,7 +294,17 @@ export const signatoryRegistry = async (
           },
         },
       }),
-      prisma.receivingRoom.findFirst({
+      /**
+        * EVERY room this person belongs to, not one of them.
+        *
+        * findFirst with no ordering was picking arbitrarily, and a user who
+        * belongs to two rooms was shown one of them with no hint the other
+        * existed — eleven documents sitting in an inbox they could not
+        * reach. Ordered so the answer is at least stable: the rooms they
+        * own first, then oldest, so the primary never changes between two
+        * loads.
+        */
+      prisma.receivingRoom.findMany({
         where: {
           authorizedUser: {
             some: {
@@ -303,14 +313,43 @@ export const signatoryRegistry = async (
             },
           },
         },
+        orderBy: { timestamp: "asc" },
       }),
     ]);
 
+    /**
+      * `rooms` is the full list; `room` is the one to open by default.
+      *
+      * Owned rooms win the default — that is the one you are responsible
+      * for — and ties break on age, so the choice is the same every time.
+      */
+    const memberships = await prisma.roomAuthorizedUser.findMany({
+      where: { userId: params.userId, status: 1 },
+      select: { receivingRoomId: true, type: true },
+    });
+    const typeOf = new Map(
+      memberships.map((m) => [m.receivingRoomId, m.type]),
+    );
+    const ordered = [...rooms].sort((a, b) => {
+      const ta = typeOf.get(a.id) ?? 9;
+      const tb = typeOf.get(b.id) ?? 9;
+      if (ta !== tb) return ta - tb; // owner (0) before signatory (1)
+      return a.timestamp.getTime() - b.timestamp.getTime();
+    });
+    const roomsOut = ordered.map((r) => ({
+      ...r,
+      myType: typeOf.get(r.id) ?? null,
+    }));
+
     // `authorizedUser` is the name the client reads; `signatory` is kept so
     // nothing older that still asks for it breaks. Same row either way.
-    return res
-      .code(200)
-      .send({ roomRegistration, signatory, authorizedUser: signatory, room });
+    return res.code(200).send({
+      roomRegistration,
+      signatory,
+      authorizedUser: signatory,
+      room: ordered[0] ?? null,
+      rooms: roomsOut,
+    });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_FAILED", 500, "DB_ERROR");
