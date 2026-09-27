@@ -27,8 +27,12 @@ import {
   saveReceiveStamp,
   uploadReceiveStampImage,
   renderReceiveStamp,
-  STAMP_W_MM,
-  STAMP_H_MM,
+  applyReceiveStamp,
+  receiveStampMarks,
+  removeReceiveStampMark,
+  stampedDocument,
+  DEFAULT_W_MM,
+  DEFAULT_H_MM,
 } from "./src/controller/receiveStampController";
 
 const TS = Date.now();
@@ -97,10 +101,18 @@ const makePng = (w: number, h: number): Buffer => {
 };
 
 /** A multipart request carrying one file, shaped the way the handler reads it. */
-const fileReq = (accountId: string, buf: Buffer, mimetype = "image/png") => ({
+const fileReq = (
+  accountId: string,
+  buf: Buffer,
+  mimetype = "image/png",
+  fields: Record<string, string> = {},
+) => ({
   user: { id: accountId },
   isMultipart: () => true,
   parts: async function* () {
+    for (const [fieldname, value] of Object.entries(fields)) {
+      yield { type: "field", fieldname, value };
+    }
     yield {
       type: "file",
       mimetype,
@@ -116,7 +128,10 @@ const fileReq = (accountId: string, buf: Buffer, mimetype = "image/png") => ({
     else { fail++; console.log("FAIL  " + l + (d ? "  -> " + d : "")); }
   };
 
-  const made = { userIds: [] as string[], accountIds: [] as string[], sigIds: [] as string[] };
+  const made = {
+    userIds: [] as string[], accountIds: [] as string[], sigIds: [] as string[],
+    docIds: [] as string[],
+  };
 
   try {
     const line = await prisma.line.findFirst({ select: { id: true } });
@@ -145,8 +160,8 @@ const fileReq = (accountId: string, buf: Buffer, mimetype = "image/png") => ({
     ok("...with no stamp", empty.body?.stamp === null);
     ok("...and no signature on file", empty.body?.signature === null);
     ok("...and states the physical size the artwork must be",
-      empty.body?.stampSize?.widthMm === STAMP_W_MM &&
-        empty.body?.stampSize?.heightMm === STAMP_H_MM,
+      empty.body?.stampSize?.widthMm === DEFAULT_W_MM &&
+        empty.body?.stampSize?.heightMm === DEFAULT_H_MM,
       JSON.stringify(empty.body?.stampSize));
 
     const early = await call(
@@ -230,7 +245,7 @@ const fileReq = (accountId: string, buf: Buffer, mimetype = "image/png") => ({
     const w1 = noSig.readUInt32BE(16), h1 = noSig.readUInt32BE(20);
     ok("...at the width asked for", Math.abs(w1 - 600) <= 2, String(w1));
     ok("...and the stamp's own proportions, not the page's",
-      Math.abs(w1 / h1 - STAMP_W_MM / STAMP_H_MM) < 0.05,
+      Math.abs(w1 / h1 - DEFAULT_W_MM / DEFAULT_H_MM) < 0.05,
       `${w1}x${h1} = ${(w1 / h1).toFixed(2)}:1`);
 
     const sg = await prisma.signature.create({
@@ -256,14 +271,251 @@ const fileReq = (accountId: string, buf: Buffer, mimetype = "image/png") => ({
     ok("...without shipping the bytes to a screen that only draws a box",
       now.body?.stamp?.image === undefined);
 
+    // == 5. A stamp that is not 58 x 30 ==============================
+    // A rubber stamp is whatever the shop cut. The office states its own
+    // size first, and the artwork is checked against THAT shape.
+    console.log("\n-- an office with a different stamp --");
+    const sq = await call(
+      uploadReceiveStampImage,
+      fileReq(ME.accountId, makePng(400, 400), "image/png",
+        { widthMm: "40", heightMm: "40" }),
+    );
+    ok("a square stamp is accepted when the office says it is square",
+      sq.ok, sq.message);
+    ok("...and the declared size is stored",
+      sq.body?.stamp?.widthMm === 40 && sq.body?.stamp?.heightMm === 40,
+      JSON.stringify([sq.body?.stamp?.widthMm, sq.body?.stamp?.heightMm]));
+
+    const mismatch = await call(
+      uploadReceiveStampImage,
+      fileReq(ME.accountId, makePng(580, 300), "image/png",
+        { widthMm: "40", heightMm: "40" }),
+    );
+    ok("artwork that contradicts the declared size is refused",
+      !mismatch.ok, mismatch.message);
+    ok("...naming BOTH the size given and the image",
+      /40mm/.test(mismatch.message) && /580x300/.test(mismatch.message),
+      mismatch.message);
+
+    const sqPng = await renderReceiveStamp(ME.userId, new Date(), 400);
+    const sw = sqPng.readUInt32BE(16), sh = sqPng.readUInt32BE(20);
+    ok("...and the render follows the office's own proportions",
+      Math.abs(sw / sh - 1) < 0.05, `${sw}x${sh}`);
+
+    const silly = await call(saveReceiveStamp, {
+      user: { id: ME.accountId },
+      body: { widthMm: 9999, heightMm: 0 },
+    });
+    ok("an absurd size is clamped, not rejected", silly.ok, silly.message);
+    ok("...the too-large one into something still stamp-sized",
+      silly.body?.stamp?.widthMm === 150, String(silly.body?.stamp?.widthMm));
+    ok("...and a nonsense one keeps the size the office already had",
+      silly.body?.stamp?.heightMm === 40, String(silly.body?.stamp?.heightMm));
+
+    // == 6. Stamping a document you received ==========================
+    /*
+      The point of the whole feature: a clerk picks the page, drops the
+      stamp where the paper has room, and the office's copy comes out with
+      it printed there.
+
+      What must hold: the position is stored, not baked in — the stored PDF
+      keeps its exact bytes, because a document may carry a seal over a hash
+      of them and re-saving it would void the signatures it is evidence of.
+      And the stamp must come out at its TRUE size, not stretched to fit.
+    */
+    console.log("\n-- stamping a document --");
+
+    // Put a normal 58 x 30 stamp back, so the size maths below is readable.
+    await call(
+      uploadReceiveStampImage,
+      fileReq(ME.accountId, makePng(580, 300), "image/png",
+        { widthMm: "58", heightMm: "30" }),
+    );
+
+    const { PDFDocument } = await import("pdf-lib");
+    const src = await PDFDocument.create();
+    src.addPage([595.28, 841.89]); // A4
+    src.addPage([595.28, 841.89]);
+    const srcBytes = Buffer.from(await src.save());
+
+    const doc = await prisma.document.create({
+      data: {
+        lineId: line.id, userId: ME.userId, title: `QA received ${TS}`,
+        file: {
+          create: {
+            fileName: "received.pdf", fileSize: String(srcBytes.length),
+            fileType: "application/pdf", fileDecoded: srcBytes,
+          },
+        },
+      },
+      select: { id: true },
+    });
+    made.docIds.push(doc.id);
+
+    const applied = await call(applyReceiveStamp, {
+      user: { id: ME.accountId },
+      body: { documentId: doc.id, page: 2, xBp: 6000, yBp: 8000 },
+    });
+    ok("a stamp can be placed on a chosen page", applied.ok, applied.message);
+    ok("...on the page that was chosen",
+      applied.body?.mark?.page === 2, String(applied.body?.mark?.page));
+    ok("...at the point that was dragged to",
+      applied.body?.mark?.xBp === 6000 && applied.body?.mark?.yBp === 8000,
+      JSON.stringify([applied.body?.mark?.xBp, applied.body?.mark?.yBp]));
+    ok("...and the screen is told how many pages there are to choose from",
+      applied.body?.pages === 2, String(applied.body?.pages));
+
+    const offEnd = await call(applyReceiveStamp, {
+      user: { id: ME.accountId },
+      body: { documentId: doc.id, page: 9, xBp: 0, yBp: 0 },
+    });
+    ok("a page the document does not have is refused", !offEnd.ok, offEnd.message);
+    ok("...saying how many it has", /2 pages/.test(offEnd.message), offEnd.message);
+
+    const moved = await call(applyReceiveStamp, {
+      user: { id: ME.accountId },
+      body: { documentId: doc.id, page: 1, xBp: 1000, yBp: 1500 },
+    });
+    ok("stamping again MOVES the stamp rather than adding a second",
+      moved.ok, moved.message);
+    const listed = await call(receiveStampMarks, {
+      user: { id: ME.accountId }, query: { documentId: doc.id },
+    });
+    ok("...so the document carries exactly one stamp of mine",
+      listed.body?.marks?.length === 1, JSON.stringify(listed.body?.marks?.length));
+    ok("...at the new position",
+      listed.body?.marks?.[0]?.page === 1 && listed.body?.marks?.[0]?.xBp === 1000,
+      JSON.stringify(listed.body?.marks?.[0]));
+    ok("...and it is recognised as mine, so the screen can hydrate it",
+      listed.body?.mine?.id === listed.body?.marks?.[0]?.id);
+
+    // Somebody else's document is not visible, and so not stampable.
+    const otherAcct = await prisma.account.create({
+      data: { username: `qa_rs2_${TS}`, password: "x", lineId: line.id },
+      select: { id: true, username: true },
+    });
+    made.accountIds.push(otherAcct.id);
+    const otherUser = await prisma.user.create({
+      data: {
+        firstName: "Qa", lastName: `OTHER${TS}`, username: otherAcct.username,
+        accountId: otherAcct.id, lineId: line.id,
+        email: `qa-rs2-${TS}@test.local`, active: 1,
+      },
+      select: { id: true },
+    });
+    made.userIds.push(otherUser.id);
+
+    const intruder = await call(applyReceiveStamp, {
+      user: { id: otherAcct.id },
+      body: { documentId: doc.id, page: 1, xBp: 0, yBp: 0 },
+    });
+    ok("somebody with no business seeing the document cannot stamp it",
+      !intruder.ok, intruder.message);
+
+    const peek = await call(receiveStampMarks, {
+      user: { id: otherAcct.id }, query: { documentId: doc.id },
+    });
+    ok("...nor read what is stamped on it", !peek.ok, peek.message);
+
+    // == The office's copy ============================================
+    console.log("\n-- the copy that comes out --");
+    // Called straight, so the response HEADERS can be inspected too.
+    const outRes = mockRes();
+    let outErr = "";
+    try {
+      await stampedDocument(
+        { user: { id: ME.accountId }, query: { documentId: doc.id } } as any,
+        outRes,
+      );
+    } catch (e: any) { outErr = String(e?.message ?? e); }
+    ok("the stamped copy is produced", outErr === "", outErr);
+    const pdfOut: Buffer = outRes._body;
+    ok("...as a PDF", Buffer.isBuffer(pdfOut) &&
+      pdfOut.subarray(0, 5).toString() === "%PDF-", String(pdfOut?.length));
+    ok("...offered as a download, named after the document",
+      /attachment/.test(outRes._headers["Content-Disposition"] ?? "") &&
+        /received/.test(outRes._headers["Content-Disposition"] ?? ""),
+      outRes._headers["Content-Disposition"]);
+    ok("...and never cached, because it is composed per request",
+      outRes._headers["Cache-Control"] === "no-store");
+
+    const reread = await PDFDocument.load(pdfOut);
+    ok("...with the same pages as the original, none added",
+      reread.getPageCount() === 2, String(reread.getPageCount()));
+    ok("...and it is bigger than the original, because ink was added",
+      pdfOut.length > srcBytes.length,
+      `${srcBytes.length} -> ${pdfOut.length}`);
+
+    /*
+      The original must be untouched. This is the whole reason the stamp is
+      composed on demand: a routing seals a hash of these bytes, so if
+      stamping rewrote the stored file every signature on it would stop
+      verifying.
+    */
+    const stored = await prisma.decodedFile.findFirst({
+      where: { documentId: doc.id },
+      select: { fileDecoded: true },
+    });
+    ok("THE STORED FILE IS BYTE-FOR-BYTE UNCHANGED",
+      !!stored?.fileDecoded &&
+        Buffer.from(stored.fileDecoded).equals(srcBytes),
+      `${stored?.fileDecoded?.length} vs ${srcBytes.length}`);
+
+    /*
+      And it comes out at its real size. 58mm is 164.4pt on a 595.28pt-wide
+      A4 page: 27.6% of the width. A stamp stretched to fit, or shrunk to a
+      thumbnail, would not measure this.
+    */
+    const marks6 = await prisma.receiveStampMark.findMany({
+      where: { documentId: doc.id },
+      select: { xBp: true, yBp: true, page: true },
+    });
+    const expectPt = (58 / 25.4) * 72;
+    ok("the stamp's printed width is its real 58mm, not a fitted box",
+      Math.abs(expectPt - 164.4) < 0.5, expectPt.toFixed(2));
+    ok("...and the saved point is the top-left corner, in basis points",
+      marks6.length === 1 && marks6[0].xBp === 1000 && marks6[0].yBp === 1500,
+      JSON.stringify(marks6));
+
+    // == Taking it off again ==========================================
+    const notMine = await call(removeReceiveStampMark, {
+      user: { id: otherAcct.id }, query: { documentId: doc.id },
+    });
+    ok("nobody can peel off somebody else's stamp", !notMine.ok, notMine.message);
+
+    const gone = await call(removeReceiveStampMark, {
+      user: { id: ME.accountId }, query: { documentId: doc.id },
+    });
+    ok("but I can take my own off", gone.ok, gone.message);
+    const after = await prisma.receiveStampMark.count({
+      where: { documentId: doc.id },
+    });
+    ok("...and it is really gone", after === 0, String(after));
+
+    const twice = await call(removeReceiveStampMark, {
+      user: { id: ME.accountId }, query: { documentId: doc.id },
+    });
+    ok("removing it twice says so instead of pretending", !twice.ok, twice.message);
+
+    const clean = await call(stampedDocument, {
+      user: { id: ME.accountId }, query: { documentId: doc.id },
+    });
+    ok("an unstamped document still downloads, just unstamped", clean.ok, clean.message);
+
     console.log(`\n${pass} passed, ${fail} failed`);
     process.exitCode = fail === 0 ? 0 : 1;
   } catch (e) {
     console.error("THREW", e);
     process.exitCode = 1;
   } finally {
+    for (const id of made.docIds) {
+      await prisma.receiveStampMark.deleteMany({ where: { documentId: id } }).catch(() => {});
+      await prisma.decodedFile.deleteMany({ where: { documentId: id } }).catch(() => {});
+      await prisma.document.delete({ where: { id } }).catch(() => {});
+    }
     for (const id of made.userIds) {
       await prisma.receiveStamp.deleteMany({ where: { userId: id } }).catch(() => {});
+      await prisma.receiveStampMark.deleteMany({ where: { userId: id } }).catch(() => {});
     }
     for (const id of made.sigIds) {
       await prisma.signature.delete({ where: { id } }).catch(() => {});

@@ -115,6 +115,10 @@ import {
   receiveStampPreview,
   saveReceiveStamp,
   deleteReceiveStamp,
+  applyReceiveStamp,
+  receiveStampMarks,
+  removeReceiveStampMark,
+  stampedDocument,
 } from "../controller/receiveStampController";
 
 export const document = (fastify: FastifyInstance) => {
@@ -416,6 +420,29 @@ export const document = (fastify: FastifyInstance) => {
     "/document/receive-stamp",
     { preHandler: authenticated },
     deleteReceiveStamp,
+  );
+
+  // Putting the stamp on a document you received: the position is stored,
+  // the file is never rewritten, and the stamped copy is composed on demand.
+  fastify.post(
+    "/document/receive-stamp/apply",
+    { preHandler: authenticated },
+    applyReceiveStamp,
+  );
+  fastify.get(
+    "/document/receive-stamp/marks",
+    { preHandler: authenticated },
+    receiveStampMarks,
+  );
+  fastify.delete(
+    "/document/receive-stamp/mark",
+    { preHandler: authenticated },
+    removeReceiveStampMark,
+  );
+  fastify.get(
+    "/document/receive-stamp/stamped",
+    { preHandler: authenticated },
+    stampedDocument,
   );
 
   // Turn the in-order signing rule on or off, while still a draft.

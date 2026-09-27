@@ -26,12 +26,33 @@ import {
 import { callerContext } from "../service/callerScope";
 import { renderPdfPage } from "../service/pdfRaster";
 
-/** The physical stamp, in millimetres. Not negotiable: it is a rubber stamp. */
-export const STAMP_W_MM = 58;
-export const STAMP_H_MM = 30;
+/**
+ * The common stamp, and the default — but only the default.
+ *
+ * A rubber stamp is whatever the shop cut, so the office states its own
+ * size before uploading and everything downstream works from that: the
+ * shape the artwork is checked against, and the page the render lays out.
+ */
+export const DEFAULT_W_MM = 58;
+export const DEFAULT_H_MM = 30;
 const MM_PER_PT = 25.4 / 72;
-export const STAMP_W_PT = STAMP_W_MM / MM_PER_PT; // ~164.4
-export const STAMP_H_PT = STAMP_H_MM / MM_PER_PT; // ~85.0
+/** Millimetres to PDF points. */
+export const mmToPt = (mm: number) => mm / MM_PER_PT;
+
+/**
+ * What a stamp may measure.
+ *
+ * Small enough that it is still a stamp and not a letterhead; large enough
+ * that a two-line date-and-name box fits. A rubber stamp outside this range
+ * is somebody typing in centimetres or inches.
+ */
+const MIN_MM = 10;
+const MAX_MM = 150;
+const clampMm = (v: unknown, fallback: number) => {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.max(MIN_MM, Math.min(MAX_MM, Math.round(n * 10) / 10));
+};
 
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 const BP = 10000;
@@ -42,6 +63,8 @@ const SHAPE = {
   userId: true,
   lineId: true,
   mime: true,
+  widthMm: true,
+  heightMm: true,
   imageW: true,
   imageH: true,
   sigX: true,
@@ -104,7 +127,13 @@ export const myReceiveStamp = async (
     signature: signature
       ? { id: signature.id, title: signature.title, hasImage: !!signature.signature }
       : null,
-    stampSize: { widthMm: STAMP_W_MM, heightMm: STAMP_H_MM },
+    // Their own size when they have set one, otherwise the default they
+    // will start from.
+    stampSize: {
+      widthMm: row?.widthMm ?? DEFAULT_W_MM,
+      heightMm: row?.heightMm ?? DEFAULT_H_MM,
+    },
+    defaultSize: { widthMm: DEFAULT_W_MM, heightMm: DEFAULT_H_MM },
     lineId,
   });
 };
@@ -138,7 +167,17 @@ export const uploadReceiveStampImage = async (
 
   let buf: Buffer | null = null;
   let mime = "image/png";
+  /**
+   * The size can ride along with the upload, so "say the size, then pick
+   * the file" is one action rather than two saves the user can get wrong
+   * the order of. Falls back to whatever is already stored.
+   */
+  const fields: Record<string, string> = {};
   for await (const part of req.parts()) {
+    if (part.type === "field") {
+      fields[part.fieldname] = String((part as { value?: unknown }).value ?? "");
+      continue;
+    }
     if (part.type === "file") {
       const chunks: Buffer[] = [];
       let total = 0;
@@ -175,24 +214,35 @@ export const uploadReceiveStampImage = async (
   const imageH = buf.readUInt32BE(20);
   if (!imageW || !imageH) throw new ValidationError("That PNG could not be read.");
 
+  const existing = await prisma.receiveStamp.findUnique({
+    where: { userId: actorId },
+    select: { widthMm: true, heightMm: true },
+  });
+  const widthMm = clampMm(fields.widthMm, existing?.widthMm ?? DEFAULT_W_MM);
+  const heightMm = clampMm(fields.heightMm, existing?.heightMm ?? DEFAULT_H_MM);
+
   /**
    * Shape, not size. The artwork is 58mm x 30mm — a ratio of about 1.93 —
    * and anything markedly different is a different stamp, or a screenshot
    * with the desktop around it. A tolerance because a scan is never exact.
    */
   const ratio = imageW / imageH;
-  const want = STAMP_W_MM / STAMP_H_MM;
+  const want = widthMm / heightMm;
   if (ratio < want * 0.8 || ratio > want * 1.2) {
     throw new ValidationError(
-      `The stamp should be ${STAMP_W_MM}mm x ${STAMP_H_MM}mm (about ${want.toFixed(2)}:1). ` +
-        `This image is ${imageW}x${imageH}, which is ${ratio.toFixed(2)}:1 — crop it to the stamp itself and try again.`,
+      `You said this stamp is ${widthMm}mm x ${heightMm}mm, which is about ` +
+        `${want.toFixed(2)}:1. This image is ${imageW}x${imageH}, which is ` +
+        `${ratio.toFixed(2)}:1 — either crop it to the stamp itself, or correct the size above.`,
     );
   }
 
   const saved = await prisma.receiveStamp.upsert({
     where: { userId: actorId },
-    update: { image: buf, mime, imageW, imageH, lineId },
-    create: { userId: actorId, lineId, image: buf, mime, imageW, imageH },
+    update: { image: buf, mime, imageW, imageH, widthMm, heightMm, lineId },
+    create: {
+      userId: actorId, lineId, image: buf, mime, imageW, imageH,
+      widthMm, heightMm,
+    },
     select: SHAPE,
   });
 
@@ -217,6 +267,8 @@ export const saveReceiveStamp = async (
   const data = {
     lineId,
     nickname,
+    widthMm: clampMm(b.widthMm, current?.widthMm ?? DEFAULT_W_MM),
+    heightMm: clampMm(b.heightMm, current?.heightMm ?? DEFAULT_H_MM),
     sigX: clampBp(b.sigX, current?.sigX ?? 5200),
     sigY: clampBp(b.sigY, current?.sigY ?? 6200),
     sigW: clampBp(b.sigW, current?.sigW ?? 3600),
@@ -287,28 +339,31 @@ export const renderReceiveStamp = async (
     select: { signature: true },
   });
 
+  const wPt = mmToPt(row.widthMm);
+  const hPt = mmToPt(row.heightMm);
+
   const { PDFDocument, StandardFonts, rgb } = await import("pdf-lib");
   const pdf = await PDFDocument.create();
-  const page = pdf.addPage([STAMP_W_PT, STAMP_H_PT]);
+  const page = pdf.addPage([wPt, hPt]);
   const font = await pdf.embedFont(StandardFonts.Helvetica);
 
   // The artwork fills the page — it IS the page.
   const art = await pdf.embedPng(Buffer.from(row.image));
-  page.drawImage(art, { x: 0, y: 0, width: STAMP_W_PT, height: STAMP_H_PT });
+  page.drawImage(art, { x: 0, y: 0, width: wPt, height: hPt });
 
   /**
    * Basis points are measured from the TOP; PDF measures from the bottom.
    * Every placement goes through here so the flip happens exactly once.
    */
   const toPt = (xBp: number, yBp: number) => ({
-    x: (xBp / BP) * STAMP_W_PT,
-    yTop: (yBp / BP) * STAMP_H_PT,
+    x: (xBp / BP) * wPt,
+    yTop: (yBp / BP) * hPt,
   });
 
   if (sig?.signature?.length) {
     const { x, yTop } = toPt(row.sigX, row.sigY);
-    const w = (row.sigW / BP) * STAMP_W_PT;
-    const h = (row.sigH / BP) * STAMP_H_PT;
+    const w = (row.sigW / BP) * wPt;
+    const h = (row.sigH / BP) * hPt;
     try {
       const img = await pdf.embedPng(Buffer.from(sig.signature));
       // Fit inside the box, keeping the writing's own proportions — a
@@ -318,7 +373,7 @@ export const renderReceiveStamp = async (
       const dh = img.height * scale;
       page.drawImage(img, {
         x: x + (w - dw) / 2,
-        y: STAMP_H_PT - yTop - h + (h - dh) / 2,
+        y: hPt - yTop - h + (h - dh) / 2,
         width: dw,
         height: dh,
       });
@@ -337,7 +392,7 @@ export const renderReceiveStamp = async (
   const d = toPt(row.dateX, row.dateY);
   page.drawText(dateText, {
     x: d.x,
-    y: STAMP_H_PT - d.yTop - row.dateSizePt,
+    y: hPt - d.yTop - row.dateSizePt,
     size: row.dateSizePt,
     font,
     color: ink,
@@ -347,7 +402,7 @@ export const renderReceiveStamp = async (
     const n = toPt(row.nameX, row.nameY);
     page.drawText(row.nickname, {
       x: n.x,
-      y: STAMP_H_PT - n.yTop - row.nameSizePt,
+      y: hPt - n.yTop - row.nameSizePt,
       size: row.nameSizePt,
       font,
       color: ink,
@@ -384,4 +439,195 @@ export const receiveStampPreview = async (
     }
     throw error;
   }
+};
+
+// ── Stamping a received document ──────────────────────────────────────
+
+/**
+ * Put the stamp on a page, at a point the receiver chose.
+ *
+ * POST /document/receive-stamp/apply { documentId, page, xBp, yBp }
+ *
+ * The file is NEVER rewritten. A received PDF may carry signatures sealed
+ * over a hash of its bytes, so changing those bytes would invalidate the
+ * very thing the document is evidence of. What is stored is the position;
+ * the office's own copy is composed at download time and the original stays
+ * exactly as it arrived.
+ */
+export const applyReceiveStamp = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const b = req.body as {
+    documentId?: string;
+    page?: number | string;
+    xBp?: number | string;
+    yBp?: number | string;
+  };
+  if (!b.documentId) throw new ValidationError("INVALID REQUIRED ID");
+  const { actorId, lineId } = await callerContext(req);
+
+  // You may only stamp what you are allowed to see.
+  const { requireCanSeeDocument } = await import("./disseminationController");
+  await requireCanSeeDocument(req, b.documentId);
+
+  const stamp = await prisma.receiveStamp.findUnique({
+    where: { userId: actorId },
+    select: { image: true },
+  });
+  if (!stamp?.image) {
+    throw new ValidationError(
+      "Set up your receiving stamp first — Document module, Manage Receive Stamp.",
+    );
+  }
+
+  const file = await prisma.decodedFile.findFirst({
+    where: { documentId: b.documentId },
+    select: { fileDecoded: true },
+  });
+  if (!file?.fileDecoded) throw new NotFoundError("Document file not found");
+
+  const { pdfPageSizes } = await import("../service/pdfRaster");
+  const sizes = await pdfPageSizes(Buffer.from(file.fileDecoded));
+  const page = Math.max(1, Math.round(Number(b.page ?? 1) || 1));
+  if (page > sizes.length) {
+    throw new ValidationError(
+      `That document has ${sizes.length} page${sizes.length === 1 ? "" : "s"}.`,
+    );
+  }
+
+  const mark = await prisma.receiveStampMark.upsert({
+    where: { documentId_userId: { documentId: b.documentId, userId: actorId } },
+    update: { page, xBp: clampBp(b.xBp, 0), yBp: clampBp(b.yBp, 0), lineId },
+    create: {
+      documentId: b.documentId,
+      userId: actorId,
+      lineId,
+      page,
+      xBp: clampBp(b.xBp, 0),
+      yBp: clampBp(b.yBp, 0),
+    },
+    select: { id: true, page: true, xBp: true, yBp: true, stampedAt: true },
+  });
+
+  return res.code(200).send({ message: "OK", mark, pages: sizes.length });
+};
+
+/** GET /document/receive-stamp/marks?documentId= — what is on this document. */
+export const receiveStampMarks = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const q = req.query as { documentId?: string };
+  if (!q.documentId) throw new ValidationError("INVALID REQUIRED ID");
+  const { actorId } = await callerContext(req);
+  const { requireCanSeeDocument } = await import("./disseminationController");
+  await requireCanSeeDocument(req, q.documentId);
+
+  const marks = await prisma.receiveStampMark.findMany({
+    where: { documentId: q.documentId },
+    orderBy: { stampedAt: "asc" },
+    select: {
+      id: true, page: true, xBp: true, yBp: true, stampedAt: true, userId: true,
+      user: { select: { firstName: true, lastName: true } },
+    },
+  });
+  return res
+    .code(200)
+    .send({ marks, mine: marks.find((m) => m.userId === actorId) ?? null });
+};
+
+/** DELETE /document/receive-stamp/mark?documentId= — take my stamp off again. */
+export const removeReceiveStampMark = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const q = req.query as { documentId?: string };
+  if (!q.documentId) throw new ValidationError("INVALID REQUIRED ID");
+  const { actorId } = await callerContext(req);
+  // Your own stamp only — a stamp is somebody's signature that they took
+  // delivery, and removing another office's is not yours to do.
+  const existing = await prisma.receiveStampMark.findUnique({
+    where: { documentId_userId: { documentId: q.documentId, userId: actorId } },
+    select: { id: true },
+  });
+  if (!existing) throw new NotFoundError("You have not stamped this document");
+  await prisma.receiveStampMark.delete({ where: { id: existing.id } });
+  return res.code(200).send({ message: "OK" });
+};
+
+/**
+ * GET /document/receive-stamp/stamped?documentId= — the office's copy.
+ *
+ * The document as it arrived, with every receiving stamp composed onto it
+ * at its true physical size. Generated on demand and never stored, so the
+ * original bytes — and any seal over them — remain untouched.
+ */
+export const stampedDocument = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const q = req.query as { documentId?: string };
+  if (!q.documentId) throw new ValidationError("INVALID REQUIRED ID");
+  const { requireCanSeeDocument } = await import("./disseminationController");
+  await requireCanSeeDocument(req, q.documentId);
+
+  const doc = await prisma.document.findUnique({
+    where: { id: q.documentId },
+    select: { title: true, file: { select: { fileDecoded: true, fileName: true } } },
+  });
+  if (!doc?.file?.fileDecoded) throw new NotFoundError("Document file not found");
+
+  const marks = await prisma.receiveStampMark.findMany({
+    where: { documentId: q.documentId },
+    orderBy: { stampedAt: "asc" },
+    select: { userId: true, page: true, xBp: true, yBp: true, stampedAt: true },
+  });
+
+  const { PDFDocument } = await import("pdf-lib");
+  const pdf = await PDFDocument.load(Buffer.from(doc.file.fileDecoded));
+  const pages = pdf.getPages();
+
+  for (const m of marks) {
+    const cfg = await prisma.receiveStamp.findUnique({
+      where: { userId: m.userId },
+      select: { widthMm: true, heightMm: true },
+    });
+    if (!cfg) continue;
+    const target = pages[m.page - 1];
+    if (!target) continue;
+
+    let png: Buffer;
+    try {
+      // Composed with the date it was STAMPED, not today — the stamp
+      // records when the office took delivery, and reprinting it later
+      // must not quietly move that date.
+      png = await renderReceiveStamp(m.userId, m.stampedAt, 1200);
+    } catch {
+      continue;
+    }
+
+    const img = await pdf.embedPng(png);
+    const wPt = mmToPt(cfg.widthMm);
+    const hPt = mmToPt(cfg.heightMm);
+    const { width: pw, height: ph } = target.getSize();
+    const x = (m.xBp / BP) * pw;
+    const yTop = (m.yBp / BP) * ph;
+    target.drawImage(img, {
+      x,
+      // Basis points measure from the top; PDF from the bottom.
+      y: ph - yTop - hPt,
+      width: wPt,
+      height: hPt,
+    });
+  }
+
+  const out = Buffer.from(await pdf.save());
+  const base = (doc.file.fileName || doc.title || "document").replace(/\.pdf$/i, "");
+  return res
+    .header("Content-Type", "application/pdf")
+    .header("Content-Disposition", `attachment; filename="${base}-received.pdf"`)
+    .header("Cache-Control", "no-store")
+    .code(200)
+    .send(out);
 };

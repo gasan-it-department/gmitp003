@@ -8,6 +8,7 @@ datasource db {
 }
 
 model Line {
+  receiveStampMarks        ReceiveStampMark[]
   receiveStamps            ReceiveStamp[]
   id                      String                    @id @default(uuid())
   name                    String                    @unique
@@ -1047,6 +1048,7 @@ model Privilege {
 }
 
 model User {
+  receiveStampMarks        ReceiveStampMark[]               @relation("ReceiveStampMarkUser")
   receiveStamp             ReceiveStamp?                    @relation("ReceiveStampUser")
   id                               String                           @id @default(uuid())
   email                            String
@@ -1878,6 +1880,7 @@ model ArchivePreservation {
 }
 
 model Document {
+  receiveStampMarks    ReceiveStampMark[]
   id                   String                 @id @default(uuid())
   type                 Int                    @default(0)
   size                 Int                    @default(0)
@@ -2050,7 +2053,15 @@ model ReceiveStamp {
   id         String   @id @default(uuid())
   userId     String   @unique
   lineId     String?
-  /// The uploaded stamp artwork. PNG, 58mm x 30mm.
+  /// The physical size of the office's stamp, in millimetres.
+  ///
+  /// 58 x 30 is the common one and the default, but a rubber stamp is
+  /// whatever the shop cut, so the office says what theirs is BEFORE
+  /// uploading — the artwork is then checked against that shape, and the
+  /// render lays it out at that true size.
+  widthMm    Float    @default(58)
+  heightMm   Float    @default(30)
+  /// The uploaded stamp artwork. PNG, at the size above.
   image      Bytes?
   mime       String   @default("image/png")
   imageW     Int      @default(0)
@@ -2078,6 +2089,40 @@ model ReceiveStamp {
   updatedAt  DateTime @updatedAt
   user       User     @relation("ReceiveStampUser", fields: [userId], references: [id], onDelete: Cascade)
   line       Line?    @relation(fields: [lineId], references: [id], onDelete: Cascade)
+}
+
+/**
+ * Where an office stamped a document it received.
+ *
+ * Stored as a MARK, never by rewriting the file. The received PDF may carry
+ * signatures sealed over a hash of its bytes, so changing those bytes would
+ * invalidate the very thing the document is evidence of. The stamp is
+ * therefore a position — page, and a point on it — and the office's copy is
+ * composed at download time, leaving the original exactly as it arrived.
+ *
+ * The stamp prints at its TRUE physical size, taken from the stamper's
+ * ReceiveStamp. A rubber stamp does not scale to fit; that is the point of
+ * measuring it in millimetres.
+ */
+model ReceiveStampMark {
+  id         String   @id @default(uuid())
+  documentId String
+  userId     String
+  lineId     String?
+  /// 1-based page of the document.
+  page       Int      @default(1)
+  /// Top-left of the stamp, in basis points of the page (0-10000).
+  xBp        Int      @default(0)
+  yBp        Int      @default(0)
+  stampedAt  DateTime @default(now())
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  user       User     @relation("ReceiveStampMarkUser", fields: [userId], references: [id], onDelete: Cascade)
+  line       Line?    @relation(fields: [lineId], references: [id], onDelete: Cascade)
+
+  // One stamp per person per document: stamping twice is a correction, not
+  // a second stamp.
+  @@unique([documentId, userId])
+  @@index([documentId])
 }
 
 model Signature {

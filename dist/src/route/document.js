@@ -82,6 +82,12 @@ const document = (fastify) => {
     fastify.get("/document/receive-stamp/preview", { preHandler: handler_1.authenticated }, receiveStampController_1.receiveStampPreview);
     fastify.patch("/document/receive-stamp", { preHandler: handler_1.authenticated }, receiveStampController_1.saveReceiveStamp);
     fastify.delete("/document/receive-stamp", { preHandler: handler_1.authenticated }, receiveStampController_1.deleteReceiveStamp);
+    // Putting the stamp on a document you received: the position is stored,
+    // the file is never rewritten, and the stamped copy is composed on demand.
+    fastify.post("/document/receive-stamp/apply", { preHandler: handler_1.authenticated }, receiveStampController_1.applyReceiveStamp);
+    fastify.get("/document/receive-stamp/marks", { preHandler: handler_1.authenticated }, receiveStampController_1.receiveStampMarks);
+    fastify.delete("/document/receive-stamp/mark", { preHandler: handler_1.authenticated }, receiveStampController_1.removeReceiveStampMark);
+    fastify.get("/document/receive-stamp/stamped", { preHandler: handler_1.authenticated }, receiveStampController_1.stampedDocument);
     // Turn the in-order signing rule on or off, while still a draft.
     fastify.patch("/document/dissemination/sequential", { preHandler: handler_1.authenticated }, disseminationController_1.setRoutingSequential);
     fastify.get("/document/dissemination/view", { preHandler: handler_1.authenticated }, disseminationController_1.viewDissemination);
