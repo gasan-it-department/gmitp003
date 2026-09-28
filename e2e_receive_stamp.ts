@@ -24,10 +24,12 @@ import zlib from "zlib";
 import { prisma } from "./src/barrel/prisma";
 import {
   myReceiveStamp,
+  deleteReceiveStamp,
   saveReceiveStamp,
   uploadReceiveStampImage,
   renderReceiveStamp,
   applyReceiveStamp,
+  stampDateText,
   receiveStampMarks,
   removeReceiveStampMark,
   stampedDocument,
@@ -130,7 +132,7 @@ const fileReq = (
 
   const made = {
     userIds: [] as string[], accountIds: [] as string[], sigIds: [] as string[],
-    docIds: [] as string[],
+    docIds: [] as string[], roomIds: [] as string[],
   };
 
   try {
@@ -153,9 +155,25 @@ const fileReq = (
     made.userIds.push(user.id);
     const ME = { accountId: acct.id, userId: user.id };
 
+    /*
+      A receiving stamp belongs to an office, so there has to be one. ME
+      owns it; COLLEAGUE below is a receiver in the same room and a third
+      account sits in a different room entirely.
+    */
+    const room = await prisma.receivingRoom.create({
+      data: { code: `QA-RS-${TS}`, lineId: line.id, status: 1 },
+      select: { id: true },
+    });
+    made.roomIds.push(room.id);
+    await prisma.roomAuthorizedUser.create({
+      data: { receivingRoomId: room.id, userId: user.id, type: 0, status: 1 },
+    });
+
     // ══ 1. Nothing set up yet ══════════════════════════════════════════
     console.log("\n-- before anything is uploaded --");
-    const empty = await call(myReceiveStamp, { user: { id: ME.accountId } });
+    const empty = await call(myReceiveStamp, {
+      user: { id: ME.accountId }, query: { roomId: room.id },
+    });
     ok("the endpoint answers", empty.ok, empty.message);
     ok("...with no stamp", empty.body?.stamp === null);
     ok("...and no signature on file", empty.body?.signature === null);
@@ -175,18 +193,22 @@ const fileReq = (
     const jpegish = Buffer.concat([
       Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(40),
     ]);
-    const notPng = await call(uploadReceiveStampImage, fileReq(ME.accountId, jpegish, "image/jpeg"));
+    const R = { roomId: room.id };
+    const notPng = await call(uploadReceiveStampImage,
+      fileReq(ME.accountId, jpegish, "image/jpeg", R));
     ok("a JPEG is refused", !notPng.ok, notPng.message);
     ok("...because it cannot be transparent",
       /transparent|white box/i.test(notPng.message), notPng.message);
 
-    const square = await call(uploadReceiveStampImage, fileReq(ME.accountId, makePng(300, 300)));
+    const square = await call(uploadReceiveStampImage,
+      fileReq(ME.accountId, makePng(300, 300), "image/png", R));
     ok("a square image is refused", !square.ok, square.message);
     ok("...naming the size it should be",
       /58mm/.test(square.message) && /30mm/.test(square.message), square.message);
 
     // 58 x 30 -> 1.93:1. 580 x 300 is exactly that.
-    const good = await call(uploadReceiveStampImage, fileReq(ME.accountId, makePng(580, 300)));
+    const good = await call(uploadReceiveStampImage,
+      fileReq(ME.accountId, makePng(580, 300), "image/png", R));
     ok("artwork of the right shape is accepted", good.ok, good.message);
     ok("...and its real pixel size is recorded",
       good.body?.stamp?.imageW === 580 && good.body?.stamp?.imageH === 300,
@@ -197,6 +219,7 @@ const fileReq = (
     const saved = await call(saveReceiveStamp, {
       user: { id: ME.accountId },
       body: {
+        roomId: room.id,
         nickname: "JUDE",
         sigX: 5000, sigY: 6000, sigW: 4000, sigH: 3000,
         nameX: 2000, nameY: 8500, nameSizePt: 8,
@@ -205,18 +228,20 @@ const fileReq = (
     });
     ok("placements save", saved.ok, saved.message);
     ok("...and come back exactly as given",
-      saved.body?.stamp?.sigX === 5000 && saved.body?.stamp?.nickname === "JUDE",
-      JSON.stringify(saved.body?.stamp));
+      saved.body?.stamp?.sigX === 5000 && saved.body?.myName === "JUDE",
+      JSON.stringify([saved.body?.stamp?.sigX, saved.body?.myName]));
 
     const tiny = await call(saveReceiveStamp, {
       user: { id: ME.accountId },
-      body: { sigW: 10, sigH: 10 },
+      body: {
+        roomId: room.id, sigW: 10, sigH: 10 },
     });
     ok("a signature area with no room in it is refused", !tiny.ok, tiny.message);
 
     const huge = await call(saveReceiveStamp, {
       user: { id: ME.accountId },
-      body: { nameSizePt: 400, dateSizePt: 0.1, sigX: 99999 },
+      body: {
+        roomId: room.id, nameSizePt: 400, dateSizePt: 0.1, sigX: 99999 },
     });
     ok("absurd values are clamped rather than rejected", huge.ok, huge.message);
     ok("...font size into a printable range",
@@ -229,6 +254,7 @@ const fileReq = (
     await call(saveReceiveStamp, {
       user: { id: ME.accountId },
       body: {
+        roomId: room.id,
         nickname: "JUDE",
         sigX: 5000, sigY: 6000, sigW: 4000, sigH: 3000,
         nameX: 2000, nameY: 8500, nameSizePt: 8,
@@ -238,7 +264,7 @@ const fileReq = (
 
     // ══ 4. The render ══════════════════════════════════════════════════
     console.log("\n-- composing the finished stamp --");
-    const noSig = await renderReceiveStamp(ME.userId, new Date("2026-09-25T02:00:00Z"), 600);
+    const noSig = await renderReceiveStamp(room.id, ME.userId, new Date("2026-09-25T02:00:00Z"), 600);
     ok("it renders without a signature on file", Buffer.isBuffer(noSig) && noSig.length > 0);
     ok("...as a PNG",
       noSig.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])));
@@ -257,17 +283,21 @@ const fileReq = (
     });
     made.sigIds.push(sg.id);
 
-    const withSig = await renderReceiveStamp(ME.userId, new Date("2026-09-25T02:00:00Z"), 600);
+    const withSig = await renderReceiveStamp(room.id, ME.userId, new Date("2026-09-25T02:00:00Z"), 600);
     ok("it renders with the signature", withSig.length > 0);
     ok("...and the result differs from the unsigned one — ink landed",
       !withSig.equals(noSig),
       `${noSig.length} vs ${withSig.length} bytes`);
 
-    const now = await call(myReceiveStamp, { user: { id: ME.accountId } });
+    const now = await call(myReceiveStamp, {
+      user: { id: ME.accountId }, query: { roomId: room.id },
+    });
     ok("the setup screen now sees a signature on file",
       now.body?.signature?.hasImage === true, JSON.stringify(now.body?.signature));
     ok("...and knows the artwork is uploaded",
       now.body?.stamp?.hasImage === true);
+    ok("...and says which office's stamp this is",
+      now.body?.room?.id === room.id, JSON.stringify(now.body?.room));
     ok("...without shipping the bytes to a screen that only draws a box",
       now.body?.stamp?.image === undefined);
 
@@ -278,7 +308,7 @@ const fileReq = (
     const sq = await call(
       uploadReceiveStampImage,
       fileReq(ME.accountId, makePng(400, 400), "image/png",
-        { widthMm: "40", heightMm: "40" }),
+        { ...R, widthMm: "40", heightMm: "40" }),
     );
     ok("a square stamp is accepted when the office says it is square",
       sq.ok, sq.message);
@@ -289,7 +319,7 @@ const fileReq = (
     const mismatch = await call(
       uploadReceiveStampImage,
       fileReq(ME.accountId, makePng(580, 300), "image/png",
-        { widthMm: "40", heightMm: "40" }),
+        { ...R, widthMm: "40", heightMm: "40" }),
     );
     ok("artwork that contradicts the declared size is refused",
       !mismatch.ok, mismatch.message);
@@ -297,14 +327,15 @@ const fileReq = (
       /40mm/.test(mismatch.message) && /580x300/.test(mismatch.message),
       mismatch.message);
 
-    const sqPng = await renderReceiveStamp(ME.userId, new Date(), 400);
+    const sqPng = await renderReceiveStamp(room.id, ME.userId, new Date(), 400);
     const sw = sqPng.readUInt32BE(16), sh = sqPng.readUInt32BE(20);
     ok("...and the render follows the office's own proportions",
       Math.abs(sw / sh - 1) < 0.05, `${sw}x${sh}`);
 
     const silly = await call(saveReceiveStamp, {
       user: { id: ME.accountId },
-      body: { widthMm: 9999, heightMm: 0 },
+      body: {
+        roomId: room.id, widthMm: 9999, heightMm: 0 },
     });
     ok("an absurd size is clamped, not rejected", silly.ok, silly.message);
     ok("...the too-large one into something still stamp-sized",
@@ -329,7 +360,7 @@ const fileReq = (
     await call(
       uploadReceiveStampImage,
       fileReq(ME.accountId, makePng(580, 300), "image/png",
-        { widthMm: "58", heightMm: "30" }),
+        { ...R, widthMm: "58", heightMm: "30" }),
     );
 
     const { PDFDocument } = await import("pdf-lib");
@@ -354,7 +385,8 @@ const fileReq = (
 
     const applied = await call(applyReceiveStamp, {
       user: { id: ME.accountId },
-      body: { documentId: doc.id, page: 2, xBp: 6000, yBp: 8000 },
+      body: {
+        roomId: room.id, documentId: doc.id, page: 2, xBp: 6000, yBp: 8000 },
     });
     ok("a stamp can be placed on a chosen page", applied.ok, applied.message);
     ok("...on the page that was chosen",
@@ -367,14 +399,16 @@ const fileReq = (
 
     const offEnd = await call(applyReceiveStamp, {
       user: { id: ME.accountId },
-      body: { documentId: doc.id, page: 9, xBp: 0, yBp: 0 },
+      body: {
+        roomId: room.id, documentId: doc.id, page: 9, xBp: 0, yBp: 0 },
     });
     ok("a page the document does not have is refused", !offEnd.ok, offEnd.message);
     ok("...saying how many it has", /2 pages/.test(offEnd.message), offEnd.message);
 
     const moved = await call(applyReceiveStamp, {
       user: { id: ME.accountId },
-      body: { documentId: doc.id, page: 1, xBp: 1000, yBp: 1500 },
+      body: {
+        roomId: room.id, documentId: doc.id, page: 1, xBp: 1000, yBp: 1500 },
     });
     ok("stamping again MOVES the stamp rather than adding a second",
       moved.ok, moved.message);
@@ -502,6 +536,122 @@ const fileReq = (
     });
     ok("an unstamped document still downloads, just unstamped", clean.ok, clean.message);
 
+    // == 7. One stamp, many clerks ====================================
+    /*
+      The point of moving the stamp off the person and onto the office: a
+      colleague who has never seen the artwork can stamp with it the moment
+      they are added to the room. Only their name and their signature are
+      their own.
+    */
+    console.log("\n-- the office's stamp, everybody's to use --");
+
+    const cAcct = await prisma.account.create({
+      data: { username: `qa_rs_c_${TS}`, password: "x", lineId: line.id },
+      select: { id: true, username: true },
+    });
+    made.accountIds.push(cAcct.id);
+    const cUser = await prisma.user.create({
+      data: {
+        firstName: "Qa", lastName: `COLLEAGUE${TS}`, username: cAcct.username,
+        accountId: cAcct.id, lineId: line.id,
+        email: `qa-rs-c-${TS}@test.local`, active: 1,
+      },
+      select: { id: true },
+    });
+    made.userIds.push(cUser.id);
+    await prisma.roomAuthorizedUser.create({
+      data: { receivingRoomId: room.id, userId: cUser.id, type: 2, status: 1 },
+    });
+
+    const colleague = await call(myReceiveStamp, {
+      user: { id: cAcct.id }, query: { roomId: room.id },
+    });
+    ok("a colleague who uploaded nothing already has the office's stamp",
+      colleague.body?.stamp?.hasImage === true, colleague.message);
+    ok("...the same artwork, not a copy of their own",
+      colleague.body?.stamp?.id === now.body?.stamp?.id,
+      JSON.stringify([colleague.body?.stamp?.id, now.body?.stamp?.id]));
+    ok("...at the office's size",
+      colleague.body?.stamp?.widthMm === now.body?.stamp?.widthMm);
+    ok("...but with no name of their own yet",
+      colleague.body?.myName === "", JSON.stringify(colleague.body?.myName));
+    ok("...and they can see whose names are already on it",
+      Array.isArray(colleague.body?.colleagues) &&
+        colleague.body.colleagues.some((c: any) => c.nickname === "JUDE"),
+      JSON.stringify(colleague.body?.colleagues));
+
+    const cName = await call(saveReceiveStamp, {
+      user: { id: cAcct.id },
+      body: { roomId: room.id, nickname: "R. CRUZ" },
+    });
+    ok("the colleague sets their own name", cName.ok, cName.message);
+    ok("...and it is theirs", cName.body?.myName === "R. CRUZ");
+
+    const stillMine = await call(myReceiveStamp, {
+      user: { id: ME.accountId }, query: { roomId: room.id },
+    });
+    ok("...WITHOUT overwriting mine",
+      stillMine.body?.myName === "JUDE", JSON.stringify(stillMine.body?.myName));
+
+    const mineRender = await renderReceiveStamp(room.id, ME.userId, new Date("2026-09-28T00:00:00Z"), 600);
+    const theirRender = await renderReceiveStamp(room.id, cUser.id, new Date("2026-09-28T00:00:00Z"), 600);
+    ok("the same stamp prints differently for each of them",
+      !mineRender.equals(theirRender),
+      `${mineRender.length} vs ${theirRender.length} bytes`);
+    ok("...at the same size, because the stamp is the same rubber stamp",
+      mineRender.readUInt32BE(16) === theirRender.readUInt32BE(16) &&
+        mineRender.readUInt32BE(20) === theirRender.readUInt32BE(20));
+
+    // Somebody in a different office sees nothing of this one.
+    const otherRoom = await prisma.receivingRoom.create({
+      data: { code: `QA-RS-OTHER-${TS}`, lineId: line.id, status: 1 },
+      select: { id: true },
+    });
+    made.roomIds.push(otherRoom.id);
+    const outsider = await call(myReceiveStamp, {
+      user: { id: cAcct.id }, query: { roomId: otherRoom.id },
+    });
+    ok("a room you do not belong to is refused outright",
+      !outsider.ok, outsider.message);
+    ok("...saying so plainly",
+      /not your office/i.test(outsider.message), outsider.message);
+
+    // Only the owner may throw the whole office's stamp away.
+    const cDelete = await call(deleteReceiveStamp, {
+      user: { id: cAcct.id }, query: { roomId: room.id },
+    });
+    ok("a receiver cannot delete the office's stamp", !cDelete.ok, cDelete.message);
+    ok("...and is told what they CAN still change",
+      /name that prints/i.test(cDelete.message), cDelete.message);
+
+    // == 8. The date reads like a date ================================
+    /*
+      "09/28/2026" is ambiguous everywhere outside the US and says nothing
+      about when in the day the document arrived, which for a deadline is
+      the only part that matters.
+    */
+    console.log("\n-- what the stamp says the time was --");
+    const noon = stampDateText(new Date("2026-09-28T00:00:00Z"));
+    ok("the date is written out in full",
+      noon === "28 September 2026 8:00 am", noon);
+
+    const pm = stampDateText(new Date("2026-09-28T08:55:00Z"));
+    ok("...with the time of day, in the afternoon too",
+      pm === "28 September 2026 4:55 pm", pm);
+
+    /*
+      Manila is UTC+8 and the server runs in UTC. A document received at
+      7am in Gasan is 23:00 the previous day in UTC, so a stamp built on
+      the server clock would print YESTERDAY.
+    */
+    const earlyPh = stampDateText(new Date("2026-09-27T23:00:00Z"));
+    ok("...and in Philippine time, not the server's",
+      earlyPh === "28 September 2026 7:00 am", earlyPh);
+
+    const longest = stampDateText(new Date("2026-09-30T04:30:00Z"));
+    ok("the longest date still fits the 58mm stamp at a readable size",
+      longest.length <= 30, `${longest} (${longest.length} chars)`);
+
     console.log(`\n${pass} passed, ${fail} failed`);
     process.exitCode = fail === 0 ? 0 : 1;
   } catch (e) {
@@ -525,6 +675,13 @@ const fileReq = (
     }
     for (const id of made.accountIds) {
       await prisma.account.delete({ where: { id } }).catch(() => {});
+    }
+    for (const id of made.roomIds) {
+      await prisma.roomAuthorizedUser.deleteMany({
+        where: { receivingRoomId: id },
+      }).catch(() => {});
+      await prisma.receiveStamp.deleteMany({ where: { roomId: id } }).catch(() => {});
+      await prisma.receivingRoom.delete({ where: { id } }).catch(() => {});
     }
     await prisma.$disconnect();
   }

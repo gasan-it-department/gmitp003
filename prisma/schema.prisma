@@ -1049,7 +1049,8 @@ model Privilege {
 
 model User {
   receiveStampMarks        ReceiveStampMark[]               @relation("ReceiveStampMarkUser")
-  receiveStamp             ReceiveStamp?                    @relation("ReceiveStampUser")
+  receiveStamps            ReceiveStamp[]                   @relation("ReceiveStampUser")
+  receiveStampNames        ReceiveStampName[]               @relation("ReceiveStampNameUser")
   id                               String                           @id @default(uuid())
   email                            String
   createdAt                        DateTime                         @default(now())
@@ -1821,6 +1822,8 @@ model ReceivingRoom {
   authorizedUser       RoomAuthorizedUser[]
   targetRooms          TargetRoom[]
   signatureQueueRooms  SignatureQueueRoom[]
+  receiveStamp         ReceiveStamp?
+  receiveStampMarks    ReceiveStampMark[]
 }
 
 model RoomAuthorizedUser {
@@ -2051,7 +2054,17 @@ model UserKeyPair {
  */
 model ReceiveStamp {
   id         String   @id @default(uuid())
-  userId     String   @unique
+  /// The office this stamp belongs to.
+  ///
+  /// A receiving stamp is office property: one rubber stamp sits on the
+  /// counter and whoever is on duty inks it. So the artwork, the size and
+  /// the layout are the ROOM'S, shared by every member — only the name on
+  /// the BY line and the signature change from person to person.
+  roomId     String?  @unique
+  /// Who set it up, and who last changed it. Not an owner: the members are
+  /// the office. Kept so a wrong artwork can be traced to whoever uploaded.
+  userId     String?
+  updatedById String?
   lineId     String?
   /// The physical size of the office's stamp, in millimetres.
   ///
@@ -2073,8 +2086,9 @@ model ReceiveStamp {
   sigW       Int      @default(3600)
   sigH       Int      @default(2600)
 
-  /// The name on the BY line — a nickname is fine, it is how colleagues
-  /// recognise who took delivery.
+  /// Where the name sits. WHICH name is per-person: see ReceiveStampName.
+  /// `nickname` is the first version's single name, kept only so an
+  /// existing setup is not silently blanked when its room adopts it.
   nickname   String   @default("")
   nameX      Int      @default(2400)
   nameY      Int      @default(8600)
@@ -2087,8 +2101,31 @@ model ReceiveStamp {
 
   timestamp  DateTime @default(now())
   updatedAt  DateTime @updatedAt
-  user       User     @relation("ReceiveStampUser", fields: [userId], references: [id], onDelete: Cascade)
-  line       Line?    @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  user       User?          @relation("ReceiveStampUser", fields: [userId], references: [id], onDelete: Cascade)
+  line       Line?          @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  room       ReceivingRoom? @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  names      ReceiveStampName[]
+}
+
+/// One member's name on the shared stamp.
+///
+/// Everything else about the stamp is the office's; this is the half that
+/// is theirs. The signature is not stored here — it is whichever Signature
+/// they have marked active, the same one their documents are signed with.
+model ReceiveStampName {
+  id        String       @id @default(uuid())
+  stampId   String
+  userId    String
+  /// What prints on the BY line. A nickname is fine: it is how colleagues
+  /// recognise who took delivery.
+  nickname  String       @default("")
+  timestamp DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+  stamp     ReceiveStamp @relation(fields: [stampId], references: [id], onDelete: Cascade)
+  user      User         @relation("ReceiveStampNameUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([stampId, userId])
+  @@index([userId])
 }
 
 /**
@@ -2108,6 +2145,10 @@ model ReceiveStampMark {
   id         String   @id @default(uuid())
   documentId String
   userId     String
+  /// The office whose stamp this is. Stored rather than looked up, because
+  /// a person can belong to two offices and the copy must reprint with the
+  /// stamp that was actually used.
+  roomId     String?
   lineId     String?
   /// 1-based page of the document.
   page       Int      @default(1)
@@ -2115,9 +2156,10 @@ model ReceiveStampMark {
   xBp        Int      @default(0)
   yBp        Int      @default(0)
   stampedAt  DateTime @default(now())
-  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  user       User     @relation("ReceiveStampMarkUser", fields: [userId], references: [id], onDelete: Cascade)
-  line       Line?    @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  document   Document       @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  user       User           @relation("ReceiveStampMarkUser", fields: [userId], references: [id], onDelete: Cascade)
+  line       Line?          @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  room       ReceivingRoom? @relation(fields: [roomId], references: [id], onDelete: Cascade)
 
   // One stamp per person per document: stamping twice is a correction, not
   // a second stamp.

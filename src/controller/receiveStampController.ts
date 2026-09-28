@@ -11,6 +11,14 @@
  * the office's real stamp, scanned, because a receiving stamp that does not
  * look like the office's receiving stamp is not evidence of anything.
  *
+ * ONE STAMP PER OFFICE. There is a single rubber stamp on the counter and
+ * whoever is on duty inks it, so the artwork, the size and the layout belong
+ * to the Document Room and every member — owner, signatory, receiver —
+ * shares them. Only two things are the person's own: the name on the BY
+ * line, and the signature, which is whichever they have marked active. That
+ * is why a colleague setting up their name does not have to hunt down a
+ * scan of a stamp they have never held.
+ *
  * Placements are basis points of the artwork (0-10000, origin top-left) —
  * the same unit SignatureCoor uses, so the editor on screen and the render
  * below divide by the same number and cannot drift apart.
@@ -23,8 +31,9 @@ import {
   ValidationError,
   UnauthorizedError,
 } from "../errors/errors";
-import { callerContext } from "../service/callerScope";
+import { callerContext, requireRoomMember } from "../service/callerScope";
 import { renderPdfPage } from "../service/pdfRaster";
+import { ROOM_MEMBER_TYPES } from "./roomConfigController";
 
 /**
  * The common stamp, and the default — but only the default.
@@ -60,7 +69,9 @@ const BP = 10000;
 /** Everything except the bytes — the config the editor works on. */
 const SHAPE = {
   id: true,
+  roomId: true,
   userId: true,
+  updatedById: true,
   lineId: true,
   mime: true,
   widthMm: true,
@@ -82,6 +93,88 @@ const SHAPE = {
   updatedAt: true,
 } as const;
 
+/**
+ * Which office the caller is acting as.
+ *
+ * Almost everyone belongs to one Document Room and never thinks about this.
+ * Somebody who belongs to two has to be asked, so the screen sends the room
+ * it is showing; when nothing is sent, the same deterministic rule the
+ * signatory registry uses picks one — the room they own, else the oldest —
+ * so the answer never changes between two requests a second apart.
+ */
+export const resolveStampRoom = async (
+  req: FastifyRequest,
+  roomId?: string | null,
+): Promise<{ actorId: string; roomId: string; type: number; lineId: string | null }> => {
+  const { actorId, lineId } = await callerContext(req);
+  if (!actorId) throw new UnauthorizedError("Not signed in");
+
+  if (roomId) {
+    const m = await requireRoomMember(req, roomId);
+    return { actorId, roomId, type: m.type, lineId };
+  }
+
+  const mine = await prisma.roomAuthorizedUser.findMany({
+    where: { userId: actorId, status: 1, receivingRoomId: { not: null } },
+    orderBy: [{ type: "asc" }, { timestamp: "asc" }],
+    select: { receivingRoomId: true, type: true },
+  });
+  const first = mine[0];
+  if (!first?.receivingRoomId) {
+    throw new ValidationError(
+      "You are not a member of any Document Room yet, so there is no office stamp to set up. Ask the room owner or HR to add you.",
+    );
+  }
+  return { actorId, roomId: first.receivingRoomId, type: first.type, lineId };
+};
+
+/** Every Document Room the caller belongs to, for the office picker. */
+const myRooms = async (actorId: string) => {
+  const rows = await prisma.roomAuthorizedUser.findMany({
+    where: { userId: actorId, status: 1, receivingRoomId: { not: null } },
+    orderBy: [{ type: "asc" }, { timestamp: "asc" }],
+    select: {
+      type: true,
+      receivingRoom: { select: { id: true, code: true, address: true } },
+    },
+  });
+  const seen = new Set<string>();
+  const out: Array<{ id: string; code: string; address: string | null; myType: number }> = [];
+  for (const r of rows) {
+    if (!r.receivingRoom || seen.has(r.receivingRoom.id)) continue;
+    seen.add(r.receivingRoom.id);
+    out.push({ ...r.receivingRoom, myType: r.type });
+  }
+  return out;
+};
+
+/**
+ * The date and time on the stamp.
+ *
+ * A receiving stamp records the moment the office took delivery, and for a
+ * document that moment is often the whole point: a deadline met at 4:55pm
+ * is not the same as one met the next morning. So the time prints too, in
+ * words rather than slashes, because "28 September 2026" cannot be read as
+ * the 9th of the 28th.
+ *
+ * Always Philippine time. The server runs in UTC, so a document received at
+ * 7am in Gasan would otherwise be stamped with yesterday's date.
+ */
+export const stampDateText = (when: Date) => {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Manila",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).formatToParts(when);
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
+  const period = get("dayPeriod").toLowerCase().replace(/\./g, "");
+  return `${get("day")} ${get("month")} ${get("year")} ${get("hour")}:${get("minute")} ${period}`;
+};
+
 const clampBp = (v: unknown, fallback: number) => {
   const n = Number(v);
   if (!Number.isFinite(n)) return fallback;
@@ -95,17 +188,59 @@ const clampPt = (v: unknown, fallback: number) => {
   return Math.max(4, Math.min(24, Math.round(n * 10) / 10));
 };
 
-/** GET /document/receive-stamp — the caller's own stamp setup. */
+/** GET /document/receive-stamp?roomId= — the office's stamp, and my half. */
 export const myReceiveStamp = async (
   req: FastifyRequest,
   res: FastifyReply,
 ) => {
-  const { actorId, lineId } = await callerContext(req);
+  const q = req.query as { roomId?: string };
+  const { actorId, roomId, type, lineId } = await resolveStampRoom(req, q.roomId);
 
-  const row = await prisma.receiveStamp.findUnique({
-    where: { userId: actorId },
+  let row = await prisma.receiveStamp.findUnique({
+    where: { roomId },
     select: { ...SHAPE, image: true },
   });
+
+  /*
+    The first version of this feature gave each person their own stamp. If
+    somebody already set one up that way and their office has none, the room
+    adopts it rather than making them scan the same artwork again. Their own
+    name comes across with it as their name.
+  */
+  if (!row) {
+    const legacy = await prisma.receiveStamp.findFirst({
+      where: { userId: actorId, roomId: null },
+      select: { id: true, nickname: true },
+    });
+    if (legacy) {
+      row = await prisma.receiveStamp.update({
+        where: { id: legacy.id },
+        data: { roomId, updatedById: actorId },
+        select: { ...SHAPE, image: true },
+      });
+      if (legacy.nickname) {
+        await prisma.receiveStampName.upsert({
+          where: { stampId_userId: { stampId: legacy.id, userId: actorId } },
+          update: {},
+          create: { stampId: legacy.id, userId: actorId, nickname: legacy.nickname },
+        });
+      }
+    }
+  }
+
+  // My name on it, and everyone else's — so the editor can show that a
+  // colleague's stamp will read differently from mine.
+  const names = row
+    ? await prisma.receiveStampName.findMany({
+        where: { stampId: row.id },
+        select: {
+          userId: true,
+          nickname: true,
+          user: { select: { firstName: true, lastName: true } },
+        },
+      })
+    : [];
+  const mine = names.find((n) => n.userId === actorId) ?? null;
 
   // The signature this stamp will carry. It is the caller's ACTIVE one, the
   // same one their documents are signed with — a receiving stamp signed with
@@ -119,6 +254,21 @@ export const myReceiveStamp = async (
     stamp: row
       ? { ...row, image: undefined, hasImage: !!row.image }
       : null,
+    /** The office this is, and every office I could be acting for. */
+    room: { id: roomId, myType: type },
+    rooms: await myRooms(actorId),
+    /**
+     * The name on MY BY line. Everything else on the stamp is the office's
+     * and shared; this is the half that is mine.
+     */
+    myName: mine?.nickname ?? "",
+    colleagues: names
+      .filter((n) => n.userId !== actorId)
+      .map((n) => ({
+        userId: n.userId,
+        nickname: n.nickname,
+        name: `${n.user?.firstName ?? ""} ${n.user?.lastName ?? ""}`.trim(),
+      })),
     /**
      * Whether a signature is on file at all. Without one the stamp cannot
      * be completed, and saying so here means the editor can explain that
@@ -138,14 +288,15 @@ export const myReceiveStamp = async (
   });
 };
 
-/** GET /document/receive-stamp/image — the raw artwork, for the editor. */
+/** GET /document/receive-stamp/image?roomId= — the raw artwork. */
 export const receiveStampImage = async (
   req: FastifyRequest,
   res: FastifyReply,
 ) => {
-  const { actorId } = await callerContext(req);
+  const q = req.query as { roomId?: string };
+  const { roomId } = await resolveStampRoom(req, q.roomId);
   const row = await prisma.receiveStamp.findUnique({
-    where: { userId: actorId },
+    where: { roomId },
     select: { image: true, mime: true, updatedAt: true },
   });
   if (!row?.image) throw new NotFoundError("No stamp artwork uploaded yet");
@@ -163,7 +314,6 @@ export const uploadReceiveStampImage = async (
   res: FastifyReply,
 ) => {
   if (!req.isMultipart()) throw new ValidationError("INVALID REQUEST");
-  const { actorId, lineId } = await callerContext(req);
 
   let buf: Buffer | null = null;
   let mime = "image/png";
@@ -214,8 +364,15 @@ export const uploadReceiveStampImage = async (
   const imageH = buf.readUInt32BE(20);
   if (!imageW || !imageH) throw new ValidationError("That PNG could not be read.");
 
+  /*
+    The room comes in as a field with everything else. Membership is checked
+    before a single byte is stored: this is the office's stamp, and uploading
+    to an office you do not belong to would put your artwork on their paper.
+  */
+  const { actorId, roomId, lineId } = await resolveStampRoom(req, fields.roomId);
+
   const existing = await prisma.receiveStamp.findUnique({
-    where: { userId: actorId },
+    where: { roomId },
     select: { widthMm: true, heightMm: true },
   });
   const widthMm = clampMm(fields.widthMm, existing?.widthMm ?? DEFAULT_W_MM);
@@ -237,11 +394,14 @@ export const uploadReceiveStampImage = async (
   }
 
   const saved = await prisma.receiveStamp.upsert({
-    where: { userId: actorId },
-    update: { image: buf, mime, imageW, imageH, widthMm, heightMm, lineId },
+    where: { roomId },
+    update: {
+      image: buf, mime, imageW, imageH, widthMm, heightMm, lineId,
+      updatedById: actorId,
+    },
     create: {
-      userId: actorId, lineId, image: buf, mime, imageW, imageH,
-      widthMm, heightMm,
+      roomId, userId: actorId, updatedById: actorId, lineId,
+      image: buf, mime, imageW, imageH, widthMm, heightMm,
     },
     select: SHAPE,
   });
@@ -249,24 +409,40 @@ export const uploadReceiveStampImage = async (
   return res.code(200).send({ message: "OK", stamp: { ...saved, hasImage: true } });
 };
 
-/** PATCH /document/receive-stamp — where things sit, and what the name says. */
+/**
+ * PATCH /document/receive-stamp — where things sit, and what my name says.
+ *
+ * The placements and the size go to the office's stamp, shared by everybody.
+ * The nickname goes to my row and nobody else's: the whole point of the
+ * split is that a colleague stamping the next document gets the same box
+ * with their own name in it.
+ */
 export const saveReceiveStamp = async (
   req: FastifyRequest,
   res: FastifyReply,
 ) => {
-  const { actorId, lineId } = await callerContext(req);
   const b = req.body as Record<string, unknown>;
+  const { actorId, roomId, lineId } = await resolveStampRoom(
+    req,
+    typeof b.roomId === "string" ? b.roomId : undefined,
+  );
 
   const current = await prisma.receiveStamp.findUnique({
-    where: { userId: actorId },
+    where: { roomId },
     select: SHAPE,
   });
 
-  const nickname = String(b.nickname ?? current?.nickname ?? "").trim().slice(0, 40);
+  const myRow = current
+    ? await prisma.receiveStampName.findUnique({
+        where: { stampId_userId: { stampId: current.id, userId: actorId } },
+        select: { nickname: true },
+      })
+    : null;
+  const nickname = String(b.nickname ?? myRow?.nickname ?? "").trim().slice(0, 40);
 
   const data = {
     lineId,
-    nickname,
+    updatedById: actorId,
     widthMm: clampMm(b.widthMm, current?.widthMm ?? DEFAULT_W_MM),
     heightMm: clampMm(b.heightMm, current?.heightMm ?? DEFAULT_H_MM),
     sigX: clampBp(b.sigX, current?.sigX ?? 5200),
@@ -287,23 +463,41 @@ export const saveReceiveStamp = async (
   }
 
   const saved = await prisma.receiveStamp.upsert({
-    where: { userId: actorId },
+    where: { roomId },
     update: data,
-    create: { userId: actorId, ...data },
+    create: { roomId, userId: actorId, ...data },
     select: SHAPE,
   });
 
-  return res.code(200).send({ message: "OK", stamp: saved });
+  await prisma.receiveStampName.upsert({
+    where: { stampId_userId: { stampId: saved.id, userId: actorId } },
+    update: { nickname },
+    create: { stampId: saved.id, userId: actorId, nickname },
+  });
+
+  return res.code(200).send({ message: "OK", stamp: saved, myName: nickname });
 };
 
-/** DELETE /document/receive-stamp — start again. */
+/**
+ * DELETE /document/receive-stamp?roomId= — start again.
+ *
+ * This throws away the whole office's stamp, not just the caller's part of
+ * it, so only the room's owner may do it. Everyone else who wants their own
+ * name changed can change their own name.
+ */
 export const deleteReceiveStamp = async (
   req: FastifyRequest,
   res: FastifyReply,
 ) => {
-  const { actorId } = await callerContext(req);
+  const q = req.query as { roomId?: string };
+  const { roomId, type } = await resolveStampRoom(req, q.roomId);
+  if (type !== ROOM_MEMBER_TYPES.owner) {
+    throw new UnauthorizedError(
+      "Only the office that owns this Document Room can remove its receiving stamp. You can still change the name that prints on yours.",
+    );
+  }
   const row = await prisma.receiveStamp.findUnique({
-    where: { userId: actorId },
+    where: { roomId },
     select: { id: true },
   });
   if (!row) throw new NotFoundError("Nothing to remove");
@@ -322,14 +516,18 @@ export const deleteReceiveStamp = async (
  *
  * Exported so the receiving flow can call it directly when the time comes
  * to actually apply a stamp to an arriving document.
+ *
+ * Two halves come together here: the office's artwork and layout, and the
+ * person's name and signature.
  */
 export const renderReceiveStamp = async (
+  roomId: string,
   userId: string,
   when: Date = new Date(),
   widthPx = 900,
 ): Promise<Buffer> => {
   const row = await prisma.receiveStamp.findUnique({
-    where: { userId },
+    where: { roomId },
     select: { ...SHAPE, image: true },
   });
   if (!row?.image) throw new NotFoundError("No stamp artwork uploaded yet");
@@ -338,6 +536,14 @@ export const renderReceiveStamp = async (
     where: { userId, active: true },
     select: { signature: true },
   });
+
+  const mine = await prisma.receiveStampName.findUnique({
+    where: { stampId_userId: { stampId: row.id, userId } },
+    select: { nickname: true },
+  });
+  // Falls back to the stamp's own name only while a setup carried over from
+  // the per-person version has not been claimed yet.
+  const printedName = (mine?.nickname || row.nickname || "").trim();
 
   const wPt = mmToPt(row.widthMm);
   const hPt = mmToPt(row.heightMm);
@@ -384,26 +590,41 @@ export const renderReceiveStamp = async (
   }
 
   const ink = rgb(0, 0, 0);
-  const dateText = when.toLocaleDateString("en-PH", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
+
+  /**
+   * Shrink text until it fits the width left on the stamp.
+   *
+   * "28 September 2026 8:00 am" is two and a half times as long as the
+   * "09/28/2026" this used to print, and a stamp is only 58mm wide. Running
+   * off the edge would put half the date on the page beside the stamp, so
+   * the size gives way instead — down to 4pt, below which nothing prints
+   * legibly anyway.
+   */
+  const fitted = (text: string, at: number, size: number) => {
+    let s = size;
+    const room = wPt - at - 2;
+    while (s > 4 && font.widthOfTextAtSize(text, s) > room) s -= 0.25;
+    return s;
+  };
+
+  const dateText = stampDateText(when);
   const d = toPt(row.dateX, row.dateY);
+  const dateSize = fitted(dateText, d.x, row.dateSizePt);
   page.drawText(dateText, {
     x: d.x,
-    y: hPt - d.yTop - row.dateSizePt,
-    size: row.dateSizePt,
+    y: hPt - d.yTop - dateSize,
+    size: dateSize,
     font,
     color: ink,
   });
 
-  if (row.nickname) {
+  if (printedName) {
     const n = toPt(row.nameX, row.nameY);
-    page.drawText(row.nickname, {
+    const nameSize = fitted(printedName, n.x, row.nameSizePt);
+    page.drawText(printedName, {
       x: n.x,
-      y: hPt - n.yTop - row.nameSizePt,
-      size: row.nameSizePt,
+      y: hPt - n.yTop - nameSize,
+      size: nameSize,
       font,
       color: ink,
     });
@@ -419,13 +640,12 @@ export const receiveStampPreview = async (
   req: FastifyRequest,
   res: FastifyReply,
 ) => {
-  const { actorId } = await callerContext(req);
-  if (!actorId) throw new UnauthorizedError("Not signed in");
-  const q = req.query as { width?: string };
+  const q = req.query as { width?: string; roomId?: string };
+  const { actorId, roomId } = await resolveStampRoom(req, q.roomId);
   const width = q.width ? parseInt(q.width, 10) : 900;
 
   try {
-    const png = await renderReceiveStamp(actorId, new Date(), width);
+    const png = await renderReceiveStamp(roomId, actorId, new Date(), width);
     return res
       .header("Content-Type", "image/png")
       .header("Cache-Control", "no-store")
@@ -460,24 +680,25 @@ export const applyReceiveStamp = async (
 ) => {
   const b = req.body as {
     documentId?: string;
+    roomId?: string;
     page?: number | string;
     xBp?: number | string;
     yBp?: number | string;
   };
   if (!b.documentId) throw new ValidationError("INVALID REQUIRED ID");
-  const { actorId, lineId } = await callerContext(req);
+  const { actorId, roomId, lineId } = await resolveStampRoom(req, b.roomId);
 
   // You may only stamp what you are allowed to see.
   const { requireCanSeeDocument } = await import("./disseminationController");
   await requireCanSeeDocument(req, b.documentId);
 
   const stamp = await prisma.receiveStamp.findUnique({
-    where: { userId: actorId },
+    where: { roomId },
     select: { image: true },
   });
   if (!stamp?.image) {
     throw new ValidationError(
-      "Set up your receiving stamp first — Document module, Manage Receive Stamp.",
+      "Your office has not set up its receiving stamp yet — Document module, Manage Receive Stamp. Anyone in the office can upload it, and it then works for everybody.",
     );
   }
 
@@ -498,16 +719,17 @@ export const applyReceiveStamp = async (
 
   const mark = await prisma.receiveStampMark.upsert({
     where: { documentId_userId: { documentId: b.documentId, userId: actorId } },
-    update: { page, xBp: clampBp(b.xBp, 0), yBp: clampBp(b.yBp, 0), lineId },
+    update: { page, xBp: clampBp(b.xBp, 0), yBp: clampBp(b.yBp, 0), roomId, lineId },
     create: {
       documentId: b.documentId,
       userId: actorId,
+      roomId,
       lineId,
       page,
       xBp: clampBp(b.xBp, 0),
       yBp: clampBp(b.yBp, 0),
     },
-    select: { id: true, page: true, xBp: true, yBp: true, stampedAt: true },
+    select: { id: true, page: true, xBp: true, yBp: true, stampedAt: true, roomId: true },
   });
 
   return res.code(200).send({ message: "OK", mark, pages: sizes.length });
@@ -529,7 +751,9 @@ export const receiveStampMarks = async (
     orderBy: { stampedAt: "asc" },
     select: {
       id: true, page: true, xBp: true, yBp: true, stampedAt: true, userId: true,
+      roomId: true,
       user: { select: { firstName: true, lastName: true } },
+      room: { select: { code: true } },
     },
   });
   return res
@@ -581,7 +805,10 @@ export const stampedDocument = async (
   const marks = await prisma.receiveStampMark.findMany({
     where: { documentId: q.documentId },
     orderBy: { stampedAt: "asc" },
-    select: { userId: true, page: true, xBp: true, yBp: true, stampedAt: true },
+    select: {
+      userId: true, roomId: true, page: true, xBp: true, yBp: true,
+      stampedAt: true,
+    },
   });
 
   const { PDFDocument } = await import("pdf-lib");
@@ -589,8 +816,22 @@ export const stampedDocument = async (
   const pages = pdf.getPages();
 
   for (const m of marks) {
+    /*
+      A mark made before offices shared a stamp has no room on it. Fall back
+      to the room whose stamp that person set up, so old marks still print.
+    */
+    const roomId =
+      m.roomId ??
+      (
+        await prisma.receiveStamp.findFirst({
+          where: { userId: m.userId, roomId: { not: null } },
+          select: { roomId: true },
+        })
+      )?.roomId;
+    if (!roomId) continue;
+
     const cfg = await prisma.receiveStamp.findUnique({
-      where: { userId: m.userId },
+      where: { roomId },
       select: { widthMm: true, heightMm: true },
     });
     if (!cfg) continue;
@@ -602,7 +843,7 @@ export const stampedDocument = async (
       // Composed with the date it was STAMPED, not today — the stamp
       // records when the office took delivery, and reprinting it later
       // must not quietly move that date.
-      png = await renderReceiveStamp(m.userId, m.stampedAt, 1200);
+      png = await renderReceiveStamp(roomId, m.userId, m.stampedAt, 1200);
     } catch {
       continue;
     }
