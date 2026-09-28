@@ -3780,3 +3780,160 @@ export const acknowledgeReceipt = async (
     throw error;
   }
 };
+
+// ─── What still needs doing ────────────────────────────────────────────
+
+/**
+ * GET /document/alerts?lineId=&roomId=
+ *
+ * Every count in the Document module that means SOMEBODY MUST DO SOMETHING,
+ * in one request, so the panel can put a red number on it.
+ *
+ * Deliberately not totals. "1,284 archived" is a fact, not a task, and a
+ * badge on it teaches people that badges mean nothing. Only two things are
+ * urgent enough to print in red — mail nobody has opened, and a signature
+ * the routing is actually waiting on — and everything else is amber or
+ * quiet. A module where everything shouts is a module where nothing does.
+ */
+export const documentAlerts = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  const q = req.query as { lineId?: string; roomId?: string };
+  if (!q.lineId) throw new ValidationError("INVALID REQUIRED ID");
+  await requireSameLine(req, q.lineId);
+
+  const actorId = await callerUserId(req);
+  if (!actorId) throw new UnauthorizedError("Not signed in");
+
+  /*
+    A room is only counted when the caller belongs to it. Somebody passing
+    another office's id gets zeros, not their mail — the same rule the
+    inbox itself enforces, applied to the number ON the inbox.
+  */
+  let roomId: string | null = null;
+  if (q.roomId) {
+    const member = await prisma.roomAuthorizedUser.findFirst({
+      where: { receivingRoomId: q.roomId, userId: actorId, status: 1 },
+      select: { id: true },
+    });
+    roomId = member ? q.roomId : null;
+  }
+
+  const inboxBase = roomId
+    ? {
+        receivingRoomId: roomId,
+        queueRoom: { is: { status: { gte: 1 } } },
+        ...VISIBLE_TO_ROOM,
+      }
+    : null;
+
+  const [
+    inboxUnopened,
+    inboxUnacknowledged,
+    outboxDrafts,
+    outboxAwaitingAck,
+    receivingUnrouted,
+    mySlots,
+  ] = await Promise.all([
+    // Nobody in the office has looked at it yet.
+    inboxBase
+      ? prisma.targetRoom.count({ where: { ...inboxBase, viewedAt: null } })
+      : Promise.resolve(0),
+    // Looked at, but nobody has said "we have it".
+    inboxBase
+      ? prisma.targetRoom.count({
+          where: { ...inboxBase, viewedAt: { not: null }, acknowledgedAt: null },
+        })
+      : Promise.resolve(0),
+    // Started and never sent. This is the one that quietly piles up.
+    roomId
+      ? prisma.signatureQueueRoom.count({
+          where: { receivingRoomId: roomId, status: 0 },
+        })
+      : Promise.resolve(0),
+    // Sent, and the other office has not confirmed receipt.
+    roomId
+      ? prisma.targetRoom.count({
+          where: {
+            queueRoom: { is: { receivingRoomId: roomId, status: { gte: 1 } } },
+            acknowledgedAt: null,
+            ...VISIBLE_TO_ROOM,
+          },
+        })
+      : Promise.resolve(0),
+    // Logged at the receiving desk and never sent onward.
+    prisma.documentReceiveRecord.count({
+      where: {
+        lineId: q.lineId,
+        direction: "in",
+        deletedAt: null,
+        routedQueueRoomId: null,
+      },
+    }),
+    /*
+      My unsigned slots on live routings. Fetched rather than counted,
+      because on a routing that signs in order a slot can exist without it
+      being my turn — and telling somebody three signatures are waiting on
+      them when the server will refuse all three is worse than silence.
+    */
+    prisma.signatoryArrangement.findMany({
+      where: {
+        userId: actorId,
+        status: 0,
+        signatureQueueRoom: {
+          status: 1,
+          fromRoom: { lineId: q.lineId },
+        },
+      },
+      select: {
+        index: true,
+        signatureQueueRoomId: true,
+        signatureQueueRoom: { select: { sequential: true } },
+      },
+    }),
+  ]);
+
+  /*
+    Split mine into "go and sign it" and "not yet your turn", using the
+    same rule signMine enforces: on a sequential routing every EARLIER slot
+    must be signed first.
+  */
+  let awaitingMe = 0;
+  let queued = 0;
+  const seqChecked = new Map<string, number | null>();
+  for (const slot of mySlots) {
+    if (!slot.signatureQueueRoom?.sequential) {
+      awaitingMe++;
+      continue;
+    }
+    const qid = slot.signatureQueueRoomId;
+    if (!qid) {
+      awaitingMe++;
+      continue;
+    }
+    if (!seqChecked.has(qid)) {
+      const firstUnsigned = await prisma.signatoryArrangement.findFirst({
+        where: { signatureQueueRoomId: qid, status: { not: 1 } },
+        orderBy: { index: "asc" },
+        select: { index: true },
+      });
+      seqChecked.set(qid, firstUnsigned?.index ?? null);
+    }
+    const turn = seqChecked.get(qid);
+    if (turn === null || turn === undefined || slot.index <= turn) awaitingMe++;
+    else queued++;
+  }
+
+  // What goes in red. Nothing else does.
+  const urgent = inboxUnopened + awaitingMe;
+
+  return res.code(200).send({
+    roomId,
+    inbox: { unopened: inboxUnopened, unacknowledged: inboxUnacknowledged },
+    signatures: { awaitingMe, queued },
+    outbox: { drafts: outboxDrafts, awaitingAck: outboxAwaitingAck },
+    receiving: { unrouted: receivingUnrouted },
+    urgent,
+  });
+};

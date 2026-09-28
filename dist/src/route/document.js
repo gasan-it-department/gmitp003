@@ -68,6 +68,8 @@ const document = (fastify) => {
     fastify.post("/document/room/repair-membership", { preHandler: handler_1.authenticated }, disseminationController_1.repairRoomMembership);
     fastify.post("/document/room/reset-membership", { preHandler: handler_1.authenticated }, disseminationController_1.resetRoomMembership);
     fastify.get("/document/overview", { preHandler: handler_1.authenticated }, disseminationController_1.documentOverview);
+    // Only the counts that mean somebody has to act — what gets a red badge.
+    fastify.get("/document/alerts", { preHandler: handler_1.authenticated }, disseminationController_1.documentAlerts);
     fastify.get("/document/activity", { preHandler: handler_1.authenticated }, documentActivityController_1.documentActivityPanel);
     fastify.get("/document/activity/log", { preHandler: handler_1.authenticated }, documentActivityController_1.documentActivityLog);
     fastify.get("/document/my-pending", { preHandler: handler_1.authenticated }, documentActivityController_1.documentMyPending);

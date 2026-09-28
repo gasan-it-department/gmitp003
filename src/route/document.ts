@@ -71,6 +71,7 @@ import {
   removeDisseminationDocument,
   repairRoomMembership,
   documentOverview,
+  documentAlerts,
   resetRoomMembership,
   viewDissemination,
   signMine,
@@ -362,6 +363,12 @@ export const document = (fastify: FastifyInstance) => {
     "/document/overview",
     { preHandler: authenticated },
     documentOverview,
+  );
+  // Only the counts that mean somebody has to act — what gets a red badge.
+  fastify.get(
+    "/document/alerts",
+    { preHandler: authenticated },
+    documentAlerts,
   );
   fastify.get(
     "/document/activity",
