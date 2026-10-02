@@ -18,6 +18,7 @@ import { prisma, Prisma } from "../barrel/prisma";
 import { AppError, NotFoundError, ValidationError, UnauthorizedError } from "../errors/errors";
 import { createUserNotification } from "../service/notificationEvents";
 import { attestQueue, newSerial, seal } from "../service/documentSeal";
+import { padesSign } from "../service/padesSign";
 import { tempURL } from "../service/url";
 import { callerUserId } from "../middleware/handler";
 import { ROOM_MEMBER_TYPES } from "./roomConfigController";
@@ -3144,8 +3145,41 @@ export const downloadSignedDocument = async (
       console.warn("[signedDoc] verification footer failed:", e);
     }
 
-    const out = await pdfDoc.save({ useObjectStreams: true });
-    const bytes = Buffer.from(out);
+    /*
+      useObjectStreams:false on purpose.
+
+      The PAdES placeholder below rewrites the cross-reference table by hand,
+      and a COMPRESSED xref stream is the one thing it cannot safely edit —
+      with object streams on, signing produces a file readers reject. The
+      cost is a slightly larger PDF, which is worth a signature Acrobat and
+      Foxit can actually see.
+    */
+    const out = await pdfDoc.save({ useObjectStreams: false });
+
+    /*
+      PAdES signature, applied BEFORE sealing.
+
+      Order is not cosmetic: signing rewrites the file, so sealing first
+      would hash bytes that are then thrown away and every later
+      verification would report a false TAMPERED. The two mechanisms stack —
+      the PKCS#7 is what any reader checks, the Ed25519 seal is what our own
+      verifier checks and is the only one carrying the signatory roster.
+    */
+    const padesTitle = doc.title || doc.file.fileName || "document";
+    const pades = await padesSign(Buffer.from(out), {
+      reason: `Signed in the Gasan Document Management System · ${serial}`,
+      location: "Gasan, Marinduque, Philippines",
+    });
+    if (!pades.signed) {
+      // Never block the download: the file is still sealed and still
+      // verifiable through our own verifier. It just will not show a
+      // signature panel in a PDF reader.
+      console.warn(
+        `[signedDoc] issued WITHOUT a reader-visible signature (${padesTitle}):`,
+        pades.reason,
+      );
+    }
+    const bytes = pades.bytes;
 
     // Seal the EXACT bytes being sent. Hashing anything else would make every
     // later verification report a false TAMPERED.
@@ -3175,7 +3209,11 @@ export const downloadSignedDocument = async (
     res.header("Content-Disposition", `attachment; filename="${filename}"`);
     res.header("Content-Length", bytes.length.toString());
     res.header("X-Document-Serial", serial);
-    res.header("Access-Control-Expose-Headers", "X-Document-Serial");
+    res.header("X-Pdf-Signature", pades.signed ? "pades" : "none");
+    res.header(
+      "Access-Control-Expose-Headers",
+      "X-Document-Serial, X-Pdf-Signature",
+    );
     return res.code(200).send(bytes);
   } catch (error) {
     if (error instanceof NotFoundError) throw error;
