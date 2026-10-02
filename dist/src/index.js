@@ -317,7 +317,7 @@ app.get("/test/ai", (request, reply) => __awaiter(void 0, void 0, void 0, functi
 // Public build marker — lets anyone (including the assistant) CONFIRM which
 // build is actually serving, instead of trusting deploy timers. Bump the
 // tag with each meaningful deploy.
-const BUILD_TAG = "2026-10-02-pades-signing";
+const BUILD_TAG = "2026-10-02-pades-stable-key";
 /**
  * Can this container actually rasterise a PDF page?
  *
@@ -373,12 +373,21 @@ const probeReminders = () => (remindersProbe !== null && remindersProbe !== void
 }))()));
 app.get("/health/build", () => __awaiter(void 0, void 0, void 0, function* () {
     const { lastSweep } = yield Promise.resolve().then(() => __importStar(require("./service/signatureReminders")));
+    /*
+      The signing identity is reported here because the failure this feature is
+      most exposed to is silent: on an ephemeral filesystem a generated key is
+      lost on restart, so each deploy signs as a different stranger. If
+      `source` is not "env" or the fingerprint moves between deploys, that is
+      exactly what is happening.
+    */
+    const { signingIdentity } = yield Promise.resolve().then(() => __importStar(require("./service/padesSign")));
     return {
         status: "ok",
         build: BUILD_TAG,
         pdfRaster: yield probeRaster(),
         reminders: yield probeReminders(),
         lastSweep,
+        pdfSigning: yield signingIdentity(),
     };
 }));
 // Nudge signatories who have not got round to it. Paced by columns on

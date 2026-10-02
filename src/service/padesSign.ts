@@ -34,7 +34,20 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 
-/** Where the signing identity lives. Never inside the repo. */
+/**
+ * Where the signing identity lives.
+ *
+ * PDF_SIGN_P12_BASE64 comes first and is what production must use, because
+ * Railway's container filesystem is EPHEMERAL. A key generated on first use
+ * and written to disk does not survive a restart, so every deploy would mint
+ * a new signing identity: documents signed last month would name a different
+ * signer from this month's, and there would be nothing stable for anyone to
+ * ever decide to trust. An environment variable survives restarts; a file in
+ * the container does not.
+ *
+ * The file path and on-demand generation remain, for local development.
+ */
+const P12_BASE64 = process.env.PDF_SIGN_P12_BASE64 || "";
 const P12_PATH =
   process.env.PDF_SIGN_P12_PATH ||
   path.join(process.cwd(), ".secrets", "doc-signing.p12");
@@ -65,6 +78,8 @@ export interface SignOutcome {
  * owner-only permissions, and that directory is gitignored.
  */
 const ensureP12 = async (): Promise<Buffer> => {
+  // Supplied identity wins. This is the only branch production should take.
+  if (P12_BASE64) return Buffer.from(P12_BASE64, "base64");
   if (fs.existsSync(P12_PATH)) return fs.readFileSync(P12_PATH);
 
   const forge = await import("node-forge");
@@ -169,6 +184,52 @@ export const padesSign = async (
     const reason = e instanceof Error ? e.message : String(e);
     console.warn("[pades] signing skipped:", reason);
     return { bytes: input, signed: false, reason };
+  }
+};
+
+/**
+ * A short fingerprint of the signing identity, and where it came from.
+ *
+ * Exposed on /health/build so a deploy can be checked for the failure this
+ * module is most exposed to: an identity that silently changes. If the
+ * fingerprint moves between deploys, the key is not being supplied and
+ * every batch of documents is being signed by a different stranger.
+ */
+export const signingIdentity = async (): Promise<{
+  source: "env" | "file" | "generated" | "unavailable";
+  fingerprint: string | null;
+  subject: string | null;
+  notAfter: string | null;
+}> => {
+  try {
+    const source: "env" | "file" | "generated" = P12_BASE64
+      ? "env"
+      : fs.existsSync(P12_PATH)
+        ? "file"
+        : "generated";
+    const p12 = await ensureP12();
+    const forge = await import("node-forge");
+    const f = forge.default;
+    const asn1 = f.asn1.fromDer(p12.toString("binary"));
+    const store = f.pkcs12.pkcs12FromAsn1(asn1, P12_PASSPHRASE);
+    const bag = store.getBags({ bagType: f.pki.oids.certBag })[
+      f.pki.oids.certBag as unknown as string
+    ]?.[0];
+    const cert = bag?.cert;
+    if (!cert) return { source, fingerprint: null, subject: null, notAfter: null };
+    const der = f.asn1.toDer(f.pki.certificateToAsn1(cert)).getBytes();
+    const sha = crypto
+      .createHash("sha256")
+      .update(Buffer.from(der, "binary"))
+      .digest("hex");
+    return {
+      source,
+      fingerprint: sha.slice(0, 16),
+      subject: cert.subject.getField("CN")?.value ?? null,
+      notAfter: cert.validity.notAfter.toISOString(),
+    };
+  } catch {
+    return { source: "unavailable", fingerprint: null, subject: null, notAfter: null };
   }
 };
 

@@ -45,7 +45,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.hasPdfSignature = exports.padesSign = void 0;
+exports.hasPdfSignature = exports.signingIdentity = exports.padesSign = void 0;
 /**
  * PAdES signing — the signature a PDF reader can actually see.
  *
@@ -81,7 +81,20 @@ exports.hasPdfSignature = exports.padesSign = void 0;
 const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
 const crypto_1 = __importDefault(require("crypto"));
-/** Where the signing identity lives. Never inside the repo. */
+/**
+ * Where the signing identity lives.
+ *
+ * PDF_SIGN_P12_BASE64 comes first and is what production must use, because
+ * Railway's container filesystem is EPHEMERAL. A key generated on first use
+ * and written to disk does not survive a restart, so every deploy would mint
+ * a new signing identity: documents signed last month would name a different
+ * signer from this month's, and there would be nothing stable for anyone to
+ * ever decide to trust. An environment variable survives restarts; a file in
+ * the container does not.
+ *
+ * The file path and on-demand generation remain, for local development.
+ */
+const P12_BASE64 = process.env.PDF_SIGN_P12_BASE64 || "";
 const P12_PATH = process.env.PDF_SIGN_P12_PATH ||
     path_1.default.join(process.cwd(), ".secrets", "doc-signing.p12");
 const P12_PASSPHRASE = process.env.PDF_SIGN_P12_PASSPHRASE || "";
@@ -102,6 +115,9 @@ const SUBJECT = {
  * owner-only permissions, and that directory is gitignored.
  */
 const ensureP12 = () => __awaiter(void 0, void 0, void 0, function* () {
+    // Supplied identity wins. This is the only branch production should take.
+    if (P12_BASE64)
+        return Buffer.from(P12_BASE64, "base64");
     if (fs_1.default.existsSync(P12_PATH))
         return fs_1.default.readFileSync(P12_PATH);
     const forge = yield Promise.resolve().then(() => __importStar(require("node-forge")));
@@ -192,6 +208,48 @@ const padesSign = (input_1, ...args_1) => __awaiter(void 0, [input_1, ...args_1]
     }
 });
 exports.padesSign = padesSign;
+/**
+ * A short fingerprint of the signing identity, and where it came from.
+ *
+ * Exposed on /health/build so a deploy can be checked for the failure this
+ * module is most exposed to: an identity that silently changes. If the
+ * fingerprint moves between deploys, the key is not being supplied and
+ * every batch of documents is being signed by a different stranger.
+ */
+const signingIdentity = () => __awaiter(void 0, void 0, void 0, function* () {
+    var _a, _b, _c;
+    try {
+        const source = P12_BASE64
+            ? "env"
+            : fs_1.default.existsSync(P12_PATH)
+                ? "file"
+                : "generated";
+        const p12 = yield ensureP12();
+        const forge = yield Promise.resolve().then(() => __importStar(require("node-forge")));
+        const f = forge.default;
+        const asn1 = f.asn1.fromDer(p12.toString("binary"));
+        const store = f.pkcs12.pkcs12FromAsn1(asn1, P12_PASSPHRASE);
+        const bag = (_a = store.getBags({ bagType: f.pki.oids.certBag })[f.pki.oids.certBag]) === null || _a === void 0 ? void 0 : _a[0];
+        const cert = bag === null || bag === void 0 ? void 0 : bag.cert;
+        if (!cert)
+            return { source, fingerprint: null, subject: null, notAfter: null };
+        const der = f.asn1.toDer(f.pki.certificateToAsn1(cert)).getBytes();
+        const sha = crypto_1.default
+            .createHash("sha256")
+            .update(Buffer.from(der, "binary"))
+            .digest("hex");
+        return {
+            source,
+            fingerprint: sha.slice(0, 16),
+            subject: (_c = (_b = cert.subject.getField("CN")) === null || _b === void 0 ? void 0 : _b.value) !== null && _c !== void 0 ? _c : null,
+            notAfter: cert.validity.notAfter.toISOString(),
+        };
+    }
+    catch (_d) {
+        return { source: "unavailable", fingerprint: null, subject: null, notAfter: null };
+    }
+});
+exports.signingIdentity = signingIdentity;
 /** For diagnostics: does this PDF carry a reader-visible signature? */
 const hasPdfSignature = (bytes) => bytes.includes(Buffer.from("/ByteRange")) &&
     bytes.includes(Buffer.from("/Sig"));
