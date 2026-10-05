@@ -115,9 +115,24 @@ const SUBJECT = {
  * owner-only permissions, and that directory is gitignored.
  */
 const ensureP12 = () => __awaiter(void 0, void 0, void 0, function* () {
-    // Supplied identity wins. This is the only branch production should take.
-    if (P12_BASE64)
-        return Buffer.from(P12_BASE64, "base64");
+    /*
+      Supplied identity wins. This is the only branch production should take.
+  
+      Whitespace is stripped first: a 3,400-character single line pasted into
+      a dashboard textarea very often comes back with newlines in it, and
+      Buffer.from silently ignores the invalid characters — producing a
+      SHORTER, corrupt key rather than an error, which then fails somewhere
+      far less obvious.
+    */
+    if (P12_BASE64) {
+        const cleaned = P12_BASE64.replace(/\s+/g, "");
+        const buf = Buffer.from(cleaned, "base64");
+        if (buf.length < 500) {
+            throw new Error(`PDF_SIGN_P12_BASE64 decoded to only ${buf.length} bytes from ` +
+                `${cleaned.length} base64 chars — it looks truncated or mangled.`);
+        }
+        return buf;
+    }
     if (fs_1.default.existsSync(P12_PATH))
         return fs_1.default.readFileSync(P12_PATH);
     const forge = yield Promise.resolve().then(() => __importStar(require("node-forge")));
@@ -251,8 +266,22 @@ const signingIdentity = () => __awaiter(void 0, void 0, void 0, function* () {
             notAfter: cert.validity.notAfter.toISOString(),
         };
     }
-    catch (_d) {
-        return { source: "unavailable", fingerprint: null, subject: null, notAfter: null };
+    catch (e) {
+        /*
+          "unavailable" on its own is a shrug. The whole point of putting this on
+          the health endpoint is to make a silent failure diagnosable without a
+          shell on the box, so it has to carry the reason and enough shape to
+          tell a mangled paste from a wrong passphrase.
+        */
+        return {
+            source: "unavailable",
+            fingerprint: null,
+            subject: null,
+            notAfter: null,
+            error: e instanceof Error ? e.message : String(e),
+            base64Chars: P12_BASE64 ? P12_BASE64.replace(/\s+/g, "").length : 0,
+            hasPassphrase: P12_PASSPHRASE.length > 0,
+        };
     }
 });
 exports.signingIdentity = signingIdentity;
