@@ -317,7 +317,7 @@ app.get("/test/ai", (request, reply) => __awaiter(void 0, void 0, void 0, functi
 // Public build marker — lets anyone (including the assistant) CONFIRM which
 // build is actually serving, instead of trusting deploy timers. Bump the
 // tag with each meaningful deploy.
-const BUILD_TAG = "2026-10-05-p12-diag";
+const BUILD_TAG = "2026-10-05-object-storage";
 /**
  * Can this container actually rasterise a PDF page?
  *
@@ -381,6 +381,13 @@ app.get("/health/build", () => __awaiter(void 0, void 0, void 0, function* () {
       exactly what is happening.
     */
     const { signingIdentity } = yield Promise.resolve().then(() => __importStar(require("./service/padesSign")));
+    /*
+      Object storage, probed by round-trip rather than by configuration.
+      A bucket whose credentials parse but whose writes cannot be read back
+      is worse than no bucket: the file paths would appear to work and then
+      hand somebody an empty document.
+    */
+    const { blobStoreStatus } = yield Promise.resolve().then(() => __importStar(require("./service/blobStore")));
     return {
         status: "ok",
         build: BUILD_TAG,
@@ -388,6 +395,7 @@ app.get("/health/build", () => __awaiter(void 0, void 0, void 0, function* () {
         reminders: yield probeReminders(),
         lastSweep,
         pdfSigning: yield signingIdentity(),
+        objectStorage: yield blobStoreStatus(),
     };
 }));
 // Nudge signatories who have not got round to it. Paced by columns on

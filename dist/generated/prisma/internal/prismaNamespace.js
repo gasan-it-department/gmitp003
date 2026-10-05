@@ -1020,7 +1020,9 @@ exports.UserProfilePictureScalarFieldEnum = {
     bytes: 'bytes',
     mime: 'mime',
     timestamp: 'timestamp',
-    userId: 'userId'
+    userId: 'userId',
+    storageKey: 'storageKey',
+    storageSha256: 'storageSha256'
 };
 exports.SalaryTransactionRecordScalarFieldEnum = {
     id: 'id',
@@ -1227,7 +1229,9 @@ exports.ComplaintEvidenceScalarFieldEnum = {
     data: 'data',
     uploadedById: 'uploadedById',
     caption: 'caption',
-    createdAt: 'createdAt'
+    createdAt: 'createdAt',
+    storageKey: 'storageKey',
+    storageSha256: 'storageSha256'
 };
 exports.ComplaintReplyScalarFieldEnum = {
     id: 'id',
@@ -1492,7 +1496,9 @@ exports.DocumentReceivePageScalarFieldEnum = {
     page: 'page',
     mime: 'mime',
     bytes: 'bytes',
-    createdAt: 'createdAt'
+    createdAt: 'createdAt',
+    storageKey: 'storageKey',
+    storageSha256: 'storageSha256'
 };
 exports.DocumentAbstractScalarFieldEnum = {
     id: 'id',
@@ -1516,7 +1522,9 @@ exports.DecodedFileScalarFieldEnum = {
     fileType: 'fileType',
     fileDecoded: 'fileDecoded',
     timestamp: 'timestamp',
-    documentId: 'documentId'
+    documentId: 'documentId',
+    storageKey: 'storageKey',
+    storageSha256: 'storageSha256'
 };
 exports.UserKeyPairScalarFieldEnum = {
     id: 'id',
@@ -1550,7 +1558,9 @@ exports.ReceiveStampScalarFieldEnum = {
     dateY: 'dateY',
     dateSizePt: 'dateSizePt',
     timestamp: 'timestamp',
-    updatedAt: 'updatedAt'
+    updatedAt: 'updatedAt',
+    storageKey: 'storageKey',
+    storageSha256: 'storageSha256'
 };
 exports.ReceiveStampNameScalarFieldEnum = {
     id: 'id',
@@ -1587,7 +1597,9 @@ exports.SignatureScalarFieldEnum = {
     inkX0: 'inkX0',
     inkY0: 'inkY0',
     inkX1: 'inkX1',
-    inkY1: 'inkY1'
+    inkY1: 'inkY1',
+    storageKey: 'storageKey',
+    storageSha256: 'storageSha256'
 };
 exports.SignatoryArrangementScalarFieldEnum = {
     id: 'id',
@@ -2102,7 +2114,9 @@ exports.ChatImageScalarFieldEnum = {
     id: 'id',
     mime: 'mime',
     bytes: 'bytes',
-    createdAt: 'createdAt'
+    createdAt: 'createdAt',
+    storageKey: 'storageKey',
+    storageSha256: 'storageSha256'
 };
 exports.ChatFileScalarFieldEnum = {
     id: 'id',
@@ -2110,7 +2124,9 @@ exports.ChatFileScalarFieldEnum = {
     mime: 'mime',
     size: 'size',
     bytes: 'bytes',
-    createdAt: 'createdAt'
+    createdAt: 'createdAt',
+    storageKey: 'storageKey',
+    storageSha256: 'storageSha256'
 };
 exports.ChatReactionScalarFieldEnum = {
     id: 'id',

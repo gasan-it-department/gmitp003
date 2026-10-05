@@ -283,7 +283,7 @@ app.get("/test/ai", async (request: FastifyRequest, reply: FastifyReply) => {
 // Public build marker — lets anyone (including the assistant) CONFIRM which
 // build is actually serving, instead of trusting deploy timers. Bump the
 // tag with each meaningful deploy.
-const BUILD_TAG = "2026-10-05-p12-diag";
+const BUILD_TAG = "2026-10-05-object-storage";
 
 /**
  * Can this container actually rasterise a PDF page?
@@ -348,6 +348,13 @@ app.get("/health/build", async () => {
     exactly what is happening.
   */
   const { signingIdentity } = await import("./service/padesSign");
+  /*
+    Object storage, probed by round-trip rather than by configuration.
+    A bucket whose credentials parse but whose writes cannot be read back
+    is worse than no bucket: the file paths would appear to work and then
+    hand somebody an empty document.
+  */
+  const { blobStoreStatus } = await import("./service/blobStore");
   return {
     status: "ok",
     build: BUILD_TAG,
@@ -355,6 +362,7 @@ app.get("/health/build", async () => {
     reminders: await probeReminders(),
     lastSweep,
     pdfSigning: await signingIdentity(),
+    objectStorage: await blobStoreStatus(),
   };
 });
 

@@ -1232,6 +1232,15 @@ model UserProfilePicture {
   timestamp      DateTime @default(now())
   userId         String?  @unique
   user           User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Where the bytes live in object storage, once moved there.
+  /// Null means they are still in the column beside this one; reads
+  /// prefer the bucket and fall back, so both states work.
+  storageKey    String?
+  /// SHA-256 of the stored object, recorded at upload. Lets a
+  /// migration be PROVEN rather than assumed, and catches silent
+  /// corruption years later.
+  storageSha256 String?
+
 }
 
 model SalaryTransactionRecord {
@@ -1571,6 +1580,15 @@ model ComplaintEvidence {
   createdAt    DateTime  @default(now())
   complaint    Complaint @relation(fields: [complaintId], references: [id], onDelete: Cascade)
   uploadedBy   User?     @relation(fields: [uploadedById], references: [id])
+  /// Where the bytes live in object storage, once moved there.
+  /// Null means they are still in the column beside this one; reads
+  /// prefer the bucket and fall back, so both states work.
+  storageKey    String?
+  /// SHA-256 of the stored object, recorded at upload. Lets a
+  /// migration be PROVEN rather than assumed, and catches silent
+  /// corruption years later.
+  storageSha256 String?
+
 }
 
 model ComplaintReply {
@@ -1994,6 +2012,15 @@ model DocumentReceivePage {
   createdAt DateTime @default(now())
 
   @@index([recordId, page])
+  /// Where the bytes live in object storage, once moved there.
+  /// Null means they are still in the column beside this one; reads
+  /// prefer the bucket and fall back, so both states work.
+  storageKey    String?
+  /// SHA-256 of the stored object, recorded at upload. Lets a
+  /// migration be PROVEN rather than assumed, and catches silent
+  /// corruption years later.
+  storageSha256 String?
+
 }
 
 model DocumentAbstract {
@@ -2028,6 +2055,15 @@ model DecodedFile {
   timestamp   DateTime  @default(now())
   documentId  String?   @unique
   document    Document? @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  /// Where the bytes live in object storage, once moved there.
+  /// Null means they are still in the column beside this one; reads
+  /// prefer the bucket and fall back, so both states work.
+  storageKey    String?
+  /// SHA-256 of the stored object, recorded at upload. Lets a
+  /// migration be PROVEN rather than assumed, and catches silent
+  /// corruption years later.
+  storageSha256 String?
+
 }
 
 model UserKeyPair {
@@ -2105,6 +2141,15 @@ model ReceiveStamp {
   line       Line?          @relation(fields: [lineId], references: [id], onDelete: Cascade)
   room       ReceivingRoom? @relation(fields: [roomId], references: [id], onDelete: Cascade)
   names      ReceiveStampName[]
+  /// Where the bytes live in object storage, once moved there.
+  /// Null means they are still in the column beside this one; reads
+  /// prefer the bucket and fall back, so both states work.
+  storageKey    String?
+  /// SHA-256 of the stored object, recorded at upload. Lets a
+  /// migration be PROVEN rather than assumed, and catches silent
+  /// corruption years later.
+  storageSha256 String?
+
 }
 
 /// One member's name on the shared stamp.
@@ -2208,6 +2253,15 @@ model Signature {
   roomAuthorizedUser   RoomAuthorizedUser? @relation(fields: [roomAuthorizedUserId], references: [id])
   user                 User                @relation(fields: [userId], references: [id])
   arrangements         SignatoryArrangement[]
+  /// Where the bytes live in object storage, once moved there.
+  /// Null means they are still in the column beside this one; reads
+  /// prefer the bucket and fall back, so both states work.
+  storageKey    String?
+  /// SHA-256 of the stored object, recorded at upload. Lets a
+  /// migration be PROVEN rather than assumed, and catches silent
+  /// corruption years later.
+  storageSha256 String?
+
 }
 
 model SignatoryArrangement {
@@ -3040,6 +3094,15 @@ model ChatImage {
   mime      String
   bytes     Bytes
   createdAt DateTime @default(now())
+  /// Where the bytes live in object storage, once moved there.
+  /// Null means they are still in the column beside this one; reads
+  /// prefer the bucket and fall back, so both states work.
+  storageKey    String?
+  /// SHA-256 of the stored object, recorded at upload. Lets a
+  /// migration be PROVEN rather than assumed, and catches silent
+  /// corruption years later.
+  storageSha256 String?
+
 }
 
 // Any attached document (PDF, Word, Excel, …). Keeps the original filename +
@@ -3051,6 +3114,15 @@ model ChatFile {
   size      Int
   bytes     Bytes
   createdAt DateTime @default(now())
+  /// Where the bytes live in object storage, once moved there.
+  /// Null means they are still in the column beside this one; reads
+  /// prefer the bucket and fall back, so both states work.
+  storageKey    String?
+  /// SHA-256 of the stored object, recorded at upload. Lets a
+  /// migration be PROVEN rather than assumed, and catches silent
+  /// corruption years later.
+  storageSha256 String?
+
 }
 
 // One reaction per user per message (picking a new emoji replaces it; picking
