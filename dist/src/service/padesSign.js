@@ -175,6 +175,7 @@ const ensureP12 = () => __awaiter(void 0, void 0, void 0, function* () {
  * file. The reason is logged and returned.
  */
 const padesSign = (input_1, ...args_1) => __awaiter(void 0, [input_1, ...args_1], void 0, function* (input, opts = {}) {
+    var _a;
     if (process.env.PDF_SIGN_DISABLED === "1") {
         return { bytes: input, signed: false, reason: "disabled by env" };
     }
@@ -196,6 +197,11 @@ const padesSign = (input_1, ...args_1) => __awaiter(void 0, [input_1, ...args_1]
             contactInfo: opts.contactInfo || "",
             name: SUBJECT.organizationName,
             signatureLength: 8192,
+            // A modest strip at the foot of page 1. Deliberately NOT placed over
+            // an individual's drawn signature: this is the organisation attesting
+            // to the whole file, not a second copy of one person's mark.
+            widgetRect: (_a = opts.widgetRect) !== null && _a !== void 0 ? _a : [28, 22, 250, 48],
+            appName: "Gasan Document Management System",
         });
         const signer = new P12Signer(p12, { passphrase: P12_PASSPHRASE });
         const signed = yield signpdf.sign(withPlaceholder, signer);

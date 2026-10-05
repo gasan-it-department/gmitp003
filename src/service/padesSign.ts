@@ -150,7 +150,22 @@ const ensureP12 = async (): Promise<Buffer> => {
  */
 export const padesSign = async (
   input: Buffer,
-  opts: { reason?: string; location?: string; contactInfo?: string } = {},
+  opts: {
+    reason?: string;
+    location?: string;
+    contactInfo?: string;
+    /**
+     * Where the clickable signature sits on page 1, in PDF points with the
+     * origin bottom-left: [x1, y1, x2, y2].
+     *
+     * Without this the library writes /Rect [0 0 0 0] and no appearance
+     * stream, which is a perfectly valid INVISIBLE signature — it validates,
+     * it appears in the Signature Panel, and there is nothing on the page to
+     * click. That is indistinguishable, to anyone opening the file, from the
+     * signature having failed.
+     */
+    widgetRect?: [number, number, number, number];
+  } = {},
 ): Promise<SignOutcome> => {
   if (process.env.PDF_SIGN_DISABLED === "1") {
     return { bytes: input, signed: false, reason: "disabled by env" };
@@ -175,6 +190,11 @@ export const padesSign = async (
       contactInfo: opts.contactInfo || "",
       name: SUBJECT.organizationName,
       signatureLength: 8192,
+      // A modest strip at the foot of page 1. Deliberately NOT placed over
+      // an individual's drawn signature: this is the organisation attesting
+      // to the whole file, not a second copy of one person's mark.
+      widgetRect: opts.widgetRect ?? [28, 22, 250, 48],
+      appName: "Gasan Document Management System",
     });
 
     const signer = new P12Signer(p12, { passphrase: P12_PASSPHRASE });
