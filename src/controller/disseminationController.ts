@@ -19,6 +19,10 @@ import { AppError, NotFoundError, ValidationError, UnauthorizedError } from "../
 import { createUserNotification } from "../service/notificationEvents";
 import { attestQueue, newSerial, seal } from "../service/documentSeal";
 import { padesSign } from "../service/padesSign";
+import {
+  drawSerialMicrotext,
+  drawSignatureCaption,
+} from "../service/signatureBlock";
 import { tempURL } from "../service/url";
 import { callerUserId } from "../middleware/handler";
 import { ROOM_MEMBER_TYPES } from "./roomConfigController";
@@ -2804,7 +2808,43 @@ export const downloadSignedDocument = async (
       }
     }
 
+    /*
+      The serial is minted here rather than just before save(), because the
+      signature captions and the microtext both carry it. It still ends up
+      inside the bytes that get hashed, which is the only thing that
+      mattered about its old position.
+    */
+    const serial = newSerial();
+
     const signerIds = Array.from(new Set(stamps.map((s) => s.userId)));
+
+    /*
+      Who each signature belongs to, for the caption under it. A signature
+      drawn as bare ink can be lifted out of a PDF-to-Word conversion and
+      pasted onto anything; one that sits under its owner's name, position,
+      the moment they signed and this document's serial cannot be reused
+      without the theft being obvious.
+    */
+    const signerRows = signerIds.length
+      ? await prisma.user.findMany({
+          where: { id: { in: signerIds } },
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            Position: { select: { name: true } },
+          },
+        })
+      : [];
+    const signerById = new Map(
+      signerRows.map((u) => [
+        u.id,
+        {
+          name: `${u.firstName ?? ""} ${u.lastName ?? ""}`.trim() || "—",
+          position: u.Position?.name ?? null,
+        },
+      ]),
+    );
     // Single fetch — we pull `qrEnabled` and bytes from the SAME row so
     // the "stamp QR for this signer?" decision can never disagree with
     // the signature that actually got embedded.
@@ -3015,6 +3055,9 @@ export const downloadSignedDocument = async (
           width: rect.width,
           height: rect.height,
         });
+        // The serial, faintly, across the ink: a lifted signature carries
+        // the serial of the document it was lifted FROM.
+        drawSerialMicrotext(page, font, rect, serial);
       } else {
         page.drawRectangle({
           x: boxX,
@@ -3033,10 +3076,31 @@ export const downloadSignedDocument = async (
         });
       }
 
-      // No signed-at caption under the box. The date belongs in the audit
-      // trail and on the verification page, not printed across a document
-      // that already has its own dateline — and it landed right where the
-      // signature's tail hangs, which is exactly where it is least welcome.
+      /*
+        The caption that binds this signature to this document.
+
+        An earlier version of this printed a bare signed-at date and was
+        removed because it landed where the signature's tail hangs. The
+        objection was right and is answered rather than ignored: the block
+        sits below a hairline rule with its own spacing, flips above the box
+        when there is no room beneath, and carries the things that make the
+        ink non-reusable — who signed, in what role, when, and on which
+        document.
+      */
+      const who = signerById.get(s.userId);
+      if (who) {
+        drawSignatureCaption(
+          page,
+          font,
+          { x: boxX, y: boxY, width: boxW, height: boxH },
+          {
+            name: who.name,
+            position: who.position,
+            signedAt: s.signedAt ?? null,
+            serial,
+          },
+        );
+      }
 
       // Verification QR — opt-in per signature. Encodes a URL pointing
       // at the readable HTML verify page on this API. Scanning opens the
@@ -3125,7 +3189,6 @@ export const downloadSignedDocument = async (
     // ── Verification footer ────────────────────────────────────────────
     // Stamped BEFORE save() so the serial is inside the bytes we hash —
     // adding it afterwards would change the file and invalidate its own seal.
-    const serial = newSerial();
     try {
       const base = (tempURL() || "").replace(/\/+$/, "");
       const footer = `Verify at ${base}/verify-document  ·  ${serial}`;

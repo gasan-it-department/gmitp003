@@ -69,6 +69,7 @@ const errors_1 = require("../errors/errors");
 const notificationEvents_1 = require("../service/notificationEvents");
 const documentSeal_1 = require("../service/documentSeal");
 const padesSign_1 = require("../service/padesSign");
+const signatureBlock_1 = require("../service/signatureBlock");
 const url_1 = require("../service/url");
 const handler_1 = require("../middleware/handler");
 const roomConfigController_1 = require("./roomConfigController");
@@ -2483,7 +2484,7 @@ exports.archiveDissemination = archiveDissemination;
 // signer themselves can fetch their own raw signature via the existing
 // /document/user/signatures route (which is ACL'd to userId === self).
 const downloadSignedDocument = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k;
     const params = req.query;
     if (!params.documentId)
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
@@ -2541,7 +2542,42 @@ const downloadSignedDocument = (req, res) => __awaiter(void 0, void 0, void 0, f
                 });
             }
         }
+        /*
+          The serial is minted here rather than just before save(), because the
+          signature captions and the microtext both carry it. It still ends up
+          inside the bytes that get hashed, which is the only thing that
+          mattered about its old position.
+        */
+        const serial = (0, documentSeal_1.newSerial)();
         const signerIds = Array.from(new Set(stamps.map((s) => s.userId)));
+        /*
+          Who each signature belongs to, for the caption under it. A signature
+          drawn as bare ink can be lifted out of a PDF-to-Word conversion and
+          pasted onto anything; one that sits under its owner's name, position,
+          the moment they signed and this document's serial cannot be reused
+          without the theft being obvious.
+        */
+        const signerRows = signerIds.length
+            ? yield prisma_1.prisma.user.findMany({
+                where: { id: { in: signerIds } },
+                select: {
+                    id: true,
+                    firstName: true,
+                    lastName: true,
+                    Position: { select: { name: true } },
+                },
+            })
+            : [];
+        const signerById = new Map(signerRows.map((u) => {
+            var _a, _b, _c, _d;
+            return [
+                u.id,
+                {
+                    name: `${(_a = u.firstName) !== null && _a !== void 0 ? _a : ""} ${(_b = u.lastName) !== null && _b !== void 0 ? _b : ""}`.trim() || "—",
+                    position: (_d = (_c = u.Position) === null || _c === void 0 ? void 0 : _c.name) !== null && _d !== void 0 ? _d : null,
+                },
+            ];
+        }));
         // Single fetch — we pull `qrEnabled` and bytes from the SAME row so
         // the "stamp QR for this signer?" decision can never disagree with
         // the signature that actually got embedded.
@@ -2725,6 +2761,9 @@ const downloadSignedDocument = (req, res) => __awaiter(void 0, void 0, void 0, f
                     width: rect.width,
                     height: rect.height,
                 });
+                // The serial, faintly, across the ink: a lifted signature carries
+                // the serial of the document it was lifted FROM.
+                (0, signatureBlock_1.drawSerialMicrotext)(page, font, rect, serial);
             }
             else {
                 page.drawRectangle({
@@ -2743,10 +2782,26 @@ const downloadSignedDocument = (req, res) => __awaiter(void 0, void 0, void 0, f
                     color: rgb(0.06, 0.73, 0.51),
                 });
             }
-            // No signed-at caption under the box. The date belongs in the audit
-            // trail and on the verification page, not printed across a document
-            // that already has its own dateline — and it landed right where the
-            // signature's tail hangs, which is exactly where it is least welcome.
+            /*
+              The caption that binds this signature to this document.
+      
+              An earlier version of this printed a bare signed-at date and was
+              removed because it landed where the signature's tail hangs. The
+              objection was right and is answered rather than ignored: the block
+              sits below a hairline rule with its own spacing, flips above the box
+              when there is no room beneath, and carries the things that make the
+              ink non-reusable — who signed, in what role, when, and on which
+              document.
+            */
+            const who = signerById.get(s.userId);
+            if (who) {
+                (0, signatureBlock_1.drawSignatureCaption)(page, font, { x: boxX, y: boxY, width: boxW, height: boxH }, {
+                    name: who.name,
+                    position: who.position,
+                    signedAt: (_g = s.signedAt) !== null && _g !== void 0 ? _g : null,
+                    serial,
+                });
+            }
             // Verification QR — opt-in per signature. Encodes a URL pointing
             // at the readable HTML verify page on this API. Scanning opens the
             // page directly in the user's browser; no app needed.
@@ -2829,7 +2884,6 @@ const downloadSignedDocument = (req, res) => __awaiter(void 0, void 0, void 0, f
         // ── Verification footer ────────────────────────────────────────────
         // Stamped BEFORE save() so the serial is inside the bytes we hash —
         // adding it afterwards would change the file and invalidate its own seal.
-        const serial = (0, documentSeal_1.newSerial)();
         try {
             const base = ((0, url_1.tempURL)() || "").replace(/\/+$/, "");
             const footer = `Verify at ${base}/verify-document  ·  ${serial}`;
@@ -2883,14 +2937,14 @@ const downloadSignedDocument = (req, res) => __awaiter(void 0, void 0, void 0, f
         // Seal the EXACT bytes being sent. Hashing anything else would make every
         // later verification report a false TAMPERED.
         try {
-            const accountId = (_g = req.user) === null || _g === void 0 ? void 0 : _g.id;
+            const accountId = (_h = req.user) === null || _h === void 0 ? void 0 : _h.id;
             const acct = accountId
                 ? yield prisma_1.prisma.account.findUnique({
                     where: { id: accountId },
                     select: { User: { select: { id: true } } },
                 })
                 : null;
-            yield (0, documentSeal_1.seal)(doc.id, bytes, serial, (_j = (_h = acct === null || acct === void 0 ? void 0 : acct.User) === null || _h === void 0 ? void 0 : _h.id) !== null && _j !== void 0 ? _j : null);
+            yield (0, documentSeal_1.seal)(doc.id, bytes, serial, (_k = (_j = acct === null || acct === void 0 ? void 0 : acct.User) === null || _j === void 0 ? void 0 : _j.id) !== null && _k !== void 0 ? _k : null);
         }
         catch (e) {
             // Never block a download over sealing — the user still needs the file.
