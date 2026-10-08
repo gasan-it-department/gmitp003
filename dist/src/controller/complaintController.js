@@ -25,6 +25,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.removeComplaint = exports.updateComplaintStatus = exports.replyComplaint = exports.complaintDetail = exports.listComplaints = exports.removeEvidence = exports.streamEvidence = exports.addEvidence = exports.createComplaint = void 0;
 const prisma_1 = require("../barrel/prisma");
 const errors_1 = require("../errors/errors");
+const blobStore_1 = require("../service/blobStore");
 const CATEGORIES = new Set([
     "general",
     "hr",
@@ -114,6 +115,9 @@ const createComplaint = (req, res) => __awaiter(void 0, void 0, void 0, function
         throw new errors_1.ValidationError("You can't file a complaint against yourself.");
     }
     try {
+        // Uploaded before the transaction opens, so a slow bucket cannot hold
+        // a write open and a rollback cannot strand a half-written row.
+        const storedEvidence = yield Promise.all(files.map((f) => (0, blobStore_1.storeBlob)("evidence", f.buffer, "bin", f.fileType)));
         const created = yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
             const c = yield tx.complaint.create({
                 data: {
@@ -129,12 +133,15 @@ const createComplaint = (req, res) => __awaiter(void 0, void 0, void 0, function
             });
             if (files.length > 0) {
                 yield tx.complaintEvidence.createMany({
-                    data: files.map((f) => ({
+                    data: files.map((f, i) => ({
+                        id: storedEvidence[i].id,
                         complaintId: c.id,
                         fileName: f.fileName,
                         fileType: f.fileType,
                         fileSize: f.buffer.length,
-                        data: f.buffer,
+                        data: storedEvidence[i].column,
+                        storageKey: storedEvidence[i].storageKey,
+                        storageSha256: storedEvidence[i].storageSha256,
                         uploadedById: userId,
                     })),
                 });
@@ -213,13 +220,19 @@ const addEvidence = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
         throw new errors_1.ValidationError("INVALID REQUIRED FIELDS");
     }
     try {
+        // Uploaded in parallel, before the write, for the same reason as
+        // everywhere else: no network call holding a write open.
+        const storedEvidence = yield Promise.all(files.map((f) => (0, blobStore_1.storeBlob)("evidence", f.buffer, "bin", f.fileType)));
         yield prisma_1.prisma.complaintEvidence.createMany({
-            data: files.map((f) => ({
+            data: files.map((f, i) => ({
+                id: storedEvidence[i].id,
                 complaintId,
                 fileName: f.fileName,
                 fileType: f.fileType,
                 fileSize: f.buffer.length,
-                data: f.buffer,
+                data: storedEvidence[i].column,
+                storageKey: storedEvidence[i].storageKey,
+                storageSha256: storedEvidence[i].storageSha256,
                 uploadedById: userId,
             })),
         });
@@ -244,7 +257,9 @@ const streamEvidence = (req, res) => __awaiter(void 0, void 0, void 0, function*
         });
         if (!row)
             throw new errors_1.NotFoundError("Evidence not found");
-        const buf = Buffer.from(row.data);
+        const buf = yield (0, blobStore_1.readBlob)(row.storageKey, row.data);
+        if (!buf)
+            throw new errors_1.NotFoundError("Evidence not found");
         res.header("Content-Type", row.fileType || "application/octet-stream");
         res.header("Content-Disposition", `inline; filename="${row.fileName}"`);
         res.header("Content-Length", buf.length.toString());

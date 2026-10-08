@@ -19,6 +19,7 @@ const qrcode_1 = __importDefault(require("qrcode"));
 const crypto_1 = require("crypto");
 const url_1 = require("../service/url");
 const encryption_1 = require("../service/encryption");
+const blobStore_1 = require("../service/blobStore");
 // pdfkit ships no types and @types/pdfkit isn't installed; require keeps it
 // loosely typed and works under both tsc and ts-node (no ambient .d.ts needed).
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -249,7 +250,7 @@ exports.idIssueList = idIssueList;
 // one with every FRONT, one with every REAR. Rear columns/rows are mirrored so
 // fronts and rears land back-to-back when duplex printed.
 const idExportBatch = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _0, _1, _2, _3, _4, _5, _6;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _0, _1, _2, _3, _4, _5;
     const body = req.body;
     if (!body.lineId ||
         !((_a = body.template) === null || _a === void 0 ? void 0 : _a.front) ||
@@ -293,7 +294,9 @@ const idExportBatch = (req, res) => __awaiter(void 0, void 0, void 0, function* 
             suffix: true,
             status: true,
             verifyCode: true,
-            userProfilePictures: { select: { file_url: true, bytes: true } },
+            userProfilePictures: {
+                select: { file_url: true, bytes: true, storageKey: true },
+            },
             PositionSlot: {
                 select: {
                     pos: {
@@ -373,17 +376,21 @@ const idExportBatch = (req, res) => __awaiter(void 0, void 0, void 0, function* 
             });
         }
         if (usesPhoto) {
-            // prefer the bytea stored in Postgres; fall back to a URL (legacy)
-            if ((_5 = u.userProfilePictures) === null || _5 === void 0 ? void 0 : _5.bytes) {
-                emp.photo = Buffer.from(u.userProfilePictures.bytes);
+            // prefer the stored bytes, bucket before column; fall back to a
+            // URL (legacy)
+            const storedPhoto = u.userProfilePictures
+                ? yield (0, blobStore_1.readBlob)(u.userProfilePictures.storageKey, u.userProfilePictures.bytes)
+                : null;
+            if (storedPhoto) {
+                emp.photo = storedPhoto;
             }
-            else if ((_6 = u.userProfilePictures) === null || _6 === void 0 ? void 0 : _6.file_url) {
+            else if ((_5 = u.userProfilePictures) === null || _5 === void 0 ? void 0 : _5.file_url) {
                 try {
                     const r = yield fetch(u.userProfilePictures.file_url);
                     if (r.ok)
                         emp.photo = Buffer.from(yield r.arrayBuffer());
                 }
-                catch (_7) {
+                catch (_6) {
                     /* skip missing/unreachable photo */
                 }
             }

@@ -34,6 +34,7 @@ const errors_1 = require("../errors/errors");
 const handler_1 = require("../middleware/handler");
 const disseminationController_1 = require("./disseminationController");
 const pdfRaster_1 = require("../service/pdfRaster");
+const documentBytes_1 = require("../service/documentBytes");
 const fullName = (u) => { var _a, _b; return (u ? `${(_a = u.firstName) !== null && _a !== void 0 ? _a : ""} ${(_b = u.lastName) !== null && _b !== void 0 ? _b : ""}`.trim() || null : null); };
 /**
  * Everything needed to render "here is the document, here is where you
@@ -123,10 +124,13 @@ const routingSignSheet = (req, res) => __awaiter(void 0, void 0, void 0, functio
             try {
                 const file = yield prisma_1.prisma.decodedFile.findFirst({
                     where: { documentId: doc.id },
-                    select: { fileDecoded: true },
+                    select: { storageKey: true },
                 });
-                if (file === null || file === void 0 ? void 0 : file.fileDecoded) {
-                    sizes = yield (0, pdfRaster_1.pdfPageSizes)(Buffer.from(file.fileDecoded));
+                const sizeBytes = file
+                    ? yield (0, documentBytes_1.documentBytes)(doc.id, file.storageKey)
+                    : null;
+                if (sizeBytes) {
+                    sizes = yield (0, pdfRaster_1.pdfPageSizes)(sizeBytes);
                 }
             }
             catch (e) {
@@ -223,9 +227,12 @@ const routingPageImage = (req, res) => __awaiter(void 0, void 0, void 0, functio
     try {
         const file = yield prisma_1.prisma.decodedFile.findFirst({
             where: { documentId: params.documentId },
-            select: { fileDecoded: true, fileSize: true },
+            select: { fileSize: true, storageKey: true },
         });
-        if (!(file === null || file === void 0 ? void 0 : file.fileDecoded))
+        if (!file)
+            throw new errors_1.NotFoundError("FILE NOT FOUND");
+        const pageBytes = yield (0, documentBytes_1.documentBytes)(params.documentId, file.storageKey);
+        if (!pageBytes)
             throw new errors_1.NotFoundError("FILE NOT FOUND");
         // The source PDF cannot change once a routing is dispatched, so the
         // rendered page is safe to cache on the device. Keyed on the file's
@@ -234,7 +241,7 @@ const routingPageImage = (req, res) => __awaiter(void 0, void 0, void 0, functio
         if (req.headers["if-none-match"] === etag) {
             return res.code(304).send();
         }
-        const { png, widthPx, heightPx } = yield (0, pdfRaster_1.renderPdfPage)(Buffer.from(file.fileDecoded), page, width);
+        const { png, widthPx, heightPx } = yield (0, pdfRaster_1.renderPdfPage)(pageBytes, page, width);
         res.header("Content-Type", "image/png");
         res.header("Content-Length", png.length.toString());
         res.header("Cache-Control", "private, max-age=86400");

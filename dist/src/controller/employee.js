@@ -43,6 +43,7 @@ const url_1 = require("../service/url");
 const idCardController_1 = require("./idCardController");
 const callerScope_1 = require("../service/callerScope");
 const errors_2 = require("../errors/errors");
+const blobStore_1 = require("../service/blobStore");
 const getAllEmpoyees = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const { page, office, sgFrom, sgTo, year, dateApp, dateLast, lastCursorId, query, } = req.body;
@@ -1318,6 +1319,12 @@ const updateProfilePicture = (req, res) => __awaiter(void 0, void 0, void 0, fun
         throw new errors_1.NotFoundError("USER NOT FOUND");
     // cache-busting URL so the avatar refreshes after each re-upload
     const fileUrl = `${selfBase(req)}/user/photo/${userId}?v=${Date.now()}`;
+    /*
+      Keyed by the user, not by a fresh id, because this row is upserted:
+      one object per person, overwritten on re-upload, instead of a new
+      orphan every time somebody changes their picture.
+    */
+    const stored = yield (0, blobStore_1.storeBlob)("profile", file.buffer, (file.mimetype || "").includes("png") ? "png" : "jpg", file.mimetype, userId);
     const data = {
         file_name: file.filename || "avatar",
         file_url: fileUrl,
@@ -1325,7 +1332,9 @@ const updateProfilePicture = (req, res) => __awaiter(void 0, void 0, void 0, fun
         file_size: String(file.buffer.length),
         file_type: "image",
         mime: file.mimetype,
-        bytes: file.buffer,
+        bytes: stored.column,
+        storageKey: stored.storageKey,
+        storageSha256: stored.storageSha256,
     };
     const saved = yield prisma_1.prisma.userProfilePicture.upsert({
         where: { userId },
@@ -1343,13 +1352,14 @@ const servePhoto = (req, res) => __awaiter(void 0, void 0, void 0, function* () 
         throw new errors_1.ValidationError("BAD_REQUEST");
     const pic = yield prisma_1.prisma.userProfilePicture.findUnique({
         where: { userId },
-        select: { bytes: true, mime: true },
+        select: { bytes: true, mime: true, storageKey: true },
     });
-    if (!(pic === null || pic === void 0 ? void 0 : pic.bytes))
+    const photo = pic ? yield (0, blobStore_1.readBlob)(pic.storageKey, pic.bytes) : null;
+    if (!photo)
         return res.code(404).send({ message: "No photo" });
     return res
-        .header("Content-Type", pic.mime || "image/jpeg")
+        .header("Content-Type", (pic === null || pic === void 0 ? void 0 : pic.mime) || "image/jpeg")
         .header("Cache-Control", "public, max-age=300")
-        .send(Buffer.from(pic.bytes));
+        .send(photo);
 });
 exports.servePhoto = servePhoto;

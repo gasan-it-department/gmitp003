@@ -53,6 +53,7 @@ exports.documentReceiveDisseminate = exports.documentReceivePageServe = exports.
 const prisma_1 = require("../barrel/prisma");
 const errors_1 = require("../errors/errors");
 const callerScope_1 = require("../service/callerScope");
+const blobStore_1 = require("../service/blobStore");
 /**
  * Document Receiving — barcode-stickered physical documents logged by the
  * office/unit receiving personnel.
@@ -498,9 +499,22 @@ const documentReceivePageUpload = (req, res) => __awaiter(void 0, void 0, void 0
         throw new errors_1.ValidationError("FILE_MUST_BE_AN_IMAGE");
     if (file.buffer.length > 10 * 1024 * 1024)
         throw new errors_1.ValidationError("IMAGE_TOO_LARGE");
+    /*
+      An explicit id may arrive from the scanner when a page is re-scanned,
+      so the object is keyed to whichever id the row ends up with rather
+      than always a fresh one.
+    */
+    const stored = yield (0, blobStore_1.storeBlob)("receive-page", file.buffer, "img", file.mimetype, id || undefined);
     const saved = yield prisma_1.prisma.documentReceivePage.create({
-        data: Object.assign(Object.assign({}, (id ? { id } : {})), { recordId,
-            page, mime: file.mimetype, bytes: file.buffer }),
+        data: {
+            id: stored.id,
+            recordId,
+            page,
+            mime: file.mimetype,
+            bytes: stored.column,
+            storageKey: stored.storageKey,
+            storageSha256: stored.storageSha256,
+        },
         select: { id: true, page: true },
     });
     return res.code(200).send({
@@ -518,13 +532,14 @@ const documentReceivePageServe = (req, res) => __awaiter(void 0, void 0, void 0,
         throw new errors_1.ValidationError("BAD_REQUEST");
     const img = yield prisma_1.prisma.documentReceivePage.findUnique({
         where: { id },
-        select: { bytes: true, mime: true },
+        select: { bytes: true, mime: true, storageKey: true },
     });
-    if (!img)
+    const body = img ? yield (0, blobStore_1.readBlob)(img.storageKey, img.bytes) : null;
+    if (!img || !body)
         return res.code(404).send({ message: "Not found" });
     res.header("Content-Type", img.mime);
     res.header("Cache-Control", "private, max-age=31536000, immutable");
-    return res.send(Buffer.from(img.bytes));
+    return res.send(body);
 });
 exports.documentReceivePageServe = documentReceivePageServe;
 // ─── Send a received document on to other offices ──────────────────────
@@ -565,7 +580,13 @@ const documentReceiveDisseminate = (req, res) => __awaiter(void 0, void 0, void 
     const pages = yield prisma_1.prisma.documentReceivePage.findMany({
         where: { recordId: record.id },
         orderBy: { page: "asc" },
-        select: { id: true, page: true, mime: true, bytes: true },
+        select: {
+            id: true,
+            page: true,
+            mime: true,
+            bytes: true,
+            storageKey: true,
+        },
     });
     if (pages.length === 0) {
         throw new errors_1.ValidationError("This document has not been scanned yet. Scan it with the mobile " +
@@ -577,7 +598,9 @@ const documentReceiveDisseminate = (req, res) => __awaiter(void 0, void 0, void 
     const { PDFDocument } = yield Promise.resolve().then(() => __importStar(require("pdf-lib")));
     const pdf = yield PDFDocument.create();
     for (const p of pages) {
-        const buf = Buffer.from(p.bytes);
+        const buf = yield (0, blobStore_1.readBlob)(p.storageKey, p.bytes);
+        if (!buf)
+            continue;
         let img;
         try {
             img = /png/i.test(p.mime)
@@ -609,6 +632,14 @@ const documentReceiveDisseminate = (req, res) => __awaiter(void 0, void 0, void 
         null;
     const from = (_d = (_c = record.senderUnitName) !== null && _c !== void 0 ? _c : record.senderName) !== null && _d !== void 0 ? _d : "an external sender";
     const title = record.title || record.barcode;
+    /*
+      The bytes go to the bucket BEFORE the transaction opens. Uploading
+      from inside one would hold it open for the length of a network call,
+      and leave an orphaned object behind if it rolled back. If the bucket
+      is unreachable this hands back the bytes to store in the column
+      instead, so filing a document never depends on it.
+    */
+    const stored = yield (0, blobStore_1.storeBlob)("document", pdfBytes, "pdf", "application/pdf");
     const created = yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
         const queue = yield tx.signatureQueueRoom.create({
             data: {
@@ -632,11 +663,14 @@ const documentReceiveDisseminate = (req, res) => __awaiter(void 0, void 0, void 
         });
         yield tx.decodedFile.create({
             data: {
+                id: stored.id,
                 documentId: doc.id,
                 fileName: `${record.barcode}.pdf`,
                 fileSize: String(pdfBytes.length),
                 fileType: "application/pdf",
-                fileDecoded: pdfBytes,
+                fileDecoded: stored.column,
+                storageKey: stored.storageKey,
+                storageSha256: stored.storageSha256,
             },
         });
         // Mark the record so the desk can see it has gone out. Inside the same

@@ -65,6 +65,7 @@ import errorHandlerPlugin from "./plugin/errorHandlers";
 import { EncryptionService } from "./service/encryption";
 import { testGemini } from "./utils/gemini";
 import { startSignatureReminders } from "./service/signatureReminders";
+import crypto from "crypto";
 // ── Last-line crash guards ──────────────────────────────────────────────
 // Without these, ONE leaked promise rejection anywhere kills the whole
 // process (Node's default), severing every in-flight request — mobile
@@ -283,7 +284,7 @@ app.get("/test/ai", async (request: FastifyRequest, reply: FastifyReply) => {
 // Public build marker — lets anyone (including the assistant) CONFIRM which
 // build is actually serving, instead of trusting deploy timers. Bump the
 // tag with each meaningful deploy.
-const BUILD_TAG = "2026-10-05-object-storage";
+const BUILD_TAG = "2026-10-08-blobs-to-bucket";
 
 /**
  * Can this container actually rasterise a PDF page?
@@ -364,6 +365,48 @@ app.get("/health/build", async () => {
     pdfSigning: await signingIdentity(),
     objectStorage: await blobStoreStatus(),
   };
+});
+
+/*
+  Move file bytes out of Postgres and into the bucket.
+
+  This has to run where the database and the bucket credentials both are,
+  which is inside this container — not from a laptop whose .env points at a
+  local development database.
+
+  Gated three ways, because it is an administrative route on a public API:
+  it does not exist unless BLOB_BACKFILL_TOKEN is set, it requires that
+  token in a header, and it reports rather than acts unless asked to run.
+  It never deletes anything, so the worst a mistaken call can do is upload
+  files that are already uploaded.
+*/
+app.post("/admin/blob-backfill", async (req, res) => {
+  const expected = process.env.BLOB_BACKFILL_TOKEN || "";
+  // Unset means the route is not here at all. A 401 would confirm its
+  // existence to anybody scanning.
+  if (!expected) return res.code(404).send({ message: "Not found" });
+
+  const given = String(
+    (req.headers["x-backfill-token"] as string | undefined) ?? "",
+  );
+  const a = Buffer.from(given);
+  const b = Buffer.from(expected);
+  const ok =
+    a.length === b.length && crypto.timingSafeEqual(a, b);
+  if (!ok) return res.code(404).send({ message: "Not found" });
+
+  const q = req.query as { run?: string; limit?: string };
+  const { runBlobBackfill } = await import("./service/blobBackfill");
+  const lines: string[] = [];
+  const report = await runBlobBackfill({
+    dryRun: q.run !== "1",
+    limit: q.limit ? Math.max(1, parseInt(q.limit, 10) || 1) : undefined,
+    log: (l) => {
+      lines.push(l);
+      console.log("[blob-backfill]", l);
+    },
+  });
+  return res.code(200).send({ ...report, log: lines.slice(-200) });
 });
 
 // Nudge signatories who have not got round to it. Paced by columns on

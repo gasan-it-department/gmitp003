@@ -5,6 +5,7 @@ import QRCode from "qrcode";
 import { randomUUID } from "crypto";
 import { tempURL } from "../service/url";
 import { EncryptionService } from "../service/encryption";
+import { readBlob } from "../service/blobStore";
 // pdfkit ships no types and @types/pdfkit isn't installed; require keeps it
 // loosely typed and works under both tsc and ts-node (no ambient .d.ts needed).
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -379,7 +380,9 @@ export const idExportBatch = async (req: FastifyRequest, res: FastifyReply) => {
       suffix: true,
       status: true,
       verifyCode: true,
-      userProfilePictures: { select: { file_url: true, bytes: true } },
+      userProfilePictures: {
+        select: { file_url: true, bytes: true, storageKey: true },
+      },
       PositionSlot: {
         select: {
           pos: {
@@ -473,9 +476,16 @@ export const idExportBatch = async (req: FastifyRequest, res: FastifyReply) => {
       });
     }
     if (usesPhoto) {
-      // prefer the bytea stored in Postgres; fall back to a URL (legacy)
-      if (u.userProfilePictures?.bytes) {
-        emp.photo = Buffer.from(u.userProfilePictures.bytes);
+      // prefer the stored bytes, bucket before column; fall back to a
+      // URL (legacy)
+      const storedPhoto = u.userProfilePictures
+        ? await readBlob(
+            u.userProfilePictures.storageKey,
+            u.userProfilePictures.bytes,
+          )
+        : null;
+      if (storedPhoto) {
+        emp.photo = storedPhoto;
       } else if (u.userProfilePictures?.file_url) {
         try {
           const r = await fetch(u.userProfilePictures.file_url);

@@ -23,8 +23,15 @@
 
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
 import { prisma, Prisma } from "../barrel/prisma";
-import { AppError, NotFoundError, ValidationError, UnauthorizedError } from "../errors/errors";
+import {
+  AppError,
+  NotFoundError,
+  ValidationError,
+  UnauthorizedError,
+} from "../errors/errors";
 import { callerUserId } from "../middleware/handler";
+import { storeBlob } from "../service/blobStore";
+import { signatureBytes } from "../service/signatureBytes";
 
 const ALLOWED_MIMES = new Set([
   "image/png",
@@ -55,7 +62,8 @@ const sniffMime = (buf: Buffer | null): string => {
   if (!buf || buf.length < 4) return "image/png";
   if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47)
     return "image/png";
-  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return "image/jpeg";
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff)
+    return "image/jpeg";
   if (
     buf[0] === 0x52 &&
     buf[1] === 0x49 &&
@@ -107,31 +115,42 @@ export const listUserSignatures = async (
       orderBy: [{ active: "desc" }, { timestamp: "desc" }],
     });
 
-    const list = rows.map((r) => {
-      const buf = r.signature ? Buffer.from(r.signature) : null;
-      const mime = sniffMime(buf);
-      return {
-        id: r.id,
-        title: r.title,
-        active: r.active,
-        default: r.defalt, // schema field name is `defalt` (typo, preserved)
-        forRenew: r.forRenew,
-        timestamp: r.timestamp,
-        roomAuthorizedUserId: r.roomAuthorizedUserId,
-        qrEnabled: r.qrEnabled,
-        // How this one stamps: null height means it still fits to whatever
-        // box was drawn on the page (the old behaviour).
-        inkHeightPt: r.inkHeightPt,
-        baselinePct: r.baselinePct,
-        ink:
-          r.inkX0 === null || r.inkY0 === null || r.inkX1 === null || r.inkY1 === null
-            ? null
-            : { x0: r.inkX0, y0: r.inkY0, x1: r.inkX1, y1: r.inkY1 },
-        // base64 data URL so the UI can <img src={preview}> directly.
-        preview: toDataUrl(buf, mime),
-        size: buf?.length ?? 0,
-      };
-    });
+    /*
+      Async because the preview may have to come from the bucket. The
+      previous synchronous map read the column directly, which would have
+      shown an empty preview for every signature uploaded after the bytes
+      moved out of Postgres.
+    */
+    const list = await Promise.all(
+      rows.map(async (r) => {
+        const buf = await signatureBytes(r);
+        const mime = sniffMime(buf);
+        return {
+          id: r.id,
+          title: r.title,
+          active: r.active,
+          default: r.defalt, // schema field name is `defalt` (typo, preserved)
+          forRenew: r.forRenew,
+          timestamp: r.timestamp,
+          roomAuthorizedUserId: r.roomAuthorizedUserId,
+          qrEnabled: r.qrEnabled,
+          // How this one stamps: null height means it still fits to whatever
+          // box was drawn on the page (the old behaviour).
+          inkHeightPt: r.inkHeightPt,
+          baselinePct: r.baselinePct,
+          ink:
+            r.inkX0 === null ||
+            r.inkY0 === null ||
+            r.inkX1 === null ||
+            r.inkY1 === null
+              ? null
+              : { x0: r.inkX0, y0: r.inkY0, x1: r.inkX1, y1: r.inkY1 },
+          // base64 data URL so the UI can <img src={preview}> directly.
+          preview: toDataUrl(buf, mime),
+          size: buf?.length ?? 0,
+        };
+      }),
+    );
 
     const lastCursor = list.length > 0 ? list[list.length - 1].id : null;
     const hasMore = list.length === limit;
@@ -149,7 +168,8 @@ export const uploadUserSignature = async (
   req: FastifyRequest,
   res: FastifyReply,
 ) => {
-  if (!req.isMultipart()) throw new ValidationError("Missing multipart payload");
+  if (!req.isMultipart())
+    throw new ValidationError("Missing multipart payload");
 
   try {
     let fileBuffer: Buffer | null = null;
@@ -205,6 +225,14 @@ export const uploadUserSignature = async (
       filename?.replace(/\.[^.]+$/, "").slice(0, 40) ||
       "My Signature";
 
+    /*
+      Uploaded before the transaction opens — a network call inside one
+      would hold it open, and orphan the object if it rolled back. A bucket
+      that is down hands the bytes back to go in the column instead, so
+      nobody is locked out of saving a signature by it.
+    */
+    const stored = await storeBlob("signature", fileBuffer, "png", "image/png");
+
     const created = await prisma.$transaction(async (tx) => {
       // If the user asked for this one to be active, clear the others.
       if (setActive) {
@@ -221,9 +249,12 @@ export const uploadUserSignature = async (
       }
       return tx.signature.create({
         data: {
+          id: stored.id,
           userId,
           title: finalTitle,
-          signature: fileBuffer,
+          signature: stored.column,
+          storageKey: stored.storageKey,
+          storageSha256: stored.storageSha256,
           active: shouldBeActive,
           ...inkFields(ink),
         },
@@ -351,8 +382,16 @@ const inkFields = (raw: string) => {
   if (!raw) return {};
   try {
     const o = JSON.parse(raw);
-    const x0 = frac(o.x0), y0 = frac(o.y0), x1 = frac(o.x1), y1 = frac(o.y1);
-    if (x0 === undefined || y0 === undefined || x1 === undefined || y1 === undefined)
+    const x0 = frac(o.x0),
+      y0 = frac(o.y0),
+      x1 = frac(o.x1),
+      y1 = frac(o.y1);
+    if (
+      x0 === undefined ||
+      y0 === undefined ||
+      x1 === undefined ||
+      y1 === undefined
+    )
       return {};
     if (x1 - x0 < 0.01 || y1 - y0 < 0.01) return {};
     return { inkX0: x0, inkY0: y0, inkX1: x1, inkY1: y1 };

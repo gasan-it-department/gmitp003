@@ -2,6 +2,7 @@ import { FastifyReply, FastifyRequest } from "../barrel/fastify";
 import { prisma } from "../barrel/prisma";
 import { ValidationError } from "../errors/errors";
 import { requireSameLine, requireRoomMember } from "../service/callerScope";
+import { readBlob, storeBlob } from "../service/blobStore";
 
 /**
  * Document Receiving — barcode-stickered physical documents logged by the
@@ -483,13 +484,27 @@ export const documentReceivePageUpload = async (
   if (file.buffer.length > 10 * 1024 * 1024)
     throw new ValidationError("IMAGE_TOO_LARGE");
 
+  /*
+    An explicit id may arrive from the scanner when a page is re-scanned,
+    so the object is keyed to whichever id the row ends up with rather
+    than always a fresh one.
+  */
+  const stored = await storeBlob(
+    "receive-page",
+    file.buffer,
+    "img",
+    file.mimetype,
+    id || undefined,
+  );
   const saved = await prisma.documentReceivePage.create({
     data: {
-      ...(id ? { id } : {}),
+      id: stored.id,
       recordId,
       page,
       mime: file.mimetype,
-      bytes: file.buffer,
+      bytes: stored.column,
+      storageKey: stored.storageKey,
+      storageSha256: stored.storageSha256,
     },
     select: { id: true, page: true },
   });
@@ -510,12 +525,13 @@ export const documentReceivePageServe = async (
   if (!id) throw new ValidationError("BAD_REQUEST");
   const img = await prisma.documentReceivePage.findUnique({
     where: { id },
-    select: { bytes: true, mime: true },
+    select: { bytes: true, mime: true, storageKey: true },
   });
-  if (!img) return res.code(404).send({ message: "Not found" });
+  const body = img ? await readBlob(img.storageKey, img.bytes) : null;
+  if (!img || !body) return res.code(404).send({ message: "Not found" });
   res.header("Content-Type", img.mime);
   res.header("Cache-Control", "private, max-age=31536000, immutable");
-  return res.send(Buffer.from(img.bytes));
+  return res.send(body);
 };
 
 // ─── Send a received document on to other offices ──────────────────────
@@ -560,7 +576,13 @@ export const documentReceiveDisseminate = async (
   const pages = await prisma.documentReceivePage.findMany({
     where: { recordId: record.id },
     orderBy: { page: "asc" },
-    select: { id: true, page: true, mime: true, bytes: true },
+    select: {
+      id: true,
+      page: true,
+      mime: true,
+      bytes: true,
+      storageKey: true,
+    },
   });
   if (pages.length === 0) {
     throw new ValidationError(
@@ -575,7 +597,8 @@ export const documentReceiveDisseminate = async (
   const { PDFDocument } = await import("pdf-lib");
   const pdf = await PDFDocument.create();
   for (const p of pages) {
-    const buf = Buffer.from(p.bytes);
+    const buf = await readBlob(p.storageKey, p.bytes);
+    if (!buf) continue;
     let img;
     try {
       img = /png/i.test(p.mime)
@@ -612,6 +635,20 @@ export const documentReceiveDisseminate = async (
     record.senderUnitName ?? record.senderName ?? "an external sender";
   const title = record.title || record.barcode;
 
+  /*
+    The bytes go to the bucket BEFORE the transaction opens. Uploading
+    from inside one would hold it open for the length of a network call,
+    and leave an orphaned object behind if it rolled back. If the bucket
+    is unreachable this hands back the bytes to store in the column
+    instead, so filing a document never depends on it.
+  */
+  const stored = await storeBlob(
+    "document",
+    pdfBytes,
+    "pdf",
+    "application/pdf",
+  );
+
   const created = await prisma.$transaction(async (tx) => {
     const queue = await tx.signatureQueueRoom.create({
       data: {
@@ -635,11 +672,14 @@ export const documentReceiveDisseminate = async (
     });
     await tx.decodedFile.create({
       data: {
+        id: stored.id,
         documentId: doc.id,
         fileName: `${record.barcode}.pdf`,
         fileSize: String(pdfBytes.length),
         fileType: "application/pdf",
-        fileDecoded: pdfBytes,
+        fileDecoded: stored.column,
+        storageKey: stored.storageKey,
+        storageSha256: stored.storageSha256,
       },
     });
     // Mark the record so the desk can see it has gone out. Inside the same

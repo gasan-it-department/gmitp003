@@ -47,6 +47,9 @@ export const DEFAULT_H_MM = 30;
 const MM_PER_PT = 25.4 / 72;
 /** Millimetres to PDF points. */
 export const mmToPt = (mm: number) => mm / MM_PER_PT;
+import { readBlob, storeBlob } from "../service/blobStore";
+import { documentBytes } from "../service/documentBytes";
+import { signatureBytes } from "../service/signatureBytes";
 
 /**
  * What a stamp may measure.
@@ -297,15 +300,17 @@ export const receiveStampImage = async (
   const { roomId } = await resolveStampRoom(req, q.roomId);
   const row = await prisma.receiveStamp.findUnique({
     where: { roomId },
-    select: { image: true, mime: true, updatedAt: true },
+    select: { image: true, mime: true, updatedAt: true, storageKey: true },
   });
-  if (!row?.image) throw new NotFoundError("No stamp artwork uploaded yet");
+  if (!row) throw new NotFoundError("No stamp artwork uploaded yet");
+  const art = await readBlob(row.storageKey, row.image);
+  if (!art) throw new NotFoundError("No stamp artwork uploaded yet");
   return res
     .header("Content-Type", row.mime || "image/png")
     .header("Cache-Control", "private, max-age=0, must-revalidate")
     .header("ETag", `"${row.updatedAt.getTime()}"`)
     .code(200)
-    .send(Buffer.from(row.image));
+    .send(art);
 };
 
 /** POST /document/receive-stamp/image — upload the office's artwork. */
@@ -393,15 +398,24 @@ export const uploadReceiveStampImage = async (
     );
   }
 
+  // Keyed by room: one artwork object per office, replaced on re-upload
+  // rather than leaving the old one behind.
+  const stored = await storeBlob("stamp", buf, "png", mime, roomId);
   const saved = await prisma.receiveStamp.upsert({
     where: { roomId },
     update: {
-      image: buf, mime, imageW, imageH, widthMm, heightMm, lineId,
+      image: stored.column,
+      storageKey: stored.storageKey,
+      storageSha256: stored.storageSha256,
+      mime, imageW, imageH, widthMm, heightMm, lineId,
       updatedById: actorId,
     },
     create: {
       roomId, userId: actorId, updatedById: actorId, lineId,
-      image: buf, mime, imageW, imageH, widthMm, heightMm,
+      image: stored.column,
+      storageKey: stored.storageKey,
+      storageSha256: stored.storageSha256,
+      mime, imageW, imageH, widthMm, heightMm,
     },
     select: SHAPE,
   });
@@ -528,14 +542,17 @@ export const renderReceiveStamp = async (
 ): Promise<Buffer> => {
   const row = await prisma.receiveStamp.findUnique({
     where: { roomId },
-    select: { ...SHAPE, image: true },
+    select: { ...SHAPE, image: true, storageKey: true },
   });
-  if (!row?.image) throw new NotFoundError("No stamp artwork uploaded yet");
+  if (!row) throw new NotFoundError("No stamp artwork uploaded yet");
+  const artwork = await readBlob(row.storageKey, row.image);
+  if (!artwork) throw new NotFoundError("No stamp artwork uploaded yet");
 
   const sig = await prisma.signature.findFirst({
     where: { userId, active: true },
-    select: { signature: true },
+    select: { signature: true, storageKey: true },
   });
+  const sigRaw = sig ? await signatureBytes(sig) : null;
 
   const mine = await prisma.receiveStampName.findUnique({
     where: { stampId_userId: { stampId: row.id, userId } },
@@ -554,7 +571,7 @@ export const renderReceiveStamp = async (
   const font = await pdf.embedFont(StandardFonts.Helvetica);
 
   // The artwork fills the page — it IS the page.
-  const art = await pdf.embedPng(Buffer.from(row.image));
+  const art = await pdf.embedPng(artwork);
   page.drawImage(art, { x: 0, y: 0, width: wPt, height: hPt });
 
   /**
@@ -566,12 +583,12 @@ export const renderReceiveStamp = async (
     yTop: (yBp / BP) * hPt,
   });
 
-  if (sig?.signature?.length) {
+  if (sigRaw?.length) {
     const { x, yTop } = toPt(row.sigX, row.sigY);
     const w = (row.sigW / BP) * wPt;
     const h = (row.sigH / BP) * hPt;
     try {
-      const img = await pdf.embedPng(Buffer.from(sig.signature));
+      const img = await pdf.embedPng(sigRaw);
       // Fit inside the box, keeping the writing's own proportions — a
       // stretched signature is not the person's signature.
       const scale = Math.min(w / img.width, h / img.height);
@@ -694,9 +711,11 @@ export const applyReceiveStamp = async (
 
   const stamp = await prisma.receiveStamp.findUnique({
     where: { roomId },
-    select: { image: true },
+    // The key counts as set up too: the bytes may be in the bucket, which
+    // leaves the column null on a perfectly configured stamp.
+    select: { image: true, storageKey: true },
   });
-  if (!stamp?.image) {
+  if (!stamp?.image && !stamp?.storageKey) {
     throw new ValidationError(
       "Your office has not set up its receiving stamp yet — Document module, Manage Receive Stamp. Anyone in the office can upload it, and it then works for everybody.",
     );
@@ -704,12 +723,15 @@ export const applyReceiveStamp = async (
 
   const file = await prisma.decodedFile.findFirst({
     where: { documentId: b.documentId },
-    select: { fileDecoded: true },
+    select: { storageKey: true },
   });
-  if (!file?.fileDecoded) throw new NotFoundError("Document file not found");
+  const applyBytes = file
+    ? await documentBytes(b.documentId, file.storageKey)
+    : null;
+  if (!applyBytes) throw new NotFoundError("Document file not found");
 
   const { pdfPageSizes } = await import("../service/pdfRaster");
-  const sizes = await pdfPageSizes(Buffer.from(file.fileDecoded));
+  const sizes = await pdfPageSizes(applyBytes);
   const page = Math.max(1, Math.round(Number(b.page ?? 1) || 1));
   if (page > sizes.length) {
     throw new ValidationError(
@@ -798,9 +820,19 @@ export const stampedDocument = async (
 
   const doc = await prisma.document.findUnique({
     where: { id: q.documentId },
-    select: { title: true, file: { select: { fileDecoded: true, fileName: true } } },
+    select: {
+      title: true,
+      file: {
+        select: { fileName: true, storageKey: true },
+      },
+    },
   });
-  if (!doc?.file?.fileDecoded) throw new NotFoundError("Document file not found");
+  if (!doc?.file) throw new NotFoundError("Document file not found");
+  const stampedSource = await documentBytes(
+    q.documentId,
+    doc.file.storageKey,
+  );
+  if (!stampedSource) throw new NotFoundError("Document file not found");
 
   const marks = await prisma.receiveStampMark.findMany({
     where: { documentId: q.documentId },
@@ -812,7 +844,7 @@ export const stampedDocument = async (
   });
 
   const { PDFDocument } = await import("pdf-lib");
-  const pdf = await PDFDocument.load(Buffer.from(doc.file.fileDecoded));
+  const pdf = await PDFDocument.load(stampedSource);
   const pages = pdf.getPages();
 
   for (const m of marks) {

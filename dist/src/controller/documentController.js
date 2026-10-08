@@ -87,6 +87,8 @@ exports.addDocument = addDocument;
 const pdf2json_1 = __importDefault(require("pdf2json"));
 const document_1 = require("../utils/document");
 const helper_1 = require("../utils/helper");
+const blobStore_1 = require("../service/blobStore");
+const documentBytes_1 = require("../service/documentBytes");
 function parsePdfWithPdf2Json(buffer) {
     return __awaiter(this, void 0, void 0, function* () {
         return new Promise((resolve, reject) => {
@@ -1091,6 +1093,14 @@ const archiveFile = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
         const retentionDate = toDate(formData.retentionDate);
         const safeDate = toDate(formData.safeDate);
         const wantsPreservation = !!(retentionDate || safeDate);
+        /*
+          The bytes go to the bucket BEFORE the transaction opens. Uploading
+          from inside one would hold it open for the length of a network call,
+          and leave an orphaned object behind if it rolled back. If the bucket
+          is unreachable this hands back the bytes to store in the column
+          instead, so filing a document never depends on it.
+        */
+        const stored = yield (0, blobStore_1.storeBlob)("document", file.buffer, "pdf", fileType);
         const result = yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
             // 1) Document + file blob — created in two steps so the binary write
             // doesn't have to fit inside Prisma's nested-create payload (large
@@ -1109,9 +1119,12 @@ const archiveFile = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
             });
             yield tx.decodedFile.create({
                 data: {
+                    id: stored.id,
                     documentId: doc.id,
                     fileName: file.filename,
-                    fileDecoded: file.buffer,
+                    fileDecoded: stored.column,
+                    storageKey: stored.storageKey,
+                    storageSha256: stored.storageSha256,
                     fileSize: file.buffer.length.toString(),
                     fileType: fileType,
                 },
@@ -1553,7 +1566,16 @@ const downloadArchiveFile = (req, res) => __awaiter(void 0, void 0, void 0, func
             include: {
                 document: {
                     select: {
-                        file: true,
+                        id: true,
+                        file: {
+                            // Everything but the bytes — documentBytes decides whether
+                            // the column is needed at all.
+                            select: {
+                                fileName: true,
+                                fileType: true,
+                                storageKey: true,
+                            },
+                        },
                     },
                 },
             },
@@ -1561,13 +1583,13 @@ const downloadArchiveFile = (req, res) => __awaiter(void 0, void 0, void 0, func
         if (!response)
             throw new errors_1.NotFoundError("ARCHIVE NOT FOUND");
         const buffered = (_a = response.document) === null || _a === void 0 ? void 0 : _a.file;
-        if (!buffered) {
+        if (!buffered || !response.document) {
             throw new errors_1.ValidationError("INVALID FILE FORMAT");
         }
-        if (!buffered.fileDecoded) {
+        const fileBuffer = yield (0, documentBytes_1.documentBytes)(response.document.id, buffered.storageKey);
+        if (!fileBuffer) {
             throw new errors_1.ValidationError("FILE DATA IS MISSING OR CORRUPTED");
         }
-        const fileBuffer = Buffer.from(buffered.fileDecoded);
         // Set headers for file download
         const filename = buffered.fileName ||
             `document_${params.id}.${((_b = buffered.fileType) === null || _b === void 0 ? void 0 : _b.split("/")[1]) || "bin"}`;

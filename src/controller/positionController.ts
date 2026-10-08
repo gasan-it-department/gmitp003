@@ -15,6 +15,7 @@ import cloudinary from "../class/Cloundinary";
 
 import fs from "fs";
 import path from "path";
+import { storeBlob } from "../service/blobStore";
 
 const frontEnd = process.env.VITE_LOCAL_FRONTEND_URL;
 export const positionList = async (req: FastifyRequest, res: FastifyReply) => {
@@ -1876,6 +1877,14 @@ export const positionQuickRegister = async (
     if (photo) {
       try {
         const fileUrl = `${selfBaseUrl(req)}/user/photo/${userId}?v=${Date.now()}`;
+        // Keyed by user, same reasoning as the HR upload path.
+        const stored = await storeBlob(
+          "profile",
+          photo.buffer,
+          (photo.mimetype || "").includes("png") ? "png" : "jpg",
+          photo.mimetype,
+          userId,
+        );
         const picData = {
           file_name: photo.filename || "avatar",
           file_url: fileUrl,
@@ -1883,7 +1892,9 @@ export const positionQuickRegister = async (
           file_size: String(photo.buffer.length),
           file_type: "image",
           mime: photo.mimetype,
-          bytes: photo.buffer,
+          bytes: stored.column,
+          storageKey: stored.storageKey,
+          storageSha256: stored.storageSha256,
         };
         await prisma.userProfilePicture.upsert({
           where: { userId },

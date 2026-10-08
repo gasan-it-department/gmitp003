@@ -66,11 +66,17 @@ const getClient = async () => {
  * readable by a human six years from now when somebody is answering a
  * records request and has no database to join against.
  */
-export const keyFor = (
-  kind: "document" | "signature" | "profile" | "evidence" | "receive-page" | "stamp" | "chat",
-  id: string,
-  ext = "bin",
-): string => `${kind}/${id}.${ext}`;
+export type BlobKind =
+  | "document"
+  | "signature"
+  | "profile"
+  | "evidence"
+  | "receive-page"
+  | "stamp"
+  | "chat";
+
+export const keyFor = (kind: BlobKind, id: string, ext = "bin"): string =>
+  `${kind}/${id}.${ext}`;
 
 export const sha256 = (b: Buffer): string =>
   crypto.createHash("sha256").update(b).digest("hex");
@@ -155,6 +161,33 @@ export const readBlob = async (
   return fallback ? Buffer.from(fallback) : null;
 };
 
+/**
+ * Read bytes without pulling the `Bytes` column unless they are not in the
+ * bucket.
+ *
+ * `readBlob` takes the column value as its fallback, which means the caller
+ * has already SELECTed it — so Postgres ships a 77 MB document over the
+ * wire and into Node's heap even when the bytes were served from the
+ * bucket. That makes the migration save disk but not memory, and defers the
+ * whole benefit to the day the columns are dropped.
+ *
+ * This takes a thunk instead. The column is queried only when there is no
+ * key, or the key turns out to be a miss. After the backfill, the heavy
+ * query simply never runs, and dropping the columns later becomes a change
+ * with no behaviour left to alter.
+ */
+export const readBlobLazy = async (
+  key: string | null,
+  loadColumn: () => Promise<Uint8Array | null | undefined>,
+): Promise<Buffer | null> => {
+  if (key) {
+    const fromBucket = await getBlob(key);
+    if (fromBucket) return fromBucket;
+  }
+  const column = await loadColumn();
+  return column ? Buffer.from(column) : null;
+};
+
 /** Remove an object. Used by the backfill's rollback, not by normal code. */
 export const deleteBlob = async (key: string): Promise<void> => {
   if (!blobStoreConfigured()) return;
@@ -196,5 +229,100 @@ export const blobStoreStatus = async (): Promise<{
       endpoint: ENDPOINT,
       error: e instanceof Error ? e.message : String(e),
     };
+  }
+};
+
+/** Is the object there, and how big? One tiny request, not a full download. */
+export const headBlob = async (
+  key: string,
+): Promise<{ bytes: number } | null> => {
+  if (!blobStoreConfigured()) return null;
+  try {
+    const { HeadObjectCommand } = await import("@aws-sdk/client-s3");
+    const c = await getClient();
+    const res = await c.send(
+      new HeadObjectCommand({ Bucket: BUCKET, Key: key }),
+    );
+    return { bytes: Number(res.ContentLength ?? 0) };
+  } catch (e) {
+    const name = (e as { name?: string }).name;
+    if (name === "NoSuchKey" || name === "NotFound") return null;
+    throw e;
+  }
+};
+
+/** What a row should record after an upload. */
+export interface StoredBlob {
+  /** Mint the row's id here so the object key can name the real row. */
+  id: string;
+  storageKey: string | null;
+  storageSha256: string | null;
+  /**
+   * What to put in the `Bytes` column. Null once the bytes are safely in
+   * the bucket — that is the entire point. Populated when the bucket could
+   * not take them, so the row is still complete.
+   */
+  column: Buffer | null;
+}
+
+/**
+ * Store an upload, preferring the bucket and degrading to the column.
+ *
+ * Two deliberate choices here.
+ *
+ * The id is minted BY THIS FUNCTION rather than left to Prisma's
+ * `@default(uuid())`, so the upload can happen before any transaction opens
+ * while the key still names the real row. Uploading from inside a
+ * transaction would hold it open for the length of a network call — on a
+ * 77 MB document, seconds — and leave an orphaned object behind on
+ * rollback.
+ *
+ * A bucket that is down does NOT fail the upload. The bytes go in the
+ * column instead and the next backfill run moves them. A municipality that
+ * cannot file a document because object storage is unreachable is a worse
+ * outcome than a temporarily fat table, and the fallback path is the one
+ * that was already there.
+ */
+export const storeBlob = async (
+  kind: BlobKind,
+  input: Buffer | Uint8Array,
+  ext = "bin",
+  contentType = "application/octet-stream",
+  /**
+   * Use this id instead of a fresh one. For a row that is upserted rather
+   * than created — an avatar keyed by user — the stable id keeps one object
+   * per subject and lets a re-upload overwrite it instead of orphaning the
+   * old one.
+   */
+  explicitId?: string,
+): Promise<StoredBlob> => {
+  // Not Buffer.from() on a Buffer: that copies, and these are large.
+  const bytes = Buffer.isBuffer(input) ? input : Buffer.from(input);
+  const id = explicitId ?? crypto.randomUUID();
+  const keep = (why: string): StoredBlob => {
+    if (why) console.error(`[blobStore] keeping bytes in Postgres: ${why}`);
+    return { id, storageKey: null, storageSha256: null, column: bytes };
+  };
+  if (!blobStoreConfigured()) return keep("");
+
+  const key = keyFor(kind, id, ext);
+  try {
+    const put = await putBlob(key, bytes, contentType);
+    /*
+      The SDK sends a CRC32 that the server validates, so a put that
+      returns success did not store corrupt bytes. What it does not prove
+      is that the object is actually THERE, so confirm existence and size
+      before dropping the only other copy. One HEAD, not a re-download.
+    */
+    const head = await headBlob(key);
+    if (!head || head.bytes !== bytes.length) {
+      return keep(
+        `${key} read back as ${head ? `${head.bytes} bytes` : "missing"}, ` +
+          `expected ${bytes.length}`,
+      );
+    }
+    return { id, storageKey: key, storageSha256: put.sha256, column: null };
+  } catch (e) {
+    return keep(e instanceof Error ? e.message : String(e));
   }
 };

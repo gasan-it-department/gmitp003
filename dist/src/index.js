@@ -107,6 +107,7 @@ const hrMessage_1 = require("./route/hrMessage");
 const errorHandlers_1 = __importDefault(require("./plugin/errorHandlers"));
 const gemini_1 = require("./utils/gemini");
 const signatureReminders_1 = require("./service/signatureReminders");
+const crypto_1 = __importDefault(require("crypto"));
 // ── Last-line crash guards ──────────────────────────────────────────────
 // Without these, ONE leaked promise rejection anywhere kills the whole
 // process (Node's default), severing every in-flight request — mobile
@@ -317,7 +318,7 @@ app.get("/test/ai", (request, reply) => __awaiter(void 0, void 0, void 0, functi
 // Public build marker — lets anyone (including the assistant) CONFIRM which
 // build is actually serving, instead of trusting deploy timers. Bump the
 // tag with each meaningful deploy.
-const BUILD_TAG = "2026-10-05-object-storage";
+const BUILD_TAG = "2026-10-08-blobs-to-bucket";
 /**
  * Can this container actually rasterise a PDF page?
  *
@@ -397,6 +398,45 @@ app.get("/health/build", () => __awaiter(void 0, void 0, void 0, function* () {
         pdfSigning: yield signingIdentity(),
         objectStorage: yield blobStoreStatus(),
     };
+}));
+/*
+  Move file bytes out of Postgres and into the bucket.
+
+  This has to run where the database and the bucket credentials both are,
+  which is inside this container — not from a laptop whose .env points at a
+  local development database.
+
+  Gated three ways, because it is an administrative route on a public API:
+  it does not exist unless BLOB_BACKFILL_TOKEN is set, it requires that
+  token in a header, and it reports rather than acts unless asked to run.
+  It never deletes anything, so the worst a mistaken call can do is upload
+  files that are already uploaded.
+*/
+app.post("/admin/blob-backfill", (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a;
+    const expected = process.env.BLOB_BACKFILL_TOKEN || "";
+    // Unset means the route is not here at all. A 401 would confirm its
+    // existence to anybody scanning.
+    if (!expected)
+        return res.code(404).send({ message: "Not found" });
+    const given = String((_a = req.headers["x-backfill-token"]) !== null && _a !== void 0 ? _a : "");
+    const a = Buffer.from(given);
+    const b = Buffer.from(expected);
+    const ok = a.length === b.length && crypto_1.default.timingSafeEqual(a, b);
+    if (!ok)
+        return res.code(404).send({ message: "Not found" });
+    const q = req.query;
+    const { runBlobBackfill } = yield Promise.resolve().then(() => __importStar(require("./service/blobBackfill")));
+    const lines = [];
+    const report = yield runBlobBackfill({
+        dryRun: q.run !== "1",
+        limit: q.limit ? Math.max(1, parseInt(q.limit, 10) || 1) : undefined,
+        log: (l) => {
+            lines.push(l);
+            console.log("[blob-backfill]", l);
+        },
+    });
+    return res.code(200).send(Object.assign(Object.assign({}, report), { log: lines.slice(-200) }));
 }));
 // Nudge signatories who have not got round to it. Paced by columns on
 // SignatoryArrangement rather than by this timer, so the interval only

@@ -77,6 +77,9 @@ const callerScope_1 = require("../service/callerScope");
 const signaturePlacement_1 = require("../service/signaturePlacement");
 const copyFurnish_1 = require("../service/copyFurnish");
 const signatureReminders_1 = require("../service/signatureReminders");
+const blobStore_1 = require("../service/blobStore");
+const documentBytes_1 = require("../service/documentBytes");
+const signatureBytes_1 = require("../service/signatureBytes");
 /**
  * Somebody who can actually open what lands in a room.
  *
@@ -1199,11 +1202,23 @@ const streamDocumentFile = (req, res) => __awaiter(void 0, void 0, void 0, funct
     try {
         const file = yield prisma_1.prisma.decodedFile.findFirst({
             where: { documentId: params.id },
+            // Everything EXCEPT the bytes. Selecting the column here would ship
+            // the whole PDF out of Postgres even when it is served from the
+            // bucket; documentBytes fetches it only if it has to.
+            select: {
+                fileName: true,
+                fileType: true,
+                fileSize: true,
+                storageKey: true,
+            },
         });
-        if (!file || !file.fileDecoded) {
+        if (!file) {
             throw new errors_1.NotFoundError("FILE NOT FOUND");
         }
-        const buf = Buffer.from(file.fileDecoded);
+        const buf = yield (0, documentBytes_1.documentBytes)(params.id, file.storageKey);
+        if (!buf) {
+            throw new errors_1.NotFoundError("FILE NOT FOUND");
+        }
         res.header("Content-Type", file.fileType || "application/octet-stream");
         res.header("Content-Disposition", `inline; filename="${file.fileName || "document.pdf"}"`);
         res.header("Content-Length", buf.length.toString());
@@ -1458,6 +1473,14 @@ const uploadDisseminationDocument = (req, res) => __awaiter(void 0, void 0, void
         if (queue.status !== 0) {
             throw new errors_1.ValidationError("Cannot attach documents after dispatch.");
         }
+        /*
+          The bytes go to the bucket BEFORE the transaction opens. Uploading
+          from inside one would hold it open for the length of a network call,
+          and leave an orphaned object behind if it rolled back. If the bucket
+          is unreachable this hands back the bytes to store in the column
+          instead, so filing a document never depends on it.
+        */
+        const stored = yield (0, blobStore_1.storeBlob)("document", upload.buffer, "pdf", upload.mimetype);
         const created = yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
             const doc = yield tx.document.create({
                 data: {
@@ -1475,11 +1498,14 @@ const uploadDisseminationDocument = (req, res) => __awaiter(void 0, void 0, void
             });
             yield tx.decodedFile.create({
                 data: {
+                    id: stored.id,
                     documentId: doc.id,
                     fileName: upload.filename,
                     fileSize: String(upload.buffer.length),
                     fileType: upload.mimetype,
-                    fileDecoded: upload.buffer,
+                    fileDecoded: stored.column,
+                    storageKey: stored.storageKey,
+                    storageSha256: stored.storageSha256,
                 },
             });
             if (userId) {
@@ -1967,6 +1993,7 @@ const viewDissemination = (req, res) => __awaiter(void 0, void 0, void 0, functi
                     userId: true,
                     title: true,
                     signature: true,
+                    storageKey: true,
                     inkHeightPt: true,
                     baselinePct: true,
                     inkX0: true,
@@ -1987,6 +2014,7 @@ const viewDissemination = (req, res) => __awaiter(void 0, void 0, void 0, functi
                         userId: true,
                         title: true,
                         signature: true,
+                        storageKey: true,
                         inkHeightPt: true,
                         baselinePct: true,
                         inkX0: true,
@@ -2005,11 +2033,14 @@ const viewDissemination = (req, res) => __awaiter(void 0, void 0, void 0, functi
                 }
             }
             for (const s of sigs) {
-                if (!s.signature || !s.userId) {
-                    console.log("[view] SKIPPING sig — userId:", s.userId, "hasBytes:", !!s.signature);
+                // The bytes may be in the bucket now, so a null column is no
+                // longer the same thing as a signature with no image.
+                const sigRaw = yield (0, signatureBytes_1.signatureBytes)(s);
+                if (!sigRaw || !s.userId) {
+                    console.log("[view] SKIPPING sig — userId:", s.userId, "hasBytes:", !!sigRaw);
                     continue;
                 }
-                const buf = Buffer.from(s.signature);
+                const buf = sigRaw;
                 console.log("[view] encoding sig — userId:", s.userId, "bytes:", buf.length, "first4:", [buf[0], buf[1], buf[2], buf[3]]);
                 // Three possible storage formats observed in the wild:
                 //   1. Raw image bytes (PNG/JPEG/WebP/SVG magic bytes at offset 0).
@@ -2484,7 +2515,7 @@ exports.archiveDissemination = archiveDissemination;
 // signer themselves can fetch their own raw signature via the existing
 // /document/user/signatures route (which is ACL'd to userId === self).
 const downloadSignedDocument = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j;
     const params = req.query;
     if (!params.documentId)
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
@@ -2493,7 +2524,9 @@ const downloadSignedDocument = (req, res) => __awaiter(void 0, void 0, void 0, f
         const doc = yield prisma_1.prisma.document.findUnique({
             where: { id: params.documentId },
             include: {
-                file: { select: { fileName: true, fileType: true, fileDecoded: true } },
+                file: {
+                    select: { fileName: true, fileType: true, storageKey: true },
+                },
                 pages: {
                     select: {
                         page: true,
@@ -2519,7 +2552,16 @@ const downloadSignedDocument = (req, res) => __awaiter(void 0, void 0, void 0, f
                 },
             },
         });
-        if (!doc || !((_a = doc.file) === null || _a === void 0 ? void 0 : _a.fileDecoded)) {
+        /*
+          The bytes come from the bucket once the row has been migrated, and
+          from the column until then. Both work, so the backfill is not a
+          cutover anybody has to stand over.
+        */
+        if (!(doc === null || doc === void 0 ? void 0 : doc.file)) {
+            throw new errors_1.NotFoundError("FILE NOT FOUND");
+        }
+        const sourceBytes = yield (0, documentBytes_1.documentBytes)(params.documentId, doc.file.storageKey);
+        if (!sourceBytes) {
             throw new errors_1.NotFoundError("Document file not found");
         }
         const stamps = [];
@@ -2538,7 +2580,7 @@ const downloadSignedDocument = (req, res) => __awaiter(void 0, void 0, void 0, f
                     signedAt: arr.signedAt,
                     slot: arr.index + 1,
                     arrangementId: arr.id,
-                    signatureId: (_b = arr.signatureId) !== null && _b !== void 0 ? _b : null,
+                    signatureId: (_a = arr.signatureId) !== null && _a !== void 0 ? _a : null,
                 });
             }
         }
@@ -2589,6 +2631,7 @@ const downloadSignedDocument = (req, res) => __awaiter(void 0, void 0, void 0, f
                     id: true,
                     userId: true,
                     signature: true,
+                    storageKey: true,
                     qrEnabled: true,
                     active: true,
                     // How the owner wants this one stamped.
@@ -2626,11 +2669,14 @@ const downloadSignedDocument = (req, res) => __awaiter(void 0, void 0, void 0, f
         const sigPlaceByUser = new Map();
         const sigIdByUser = new Map(); // for logging
         for (const r of sigRows) {
-            if (!r.userId || !r.signature)
+            if (!r.userId)
                 continue;
             if (sigByUser.has(r.userId))
                 continue;
-            sigByUser.set(r.userId, decodeSigBytes(r.signature));
+            const raw = yield (0, signatureBytes_1.signatureBytes)(r);
+            if (!raw)
+                continue;
+            sigByUser.set(r.userId, decodeSigBytes(raw));
             sigQrByUser.set(r.userId, !!r.qrEnabled);
             sigPlaceByUser.set(r.userId, placementOf(r));
             sigIdByUser.set(r.userId, r.id);
@@ -2647,6 +2693,7 @@ const downloadSignedDocument = (req, res) => __awaiter(void 0, void 0, void 0, f
                 select: {
                     id: true,
                     signature: true,
+                    storageKey: true,
                     qrEnabled: true,
                     inkHeightPt: true,
                     baselinePct: true,
@@ -2657,9 +2704,10 @@ const downloadSignedDocument = (req, res) => __awaiter(void 0, void 0, void 0, f
                 },
             });
             for (const r of chosenRows) {
-                if (!r.signature)
+                const raw = yield (0, signatureBytes_1.signatureBytes)(r);
+                if (!raw)
                     continue;
-                sigById.set(r.id, decodeSigBytes(r.signature));
+                sigById.set(r.id, decodeSigBytes(raw));
                 sigQrById.set(r.id, !!r.qrEnabled);
                 sigPlaceById.set(r.id, placementOf(r));
             }
@@ -2670,7 +2718,7 @@ const downloadSignedDocument = (req, res) => __awaiter(void 0, void 0, void 0, f
             qrEnabled: sigQrByUser.get(uid),
         })));
         const { PDFDocument, rgb, StandardFonts } = yield Promise.resolve().then(() => __importStar(require("pdf-lib")));
-        const pdfDoc = yield PDFDocument.load(Buffer.from(doc.file.fileDecoded));
+        const pdfDoc = yield PDFDocument.load(sourceBytes);
         const font = yield pdfDoc.embedFont(StandardFonts.HelveticaBold);
         const dateFont = yield pdfDoc.embedFont(StandardFonts.Helvetica);
         const embeddedByUser = new Map();
@@ -2747,13 +2795,13 @@ const downloadSignedDocument = (req, res) => __awaiter(void 0, void 0, void 0, f
                 // size this returns the old fit-and-centre rect, so signatures
                 // nobody has configured stamp exactly as they always did.
                 const useChosen = !!(s.signatureId && sigById.has(s.signatureId));
-                const place = (_c = (useChosen
+                const place = (_b = (useChosen
                     ? sigPlaceById.get(s.signatureId)
-                    : sigPlaceByUser.get(s.userId))) !== null && _c !== void 0 ? _c : null;
+                    : sigPlaceByUser.get(s.userId))) !== null && _b !== void 0 ? _b : null;
                 const rect = (0, signaturePlacement_1.placeSignature)({ x: boxX, y: boxY, width: boxW, height: boxH }, sig.width, sig.height, {
-                    inkHeightPt: (_d = place === null || place === void 0 ? void 0 : place.inkHeightPt) !== null && _d !== void 0 ? _d : null,
-                    baselinePct: (_e = place === null || place === void 0 ? void 0 : place.baselinePct) !== null && _e !== void 0 ? _e : null,
-                    ink: (_f = place === null || place === void 0 ? void 0 : place.ink) !== null && _f !== void 0 ? _f : null,
+                    inkHeightPt: (_c = place === null || place === void 0 ? void 0 : place.inkHeightPt) !== null && _c !== void 0 ? _c : null,
+                    baselinePct: (_d = place === null || place === void 0 ? void 0 : place.baselinePct) !== null && _d !== void 0 ? _d : null,
+                    ink: (_e = place === null || place === void 0 ? void 0 : place.ink) !== null && _e !== void 0 ? _e : null,
                 });
                 page.drawImage(sig, {
                     x: rect.x,
@@ -2798,7 +2846,7 @@ const downloadSignedDocument = (req, res) => __awaiter(void 0, void 0, void 0, f
                 (0, signatureBlock_1.drawSignatureCaption)(page, font, { x: boxX, y: boxY, width: boxW, height: boxH }, {
                     name: who.name,
                     position: who.position,
-                    signedAt: (_g = s.signedAt) !== null && _g !== void 0 ? _g : null,
+                    signedAt: (_f = s.signedAt) !== null && _f !== void 0 ? _f : null,
                     serial,
                 });
             }
@@ -2937,14 +2985,14 @@ const downloadSignedDocument = (req, res) => __awaiter(void 0, void 0, void 0, f
         // Seal the EXACT bytes being sent. Hashing anything else would make every
         // later verification report a false TAMPERED.
         try {
-            const accountId = (_h = req.user) === null || _h === void 0 ? void 0 : _h.id;
+            const accountId = (_g = req.user) === null || _g === void 0 ? void 0 : _g.id;
             const acct = accountId
                 ? yield prisma_1.prisma.account.findUnique({
                     where: { id: accountId },
                     select: { User: { select: { id: true } } },
                 })
                 : null;
-            yield (0, documentSeal_1.seal)(doc.id, bytes, serial, (_k = (_j = acct === null || acct === void 0 ? void 0 : acct.User) === null || _j === void 0 ? void 0 : _j.id) !== null && _k !== void 0 ? _k : null);
+            yield (0, documentSeal_1.seal)(doc.id, bytes, serial, (_j = (_h = acct === null || acct === void 0 ? void 0 : acct.User) === null || _h === void 0 ? void 0 : _h.id) !== null && _j !== void 0 ? _j : null);
         }
         catch (e) {
             // Never block a download over sealing — the user still needs the file.

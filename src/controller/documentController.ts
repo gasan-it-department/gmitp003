@@ -50,6 +50,8 @@ import {
 } from "../models/route";
 import { extractTextFromFile, getFileType } from "../utils/document";
 import { archiveDocType } from "../utils/helper";
+import { readBlob, storeBlob } from "../service/blobStore";
+import { documentBytes } from "../service/documentBytes";
 
 async function parsePdfWithPdf2Json(buffer: Buffer): Promise<PdfParsedData> {
   return new Promise((resolve, reject) => {
@@ -1140,6 +1142,15 @@ export const archiveFile = async (req: FastifyRequest, res: FastifyReply) => {
     const safeDate = toDate(formData.safeDate);
     const wantsPreservation = !!(retentionDate || safeDate);
 
+    /*
+      The bytes go to the bucket BEFORE the transaction opens. Uploading
+      from inside one would hold it open for the length of a network call,
+      and leave an orphaned object behind if it rolled back. If the bucket
+      is unreachable this hands back the bytes to store in the column
+      instead, so filing a document never depends on it.
+    */
+    const stored = await storeBlob("document", file.buffer, "pdf", fileType);
+
     const result = await prisma.$transaction(async (tx) => {
       // 1) Document + file blob — created in two steps so the binary write
       // doesn't have to fit inside Prisma's nested-create payload (large
@@ -1158,9 +1169,12 @@ export const archiveFile = async (req: FastifyRequest, res: FastifyReply) => {
       });
       await tx.decodedFile.create({
         data: {
+          id: stored.id,
           documentId: doc.id,
           fileName: file.filename,
-          fileDecoded: file.buffer,
+          fileDecoded: stored.column,
+          storageKey: stored.storageKey,
+          storageSha256: stored.storageSha256,
           fileSize: file.buffer.length.toString(),
           fileType: fileType,
         },
@@ -1640,7 +1654,16 @@ export const downloadArchiveFile = async (
       include: {
         document: {
           select: {
-            file: true,
+            id: true,
+            file: {
+              // Everything but the bytes — documentBytes decides whether
+              // the column is needed at all.
+              select: {
+                fileName: true,
+                fileType: true,
+                storageKey: true,
+              },
+            },
           },
         },
       },
@@ -1649,15 +1672,17 @@ export const downloadArchiveFile = async (
     if (!response) throw new NotFoundError("ARCHIVE NOT FOUND");
 
     const buffered = response.document?.file;
-    if (!buffered) {
+    if (!buffered || !response.document) {
       throw new ValidationError("INVALID FILE FORMAT");
     }
 
-    if (!buffered.fileDecoded) {
+    const fileBuffer = await documentBytes(
+      response.document.id,
+      buffered.storageKey,
+    );
+    if (!fileBuffer) {
       throw new ValidationError("FILE DATA IS MISSING OR CORRUPTED");
     }
-
-    const fileBuffer = Buffer.from(buffered.fileDecoded);
 
     // Set headers for file download
     const filename =

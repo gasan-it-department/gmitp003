@@ -16,6 +16,8 @@ import { FastifyReply, FastifyRequest } from "../barrel/fastify";
 import { prisma, Prisma } from "../barrel/prisma";
 import { AppError, NotFoundError, ValidationError } from "../errors/errors";
 import { requireSelf } from "../service/callerScope";
+import { storeBlob } from "../service/blobStore";
+import { signatureBytes } from "../service/signatureBytes";
 
 const MAX_DOC_BYTES = 25 * 1024 * 1024; // 25 MB
 
@@ -62,6 +64,20 @@ export const selfSignUpload = async (
       throw new ValidationError("INVALID REQUIRED FIELDS");
     }
 
+    /*
+      The bytes go to the bucket BEFORE the transaction opens. Uploading
+      from inside one would hold it open for the length of a network call,
+      and leave an orphaned object behind if it rolled back. If the bucket
+      is unreachable this hands back the bytes to store in the column
+      instead, so filing a document never depends on it.
+    */
+    const stored = await storeBlob(
+      "document",
+      upload!.buffer,
+      "pdf",
+      upload!.mimetype,
+    );
+
     const result = await prisma.$transaction(async (tx) => {
       const doc = await tx.document.create({
         data: {
@@ -77,11 +93,14 @@ export const selfSignUpload = async (
       });
       await tx.decodedFile.create({
         data: {
+          id: stored.id,
           documentId: doc.id,
           fileName: upload!.fileName,
           fileSize: String(upload!.buffer.length),
           fileType: upload!.mimetype,
-          fileDecoded: upload!.buffer,
+          fileDecoded: stored.column,
+          storageKey: stored.storageKey,
+          storageSha256: stored.storageSha256,
         },
       });
       // One arrangement per self-sign doc (no queue). The placements
@@ -567,6 +586,7 @@ export const selfSignDetail = async (
     // showing two different things. Same row, same numbers, both places.
     let sigRow: {
       signature: Uint8Array | null;
+      storageKey: string | null;
       inkHeightPt: number | null;
       baselinePct: number;
       inkX0: number | null;
@@ -579,6 +599,7 @@ export const selfSignDetail = async (
         where: { id: arrangement.signatureId, userId: actorId },
         select: {
           signature: true,
+          storageKey: true,
           inkHeightPt: true,
           baselinePct: true,
           inkX0: true,
@@ -594,6 +615,7 @@ export const selfSignDetail = async (
         orderBy: [{ active: "desc" }, { timestamp: "desc" }],
         select: {
           signature: true,
+          storageKey: true,
           inkHeightPt: true,
           baselinePct: true,
           inkX0: true,
@@ -603,8 +625,9 @@ export const selfSignDetail = async (
         },
       });
     }
-    if (sigRow?.signature) {
-      const buf = Buffer.from(sigRow.signature as Uint8Array);
+    const sigRaw = sigRow ? await signatureBytes(sigRow) : null;
+    if (sigRaw) {
+      const buf = sigRaw;
       const text = buf.toString("utf8").trim();
       if (text.startsWith("data:image/")) {
         signatureDataUrl = text;

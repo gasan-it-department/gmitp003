@@ -16,6 +16,7 @@ import { tempURL } from "../service/url";
 import { getCardExtras } from "./idCardController";
 import { callerContext } from "../service/callerScope";
 import { UnauthorizedError } from "../errors/errors";
+import { readBlob, storeBlob } from "../service/blobStore";
 
 export const getAllEmpoyees = async (
   req: FastifyRequest,
@@ -1485,6 +1486,18 @@ export const updateProfilePicture = async (
 
   // cache-busting URL so the avatar refreshes after each re-upload
   const fileUrl = `${selfBase(req)}/user/photo/${userId}?v=${Date.now()}`;
+  /*
+    Keyed by the user, not by a fresh id, because this row is upserted:
+    one object per person, overwritten on re-upload, instead of a new
+    orphan every time somebody changes their picture.
+  */
+  const stored = await storeBlob(
+    "profile",
+    file.buffer,
+    (file.mimetype || "").includes("png") ? "png" : "jpg",
+    file.mimetype,
+    userId,
+  );
   const data = {
     file_name: file.filename || "avatar",
     file_url: fileUrl,
@@ -1492,7 +1505,9 @@ export const updateProfilePicture = async (
     file_size: String(file.buffer.length),
     file_type: "image",
     mime: file.mimetype,
-    bytes: file.buffer,
+    bytes: stored.column,
+    storageKey: stored.storageKey,
+    storageSha256: stored.storageSha256,
   };
   const saved = await prisma.userProfilePicture.upsert({
     where: { userId },
@@ -1510,11 +1525,12 @@ export const servePhoto = async (req: FastifyRequest, res: FastifyReply) => {
   if (!userId) throw new ValidationError("BAD_REQUEST");
   const pic = await prisma.userProfilePicture.findUnique({
     where: { userId },
-    select: { bytes: true, mime: true },
+    select: { bytes: true, mime: true, storageKey: true },
   });
-  if (!pic?.bytes) return res.code(404).send({ message: "No photo" });
+  const photo = pic ? await readBlob(pic.storageKey, pic.bytes) : null;
+  if (!photo) return res.code(404).send({ message: "No photo" });
   return res
-    .header("Content-Type", pic.mime || "image/jpeg")
+    .header("Content-Type", pic?.mime || "image/jpeg")
     .header("Cache-Control", "public, max-age=300")
-    .send(Buffer.from(pic.bytes));
+    .send(photo);
 };

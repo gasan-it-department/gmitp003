@@ -37,6 +37,9 @@ import {
   VISIBLE_TO_ROOM,
 } from "../service/copyFurnish";
 import { resetReminderClock } from "../service/signatureReminders";
+import { readBlob, storeBlob } from "../service/blobStore";
+import { documentBytes } from "../service/documentBytes";
+import { signatureBytes } from "../service/signatureBytes";
 
 /**
  * Somebody who can actually open what lands in a room.
@@ -1305,11 +1308,23 @@ export const streamDocumentFile = async (
   try {
     const file = await prisma.decodedFile.findFirst({
       where: { documentId: params.id },
+      // Everything EXCEPT the bytes. Selecting the column here would ship
+      // the whole PDF out of Postgres even when it is served from the
+      // bucket; documentBytes fetches it only if it has to.
+      select: {
+        fileName: true,
+        fileType: true,
+        fileSize: true,
+        storageKey: true,
+      },
     });
-    if (!file || !file.fileDecoded) {
+    if (!file) {
       throw new NotFoundError("FILE NOT FOUND");
     }
-    const buf = Buffer.from(file.fileDecoded);
+    const buf = await documentBytes(params.id, file.storageKey);
+    if (!buf) {
+      throw new NotFoundError("FILE NOT FOUND");
+    }
     res.header(
       "Content-Type",
       file.fileType || "application/octet-stream",
@@ -1592,6 +1607,20 @@ export const uploadDisseminationDocument = async (
       throw new ValidationError("Cannot attach documents after dispatch.");
     }
 
+    /*
+      The bytes go to the bucket BEFORE the transaction opens. Uploading
+      from inside one would hold it open for the length of a network call,
+      and leave an orphaned object behind if it rolled back. If the bucket
+      is unreachable this hands back the bytes to store in the column
+      instead, so filing a document never depends on it.
+    */
+    const stored = await storeBlob(
+      "document",
+      upload.buffer,
+      "pdf",
+      upload.mimetype,
+    );
+
     const created = await prisma.$transaction(async (tx) => {
       const doc = await tx.document.create({
         data: {
@@ -1609,11 +1638,14 @@ export const uploadDisseminationDocument = async (
       });
       await tx.decodedFile.create({
         data: {
+          id: stored.id,
           documentId: doc.id,
           fileName: upload.filename,
           fileSize: String(upload.buffer.length),
           fileType: upload.mimetype,
-          fileDecoded: upload.buffer,
+          fileDecoded: stored.column,
+          storageKey: stored.storageKey,
+          storageSha256: stored.storageSha256,
         },
       });
       if (userId) {
@@ -2170,6 +2202,7 @@ export const viewDissemination = async (
           userId: true,
           title: true,
           signature: true,
+          storageKey: true,
           inkHeightPt: true,
           baselinePct: true,
           inkX0: true,
@@ -2190,6 +2223,7 @@ export const viewDissemination = async (
             userId: true,
             title: true,
             signature: true,
+            storageKey: true,
             inkHeightPt: true,
             baselinePct: true,
             inkX0: true,
@@ -2210,16 +2244,19 @@ export const viewDissemination = async (
         }
       }
       for (const s of sigs) {
-        if (!s.signature || !s.userId) {
+        // The bytes may be in the bucket now, so a null column is no
+        // longer the same thing as a signature with no image.
+        const sigRaw = await signatureBytes(s);
+        if (!sigRaw || !s.userId) {
           console.log(
             "[view] SKIPPING sig — userId:",
             s.userId,
             "hasBytes:",
-            !!s.signature,
+            !!sigRaw,
           );
           continue;
         }
-        const buf = Buffer.from(s.signature as Uint8Array);
+        const buf = sigRaw;
         console.log(
           "[view] encoding sig — userId:",
           s.userId,
@@ -2745,7 +2782,9 @@ export const downloadSignedDocument = async (
     const doc = await prisma.document.findUnique({
       where: { id: params.documentId },
       include: {
-        file: { select: { fileName: true, fileType: true, fileDecoded: true } },
+        file: {
+          select: { fileName: true, fileType: true, storageKey: true },
+        },
         pages: {
           select: {
             page: true,
@@ -2771,7 +2810,19 @@ export const downloadSignedDocument = async (
         },
       },
     });
-    if (!doc || !doc.file?.fileDecoded) {
+    /*
+      The bytes come from the bucket once the row has been migrated, and
+      from the column until then. Both work, so the backfill is not a
+      cutover anybody has to stand over.
+    */
+    if (!doc?.file) {
+      throw new NotFoundError("FILE NOT FOUND");
+    }
+    const sourceBytes = await documentBytes(
+      params.documentId,
+      doc.file.storageKey,
+    );
+    if (!sourceBytes) {
       throw new NotFoundError("Document file not found");
     }
 
@@ -2856,6 +2907,7 @@ export const downloadSignedDocument = async (
             id: true,
             userId: true,
             signature: true,
+            storageKey: true,
             qrEnabled: true,
             active: true,
             // How the owner wants this one stamped.
@@ -2912,9 +2964,11 @@ export const downloadSignedDocument = async (
     const sigPlaceByUser = new Map<string, SigPlacement>();
     const sigIdByUser = new Map<string, string>(); // for logging
     for (const r of sigRows) {
-      if (!r.userId || !r.signature) continue;
+      if (!r.userId) continue;
       if (sigByUser.has(r.userId)) continue;
-      sigByUser.set(r.userId, decodeSigBytes(r.signature as Uint8Array));
+      const raw = await signatureBytes(r);
+      if (!raw) continue;
+      sigByUser.set(r.userId, decodeSigBytes(raw));
       sigQrByUser.set(r.userId, !!r.qrEnabled);
       sigPlaceByUser.set(r.userId, placementOf(r));
       sigIdByUser.set(r.userId, r.id);
@@ -2934,6 +2988,7 @@ export const downloadSignedDocument = async (
         select: {
           id: true,
           signature: true,
+          storageKey: true,
           qrEnabled: true,
           inkHeightPt: true,
           baselinePct: true,
@@ -2944,8 +2999,9 @@ export const downloadSignedDocument = async (
         },
       });
       for (const r of chosenRows) {
-        if (!r.signature) continue;
-        sigById.set(r.id, decodeSigBytes(r.signature as Uint8Array));
+        const raw = await signatureBytes(r);
+        if (!raw) continue;
+        sigById.set(r.id, decodeSigBytes(raw));
         sigQrById.set(r.id, !!r.qrEnabled);
         sigPlaceById.set(r.id, placementOf(r));
       }
@@ -2960,7 +3016,7 @@ export const downloadSignedDocument = async (
     );
 
     const { PDFDocument, rgb, StandardFonts } = await import("pdf-lib");
-    const pdfDoc = await PDFDocument.load(Buffer.from(doc.file.fileDecoded));
+    const pdfDoc = await PDFDocument.load(sourceBytes);
     const font = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
     const dateFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
 

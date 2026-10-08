@@ -53,6 +53,7 @@ exports.chatServeFile = exports.chatUploadFile = exports.chatServeImage = export
 const prisma_1 = require("../barrel/prisma");
 const errors_1 = require("../errors/errors");
 const expoPush_1 = require("../service/expoPush");
+const blobStore_1 = require("../service/blobStore");
 /**
  * Employee chat — three fixed rooms per line:
  *   community : everyone in the line can post + read (group chat)
@@ -904,8 +905,15 @@ const chatUploadImage = (req, res) => __awaiter(void 0, void 0, void 0, function
         throw new errors_1.ValidationError("FILE_MUST_BE_AN_IMAGE");
     if (file.buffer.length > 8 * 1024 * 1024)
         throw new errors_1.ValidationError("IMAGE_TOO_LARGE");
+    const stored = yield (0, blobStore_1.storeBlob)("chat", file.buffer, "img", file.mimetype);
     const saved = yield prisma_1.prisma.chatImage.create({
-        data: { mime: file.mimetype, bytes: file.buffer },
+        data: {
+            id: stored.id,
+            mime: file.mimetype,
+            bytes: stored.column,
+            storageKey: stored.storageKey,
+            storageSha256: stored.storageSha256,
+        },
         select: { id: true },
     });
     return res.code(200).send({ imageId: saved.id, url: imageUrl(req, saved.id) });
@@ -918,14 +926,15 @@ const chatServeImage = (req, res) => __awaiter(void 0, void 0, void 0, function*
         throw new errors_1.ValidationError("BAD_REQUEST");
     const img = yield prisma_1.prisma.chatImage.findUnique({
         where: { id },
-        select: { bytes: true, mime: true },
+        select: { bytes: true, mime: true, storageKey: true },
     });
-    if (!(img === null || img === void 0 ? void 0 : img.bytes))
+    const body = img ? yield (0, blobStore_1.readBlob)(img.storageKey, img.bytes) : null;
+    if (!body)
         return res.code(404).send({ message: "No image" });
     return res
-        .header("Content-Type", img.mime || "image/jpeg")
+        .header("Content-Type", (img === null || img === void 0 ? void 0 : img.mime) || "image/jpeg")
         .header("Cache-Control", "public, max-age=31536000, immutable")
-        .send(Buffer.from(img.bytes));
+        .send(body);
 });
 exports.chatServeImage = chatServeImage;
 // POST /chat/file  (multipart, field "file") → { fileId, name, size, url }
@@ -978,12 +987,16 @@ const chatUploadFile = (req, res) => __awaiter(void 0, void 0, void 0, function*
         throw new errors_1.ValidationError("MISSING_FILE");
     if (file.buffer.length > 20 * 1024 * 1024)
         throw new errors_1.ValidationError("FILE_TOO_LARGE");
+    const stored = yield (0, blobStore_1.storeBlob)("chat", file.buffer, "bin", file.mimetype);
     const saved = yield prisma_1.prisma.chatFile.create({
         data: {
+            id: stored.id,
             name: file.filename.slice(0, 200),
             mime: file.mimetype,
             size: file.buffer.length,
-            bytes: file.buffer,
+            bytes: stored.column,
+            storageKey: stored.storageKey,
+            storageSha256: stored.storageSha256,
         },
         select: { id: true, name: true, size: true },
     });
@@ -1002,15 +1015,16 @@ const chatServeFile = (req, res) => __awaiter(void 0, void 0, void 0, function* 
         throw new errors_1.ValidationError("BAD_REQUEST");
     const f = yield prisma_1.prisma.chatFile.findUnique({
         where: { id },
-        select: { bytes: true, mime: true, name: true },
+        select: { bytes: true, mime: true, name: true, storageKey: true },
     });
-    if (!(f === null || f === void 0 ? void 0 : f.bytes))
+    const body = f ? yield (0, blobStore_1.readBlob)(f.storageKey, f.bytes) : null;
+    if (!body)
         return res.code(404).send({ message: "No file" });
-    const safeName = (f.name || "file").replace(/["\r\n]/g, "");
+    const safeName = ((f === null || f === void 0 ? void 0 : f.name) || "file").replace(/["\r\n]/g, "");
     return res
-        .header("Content-Type", f.mime || "application/octet-stream")
+        .header("Content-Type", (f === null || f === void 0 ? void 0 : f.mime) || "application/octet-stream")
         .header("Content-Disposition", `inline; filename="${safeName}"`)
         .header("Cache-Control", "public, max-age=31536000, immutable")
-        .send(Buffer.from(f.bytes));
+        .send(body);
 });
 exports.chatServeFile = chatServeFile;

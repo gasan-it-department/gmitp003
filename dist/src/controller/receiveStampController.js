@@ -68,6 +68,9 @@ const MM_PER_PT = 25.4 / 72;
 /** Millimetres to PDF points. */
 const mmToPt = (mm) => mm / MM_PER_PT;
 exports.mmToPt = mmToPt;
+const blobStore_1 = require("../service/blobStore");
+const documentBytes_1 = require("../service/documentBytes");
+const signatureBytes_1 = require("../service/signatureBytes");
 /**
  * What a stamp may measure.
  *
@@ -301,16 +304,19 @@ const receiveStampImage = (req, res) => __awaiter(void 0, void 0, void 0, functi
     const { roomId } = yield (0, exports.resolveStampRoom)(req, q.roomId);
     const row = yield prisma_1.prisma.receiveStamp.findUnique({
         where: { roomId },
-        select: { image: true, mime: true, updatedAt: true },
+        select: { image: true, mime: true, updatedAt: true, storageKey: true },
     });
-    if (!(row === null || row === void 0 ? void 0 : row.image))
+    if (!row)
+        throw new errors_1.NotFoundError("No stamp artwork uploaded yet");
+    const art = yield (0, blobStore_1.readBlob)(row.storageKey, row.image);
+    if (!art)
         throw new errors_1.NotFoundError("No stamp artwork uploaded yet");
     return res
         .header("Content-Type", row.mime || "image/png")
         .header("Cache-Control", "private, max-age=0, must-revalidate")
         .header("ETag", `"${row.updatedAt.getTime()}"`)
         .code(200)
-        .send(Buffer.from(row.image));
+        .send(art);
 });
 exports.receiveStampImage = receiveStampImage;
 /** POST /document/receive-stamp/image — upload the office's artwork. */
@@ -413,15 +419,24 @@ const uploadReceiveStampImage = (req, res) => __awaiter(void 0, void 0, void 0, 
             `${want.toFixed(2)}:1. This image is ${imageW}x${imageH}, which is ` +
             `${ratio.toFixed(2)}:1 — either crop it to the stamp itself, or correct the size above.`);
     }
+    // Keyed by room: one artwork object per office, replaced on re-upload
+    // rather than leaving the old one behind.
+    const stored = yield (0, blobStore_1.storeBlob)("stamp", buf, "png", mime, roomId);
     const saved = yield prisma_1.prisma.receiveStamp.upsert({
         where: { roomId },
         update: {
-            image: buf, mime, imageW, imageH, widthMm, heightMm, lineId,
+            image: stored.column,
+            storageKey: stored.storageKey,
+            storageSha256: stored.storageSha256,
+            mime, imageW, imageH, widthMm, heightMm, lineId,
             updatedById: actorId,
         },
         create: {
             roomId, userId: actorId, updatedById: actorId, lineId,
-            image: buf, mime, imageW, imageH, widthMm, heightMm,
+            image: stored.column,
+            storageKey: stored.storageKey,
+            storageSha256: stored.storageSha256,
+            mime, imageW, imageH, widthMm, heightMm,
         },
         select: SHAPE,
     });
@@ -524,17 +539,20 @@ exports.deleteReceiveStamp = deleteReceiveStamp;
  * person's name and signature.
  */
 const renderReceiveStamp = (roomId_1, userId_1, ...args_1) => __awaiter(void 0, [roomId_1, userId_1, ...args_1], void 0, function* (roomId, userId, when = new Date(), widthPx = 900) {
-    var _a;
     const row = yield prisma_1.prisma.receiveStamp.findUnique({
         where: { roomId },
-        select: Object.assign(Object.assign({}, SHAPE), { image: true }),
+        select: Object.assign(Object.assign({}, SHAPE), { image: true, storageKey: true }),
     });
-    if (!(row === null || row === void 0 ? void 0 : row.image))
+    if (!row)
+        throw new errors_1.NotFoundError("No stamp artwork uploaded yet");
+    const artwork = yield (0, blobStore_1.readBlob)(row.storageKey, row.image);
+    if (!artwork)
         throw new errors_1.NotFoundError("No stamp artwork uploaded yet");
     const sig = yield prisma_1.prisma.signature.findFirst({
         where: { userId, active: true },
-        select: { signature: true },
+        select: { signature: true, storageKey: true },
     });
+    const sigRaw = sig ? yield (0, signatureBytes_1.signatureBytes)(sig) : null;
     const mine = yield prisma_1.prisma.receiveStampName.findUnique({
         where: { stampId_userId: { stampId: row.id, userId } },
         select: { nickname: true },
@@ -549,7 +567,7 @@ const renderReceiveStamp = (roomId_1, userId_1, ...args_1) => __awaiter(void 0, 
     const page = pdf.addPage([wPt, hPt]);
     const font = yield pdf.embedFont(StandardFonts.Helvetica);
     // The artwork fills the page — it IS the page.
-    const art = yield pdf.embedPng(Buffer.from(row.image));
+    const art = yield pdf.embedPng(artwork);
     page.drawImage(art, { x: 0, y: 0, width: wPt, height: hPt });
     /**
      * Basis points are measured from the TOP; PDF measures from the bottom.
@@ -559,12 +577,12 @@ const renderReceiveStamp = (roomId_1, userId_1, ...args_1) => __awaiter(void 0, 
         x: (xBp / BP) * wPt,
         yTop: (yBp / BP) * hPt,
     });
-    if ((_a = sig === null || sig === void 0 ? void 0 : sig.signature) === null || _a === void 0 ? void 0 : _a.length) {
+    if (sigRaw === null || sigRaw === void 0 ? void 0 : sigRaw.length) {
         const { x, yTop } = toPt(row.sigX, row.sigY);
         const w = (row.sigW / BP) * wPt;
         const h = (row.sigH / BP) * hPt;
         try {
-            const img = yield pdf.embedPng(Buffer.from(sig.signature));
+            const img = yield pdf.embedPng(sigRaw);
             // Fit inside the box, keeping the writing's own proportions — a
             // stretched signature is not the person's signature.
             const scale = Math.min(w / img.width, h / img.height);
@@ -577,7 +595,7 @@ const renderReceiveStamp = (roomId_1, userId_1, ...args_1) => __awaiter(void 0, 
                 height: dh,
             });
         }
-        catch (_b) {
+        catch (_a) {
             // A signature stored as something other than PNG. The stamp is still
             // worth producing; the rest of it is correct.
         }
@@ -671,19 +689,24 @@ const applyReceiveStamp = (req, res) => __awaiter(void 0, void 0, void 0, functi
     yield requireCanSeeDocument(req, b.documentId);
     const stamp = yield prisma_1.prisma.receiveStamp.findUnique({
         where: { roomId },
-        select: { image: true },
+        // The key counts as set up too: the bytes may be in the bucket, which
+        // leaves the column null on a perfectly configured stamp.
+        select: { image: true, storageKey: true },
     });
-    if (!(stamp === null || stamp === void 0 ? void 0 : stamp.image)) {
+    if (!(stamp === null || stamp === void 0 ? void 0 : stamp.image) && !(stamp === null || stamp === void 0 ? void 0 : stamp.storageKey)) {
         throw new errors_1.ValidationError("Your office has not set up its receiving stamp yet — Document module, Manage Receive Stamp. Anyone in the office can upload it, and it then works for everybody.");
     }
     const file = yield prisma_1.prisma.decodedFile.findFirst({
         where: { documentId: b.documentId },
-        select: { fileDecoded: true },
+        select: { storageKey: true },
     });
-    if (!(file === null || file === void 0 ? void 0 : file.fileDecoded))
+    const applyBytes = file
+        ? yield (0, documentBytes_1.documentBytes)(b.documentId, file.storageKey)
+        : null;
+    if (!applyBytes)
         throw new errors_1.NotFoundError("Document file not found");
     const { pdfPageSizes } = yield Promise.resolve().then(() => __importStar(require("../service/pdfRaster")));
-    const sizes = yield pdfPageSizes(Buffer.from(file.fileDecoded));
+    const sizes = yield pdfPageSizes(applyBytes);
     const page = Math.max(1, Math.round(Number((_a = b.page) !== null && _a !== void 0 ? _a : 1) || 1));
     if (page > sizes.length) {
         throw new errors_1.ValidationError(`That document has ${sizes.length} page${sizes.length === 1 ? "" : "s"}.`);
@@ -755,7 +778,7 @@ exports.removeReceiveStampMark = removeReceiveStampMark;
  * original bytes — and any seal over them — remain untouched.
  */
 const stampedDocument = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    var _a, _b, _c;
+    var _a, _b;
     const q = req.query;
     if (!q.documentId)
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
@@ -763,9 +786,17 @@ const stampedDocument = (req, res) => __awaiter(void 0, void 0, void 0, function
     yield requireCanSeeDocument(req, q.documentId);
     const doc = yield prisma_1.prisma.document.findUnique({
         where: { id: q.documentId },
-        select: { title: true, file: { select: { fileDecoded: true, fileName: true } } },
+        select: {
+            title: true,
+            file: {
+                select: { fileName: true, storageKey: true },
+            },
+        },
     });
-    if (!((_a = doc === null || doc === void 0 ? void 0 : doc.file) === null || _a === void 0 ? void 0 : _a.fileDecoded))
+    if (!(doc === null || doc === void 0 ? void 0 : doc.file))
+        throw new errors_1.NotFoundError("Document file not found");
+    const stampedSource = yield (0, documentBytes_1.documentBytes)(q.documentId, doc.file.storageKey);
+    if (!stampedSource)
         throw new errors_1.NotFoundError("Document file not found");
     const marks = yield prisma_1.prisma.receiveStampMark.findMany({
         where: { documentId: q.documentId },
@@ -776,17 +807,17 @@ const stampedDocument = (req, res) => __awaiter(void 0, void 0, void 0, function
         },
     });
     const { PDFDocument } = yield Promise.resolve().then(() => __importStar(require("pdf-lib")));
-    const pdf = yield PDFDocument.load(Buffer.from(doc.file.fileDecoded));
+    const pdf = yield PDFDocument.load(stampedSource);
     const pages = pdf.getPages();
     for (const m of marks) {
         /*
           A mark made before offices shared a stamp has no room on it. Fall back
           to the room whose stamp that person set up, so old marks still print.
         */
-        const roomId = (_b = m.roomId) !== null && _b !== void 0 ? _b : (_c = (yield prisma_1.prisma.receiveStamp.findFirst({
+        const roomId = (_a = m.roomId) !== null && _a !== void 0 ? _a : (_b = (yield prisma_1.prisma.receiveStamp.findFirst({
             where: { userId: m.userId, roomId: { not: null } },
             select: { roomId: true },
-        }))) === null || _c === void 0 ? void 0 : _c.roomId;
+        }))) === null || _b === void 0 ? void 0 : _b.roomId;
         if (!roomId)
             continue;
         const cfg = yield prisma_1.prisma.receiveStamp.findUnique({
@@ -805,7 +836,7 @@ const stampedDocument = (req, res) => __awaiter(void 0, void 0, void 0, function
             // must not quietly move that date.
             png = yield (0, exports.renderReceiveStamp)(roomId, m.userId, m.stampedAt, 1200);
         }
-        catch (_d) {
+        catch (_c) {
             continue;
         }
         const img = yield pdf.embedPng(png);

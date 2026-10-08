@@ -31,6 +31,8 @@ import {
   pdfPageSizes,
   renderPdfPage,
 } from "../service/pdfRaster";
+import { readBlob } from "../service/blobStore";
+import { documentBytes } from "../service/documentBytes";
 
 const fullName = (
   u?: { firstName?: string | null; lastName?: string | null } | null,
@@ -131,10 +133,13 @@ export const routingSignSheet = async (
       try {
         const file = await prisma.decodedFile.findFirst({
           where: { documentId: doc.id },
-          select: { fileDecoded: true },
+          select: { storageKey: true },
         });
-        if (file?.fileDecoded) {
-          sizes = await pdfPageSizes(Buffer.from(file.fileDecoded));
+        const sizeBytes = file
+          ? await documentBytes(doc.id, file.storageKey)
+          : null;
+        if (sizeBytes) {
+          sizes = await pdfPageSizes(sizeBytes);
         }
       } catch (e) {
         // A file we cannot open must not take the whole screen down; the
@@ -240,9 +245,14 @@ export const routingPageImage = async (
   try {
     const file = await prisma.decodedFile.findFirst({
       where: { documentId: params.documentId },
-      select: { fileDecoded: true, fileSize: true },
+      select: { fileSize: true, storageKey: true },
     });
-    if (!file?.fileDecoded) throw new NotFoundError("FILE NOT FOUND");
+    if (!file) throw new NotFoundError("FILE NOT FOUND");
+    const pageBytes = await documentBytes(
+      params.documentId,
+      file.storageKey,
+    );
+    if (!pageBytes) throw new NotFoundError("FILE NOT FOUND");
 
     // The source PDF cannot change once a routing is dispatched, so the
     // rendered page is safe to cache on the device. Keyed on the file's
@@ -253,7 +263,7 @@ export const routingPageImage = async (
     }
 
     const { png, widthPx, heightPx } = await renderPdfPage(
-      Buffer.from(file.fileDecoded),
+      pageBytes,
       page,
       width,
     );

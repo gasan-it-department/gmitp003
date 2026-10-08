@@ -1574,7 +1574,9 @@ model ComplaintEvidence {
   fileName     String
   fileType     String
   fileSize     Int
-  data         Bytes
+  // Nullable because the bytes may live in the bucket instead; see
+  // storageKey below. Relaxing NOT NULL is additive and loses nothing.
+  data         Bytes?
   uploadedById String?
   caption      String?
   createdAt    DateTime  @default(now())
@@ -2008,7 +2010,9 @@ model DocumentReceivePage {
   recordId  String
   page      Int      @default(1)
   mime      String
-  bytes     Bytes
+  // Nullable because the bytes may live in the bucket instead; see
+  // storageKey below. Relaxing NOT NULL is additive and loses nothing.
+  bytes     Bytes?
   createdAt DateTime @default(now())
 
   @@index([recordId, page])
@@ -3092,7 +3096,9 @@ model ChatReadState {
 model ChatImage {
   id        String   @id @default(uuid())
   mime      String
-  bytes     Bytes
+  // Nullable because the bytes may live in the bucket instead; see
+  // storageKey below. Relaxing NOT NULL is additive and loses nothing.
+  bytes     Bytes?
   createdAt DateTime @default(now())
   /// Where the bytes live in object storage, once moved there.
   /// Null means they are still in the column beside this one; reads
@@ -3112,7 +3118,9 @@ model ChatFile {
   name      String
   mime      String
   size      Int
-  bytes     Bytes
+  // Nullable because the bytes may live in the bucket instead; see
+  // storageKey below. Relaxing NOT NULL is additive and loses nothing.
+  bytes     Bytes?
   createdAt DateTime @default(now())
   /// Where the bytes live in object storage, once moved there.
   /// Null means they are still in the column beside this one; reads

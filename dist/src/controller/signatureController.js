@@ -42,6 +42,8 @@ exports.setSignatureQr = exports.setSignaturePlacement = exports.deleteUserSigna
 const prisma_1 = require("../barrel/prisma");
 const errors_1 = require("../errors/errors");
 const handler_1 = require("../middleware/handler");
+const blobStore_1 = require("../service/blobStore");
+const signatureBytes_1 = require("../service/signatureBytes");
 const ALLOWED_MIMES = new Set([
     "image/png",
     "image/jpeg",
@@ -106,9 +108,15 @@ const listUserSignatures = (req, res) => __awaiter(void 0, void 0, void 0, funct
             cursor,
             orderBy: [{ active: "desc" }, { timestamp: "desc" }],
         });
-        const list = rows.map((r) => {
+        /*
+          Async because the preview may have to come from the bucket. The
+          previous synchronous map read the column directly, which would have
+          shown an empty preview for every signature uploaded after the bytes
+          moved out of Postgres.
+        */
+        const list = yield Promise.all(rows.map((r) => __awaiter(void 0, void 0, void 0, function* () {
             var _a;
-            const buf = r.signature ? Buffer.from(r.signature) : null;
+            const buf = yield (0, signatureBytes_1.signatureBytes)(r);
             const mime = sniffMime(buf);
             return {
                 id: r.id,
@@ -123,14 +131,17 @@ const listUserSignatures = (req, res) => __awaiter(void 0, void 0, void 0, funct
                 // box was drawn on the page (the old behaviour).
                 inkHeightPt: r.inkHeightPt,
                 baselinePct: r.baselinePct,
-                ink: r.inkX0 === null || r.inkY0 === null || r.inkX1 === null || r.inkY1 === null
+                ink: r.inkX0 === null ||
+                    r.inkY0 === null ||
+                    r.inkX1 === null ||
+                    r.inkY1 === null
                     ? null
                     : { x0: r.inkX0, y0: r.inkY0, x1: r.inkX1, y1: r.inkY1 },
                 // base64 data URL so the UI can <img src={preview}> directly.
                 preview: toDataUrl(buf, mime),
                 size: (_a = buf === null || buf === void 0 ? void 0 : buf.length) !== null && _a !== void 0 ? _a : 0,
             };
-        });
+        })));
         const lastCursor = list.length > 0 ? list[list.length - 1].id : null;
         const hasMore = list.length === limit;
         return res.code(200).send({ list, lastCursor, hasMore });
@@ -213,6 +224,13 @@ const uploadUserSignature = (req, res) => __awaiter(void 0, void 0, void 0, func
         const finalTitle = title.trim() ||
             (filename === null || filename === void 0 ? void 0 : filename.replace(/\.[^.]+$/, "").slice(0, 40)) ||
             "My Signature";
+        /*
+          Uploaded before the transaction opens — a network call inside one
+          would hold it open, and orphan the object if it rolled back. A bucket
+          that is down hands the bytes back to go in the column instead, so
+          nobody is locked out of saving a signature by it.
+        */
+        const stored = yield (0, blobStore_1.storeBlob)("signature", fileBuffer, "png", "image/png");
         const created = yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
             // If the user asked for this one to be active, clear the others.
             if (setActive) {
@@ -229,7 +247,7 @@ const uploadUserSignature = (req, res) => __awaiter(void 0, void 0, void 0, func
                     shouldBeActive = true;
             }
             return tx.signature.create({
-                data: Object.assign({ userId, title: finalTitle, signature: fileBuffer, active: shouldBeActive }, inkFields(ink)),
+                data: Object.assign({ id: stored.id, userId, title: finalTitle, signature: stored.column, storageKey: stored.storageKey, storageSha256: stored.storageSha256, active: shouldBeActive }, inkFields(ink)),
                 select: {
                     id: true,
                     title: true,
@@ -351,7 +369,10 @@ const inkFields = (raw) => {
     try {
         const o = JSON.parse(raw);
         const x0 = frac(o.x0), y0 = frac(o.y0), x1 = frac(o.x1), y1 = frac(o.y1);
-        if (x0 === undefined || y0 === undefined || x1 === undefined || y1 === undefined)
+        if (x0 === undefined ||
+            y0 === undefined ||
+            x1 === undefined ||
+            y1 === undefined)
             return {};
         if (x1 - x0 < 0.01 || y1 - y0 < 0.01)
             return {};

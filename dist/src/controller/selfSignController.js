@@ -33,6 +33,8 @@ exports.selfSignRemove = exports.selfSignArchive = exports.selfSignDetail = expo
 const prisma_1 = require("../barrel/prisma");
 const errors_1 = require("../errors/errors");
 const callerScope_1 = require("../service/callerScope");
+const blobStore_1 = require("../service/blobStore");
+const signatureBytes_1 = require("../service/signatureBytes");
 const MAX_DOC_BYTES = 25 * 1024 * 1024; // 25 MB
 // ─── Upload ────────────────────────────────────────────────────────────
 const selfSignUpload = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
@@ -98,6 +100,14 @@ const selfSignUpload = (req, res) => __awaiter(void 0, void 0, void 0, function*
         if (!lineId) {
             throw new errors_1.ValidationError("INVALID REQUIRED FIELDS");
         }
+        /*
+          The bytes go to the bucket BEFORE the transaction opens. Uploading
+          from inside one would hold it open for the length of a network call,
+          and leave an orphaned object behind if it rolled back. If the bucket
+          is unreachable this hands back the bytes to store in the column
+          instead, so filing a document never depends on it.
+        */
+        const stored = yield (0, blobStore_1.storeBlob)("document", upload.buffer, "pdf", upload.mimetype);
         const result = yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
             const doc = yield tx.document.create({
                 data: {
@@ -113,11 +123,14 @@ const selfSignUpload = (req, res) => __awaiter(void 0, void 0, void 0, function*
             });
             yield tx.decodedFile.create({
                 data: {
+                    id: stored.id,
                     documentId: doc.id,
                     fileName: upload.fileName,
                     fileSize: String(upload.buffer.length),
                     fileType: upload.mimetype,
-                    fileDecoded: upload.buffer,
+                    fileDecoded: stored.column,
+                    storageKey: stored.storageKey,
+                    storageSha256: stored.storageSha256,
                 },
             });
             // One arrangement per self-sign doc (no queue). The placements
@@ -552,6 +565,7 @@ const selfSignDetail = (req, res) => __awaiter(void 0, void 0, void 0, function*
                 where: { id: arrangement.signatureId, userId: actorId },
                 select: {
                     signature: true,
+                    storageKey: true,
                     inkHeightPt: true,
                     baselinePct: true,
                     inkX0: true,
@@ -567,6 +581,7 @@ const selfSignDetail = (req, res) => __awaiter(void 0, void 0, void 0, function*
                 orderBy: [{ active: "desc" }, { timestamp: "desc" }],
                 select: {
                     signature: true,
+                    storageKey: true,
                     inkHeightPt: true,
                     baselinePct: true,
                     inkX0: true,
@@ -576,8 +591,9 @@ const selfSignDetail = (req, res) => __awaiter(void 0, void 0, void 0, function*
                 },
             });
         }
-        if (sigRow === null || sigRow === void 0 ? void 0 : sigRow.signature) {
-            const buf = Buffer.from(sigRow.signature);
+        const sigRaw = sigRow ? yield (0, signatureBytes_1.signatureBytes)(sigRow) : null;
+        if (sigRaw) {
+            const buf = sigRaw;
             const text = buf.toString("utf8").trim();
             if (text.startsWith("data:image/")) {
                 signatureDataUrl = text;

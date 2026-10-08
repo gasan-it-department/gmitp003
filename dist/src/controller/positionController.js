@@ -29,6 +29,7 @@ const encryption_1 = require("../service/encryption");
 const Cloundinary_1 = __importDefault(require("../class/Cloundinary"));
 const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
+const blobStore_1 = require("../service/blobStore");
 const frontEnd = process.env.VITE_LOCAL_FRONTEND_URL;
 const positionList = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     const params = req.query;
@@ -1613,6 +1614,8 @@ const positionQuickRegister = (req, res) => __awaiter(void 0, void 0, void 0, fu
         if (photo) {
             try {
                 const fileUrl = `${selfBaseUrl(req)}/user/photo/${userId}?v=${Date.now()}`;
+                // Keyed by user, same reasoning as the HR upload path.
+                const stored = yield (0, blobStore_1.storeBlob)("profile", photo.buffer, (photo.mimetype || "").includes("png") ? "png" : "jpg", photo.mimetype, userId);
                 const picData = {
                     file_name: photo.filename || "avatar",
                     file_url: fileUrl,
@@ -1620,7 +1623,9 @@ const positionQuickRegister = (req, res) => __awaiter(void 0, void 0, void 0, fu
                     file_size: String(photo.buffer.length),
                     file_type: "image",
                     mime: photo.mimetype,
-                    bytes: photo.buffer,
+                    bytes: stored.column,
+                    storageKey: stored.storageKey,
+                    storageSha256: stored.storageSha256,
                 };
                 yield prisma_1.prisma.userProfilePicture.upsert({
                     where: { userId },

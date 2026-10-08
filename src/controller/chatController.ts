@@ -2,6 +2,7 @@ import { FastifyReply, FastifyRequest } from "../barrel/fastify";
 import { prisma } from "../barrel/prisma";
 import { ValidationError } from "../errors/errors";
 import { sendPushToUser } from "../service/expoPush";
+import { readBlob, storeBlob } from "../service/blobStore";
 
 /**
  * Employee chat — three fixed rooms per line:
@@ -876,8 +877,15 @@ export const chatUploadImage = async (req: FastifyRequest, res: FastifyReply) =>
   if (!file.mimetype.startsWith("image/")) throw new ValidationError("FILE_MUST_BE_AN_IMAGE");
   if (file.buffer.length > 8 * 1024 * 1024) throw new ValidationError("IMAGE_TOO_LARGE");
 
+  const stored = await storeBlob("chat", file.buffer, "img", file.mimetype);
   const saved = await prisma.chatImage.create({
-    data: { mime: file.mimetype, bytes: file.buffer },
+    data: {
+      id: stored.id,
+      mime: file.mimetype,
+      bytes: stored.column,
+      storageKey: stored.storageKey,
+      storageSha256: stored.storageSha256,
+    },
     select: { id: true },
   });
   return res.code(200).send({ imageId: saved.id, url: imageUrl(req, saved.id) });
@@ -889,13 +897,14 @@ export const chatServeImage = async (req: FastifyRequest, res: FastifyReply) => 
   if (!id) throw new ValidationError("BAD_REQUEST");
   const img = await prisma.chatImage.findUnique({
     where: { id },
-    select: { bytes: true, mime: true },
+    select: { bytes: true, mime: true, storageKey: true },
   });
-  if (!img?.bytes) return res.code(404).send({ message: "No image" });
+  const body = img ? await readBlob(img.storageKey, img.bytes) : null;
+  if (!body) return res.code(404).send({ message: "No image" });
   return res
-    .header("Content-Type", img.mime || "image/jpeg")
+    .header("Content-Type", img?.mime || "image/jpeg")
     .header("Cache-Control", "public, max-age=31536000, immutable")
-    .send(Buffer.from(img.bytes));
+    .send(body);
 };
 
 // POST /chat/file  (multipart, field "file") → { fileId, name, size, url }
@@ -919,12 +928,16 @@ export const chatUploadFile = async (req: FastifyRequest, res: FastifyReply) => 
   if (!file) throw new ValidationError("MISSING_FILE");
   if (file.buffer.length > 20 * 1024 * 1024) throw new ValidationError("FILE_TOO_LARGE");
 
+  const stored = await storeBlob("chat", file.buffer, "bin", file.mimetype);
   const saved = await prisma.chatFile.create({
     data: {
+      id: stored.id,
       name: file.filename.slice(0, 200),
       mime: file.mimetype,
       size: file.buffer.length,
-      bytes: file.buffer,
+      bytes: stored.column,
+      storageKey: stored.storageKey,
+      storageSha256: stored.storageSha256,
     },
     select: { id: true, name: true, size: true },
   });
@@ -942,13 +955,14 @@ export const chatServeFile = async (req: FastifyRequest, res: FastifyReply) => {
   if (!id) throw new ValidationError("BAD_REQUEST");
   const f = await prisma.chatFile.findUnique({
     where: { id },
-    select: { bytes: true, mime: true, name: true },
+    select: { bytes: true, mime: true, name: true, storageKey: true },
   });
-  if (!f?.bytes) return res.code(404).send({ message: "No file" });
-  const safeName = (f.name || "file").replace(/["\r\n]/g, "");
+  const body = f ? await readBlob(f.storageKey, f.bytes) : null;
+  if (!body) return res.code(404).send({ message: "No file" });
+  const safeName = (f?.name || "file").replace(/["\r\n]/g, "");
   return res
-    .header("Content-Type", f.mime || "application/octet-stream")
+    .header("Content-Type", f?.mime || "application/octet-stream")
     .header("Content-Disposition", `inline; filename="${safeName}"`)
     .header("Cache-Control", "public, max-age=31536000, immutable")
-    .send(Buffer.from(f.bytes));
+    .send(body);
 };

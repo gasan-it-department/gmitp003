@@ -8,6 +8,7 @@
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
 import { prisma, Prisma } from "../barrel/prisma";
 import { AppError, NotFoundError, ValidationError } from "../errors/errors";
+import { readBlob, storeBlob } from "../service/blobStore";
 
 const CATEGORIES = new Set([
   "general",
@@ -96,6 +97,11 @@ export const createComplaint = async (
   }
 
   try {
+    // Uploaded before the transaction opens, so a slow bucket cannot hold
+    // a write open and a rollback cannot strand a half-written row.
+    const storedEvidence = await Promise.all(
+      files.map((f) => storeBlob("evidence", f.buffer, "bin", f.fileType)),
+    );
     const created = await prisma.$transaction(async (tx) => {
       const c = await tx.complaint.create({
         data: {
@@ -111,12 +117,15 @@ export const createComplaint = async (
       });
       if (files.length > 0) {
         await tx.complaintEvidence.createMany({
-          data: files.map((f) => ({
+          data: files.map((f, i) => ({
+            id: storedEvidence[i].id,
             complaintId: c.id,
             fileName: f.fileName,
             fileType: f.fileType,
             fileSize: f.buffer.length,
-            data: f.buffer,
+            data: storedEvidence[i].column,
+            storageKey: storedEvidence[i].storageKey,
+            storageSha256: storedEvidence[i].storageSha256,
             uploadedById: userId,
           })),
         });
@@ -171,13 +180,21 @@ export const addEvidence = async (req: FastifyRequest, res: FastifyReply) => {
   }
 
   try {
+    // Uploaded in parallel, before the write, for the same reason as
+    // everywhere else: no network call holding a write open.
+    const storedEvidence = await Promise.all(
+      files.map((f) => storeBlob("evidence", f.buffer, "bin", f.fileType)),
+    );
     await prisma.complaintEvidence.createMany({
-      data: files.map((f) => ({
+      data: files.map((f, i) => ({
+        id: storedEvidence[i].id,
         complaintId,
         fileName: f.fileName,
         fileType: f.fileType,
         fileSize: f.buffer.length,
-        data: f.buffer,
+        data: storedEvidence[i].column,
+        storageKey: storedEvidence[i].storageKey,
+        storageSha256: storedEvidence[i].storageSha256,
         uploadedById: userId,
       })),
     });
@@ -202,7 +219,8 @@ export const streamEvidence = async (
       where: { id: params.id },
     });
     if (!row) throw new NotFoundError("Evidence not found");
-    const buf = Buffer.from(row.data);
+    const buf = await readBlob(row.storageKey, row.data);
+    if (!buf) throw new NotFoundError("Evidence not found");
     res.header("Content-Type", row.fileType || "application/octet-stream");
     res.header(
       "Content-Disposition",
