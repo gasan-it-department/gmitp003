@@ -393,7 +393,7 @@ const exportPds = (req, res, opts) => __awaiter(void 0, void 0, void 0, function
         yield (0, callerScope_1.requireSameLine)(req, app.lineId);
     }
     // ── Decrypt encrypted PII ─────────────────────────────────────────────
-    const [email, civilStatus, mobileNo, resProvinceRaw, resCityRaw, resBarangayRaw, resStreet, resSub, resHouse, permaProvinceRaw, permaCityRaw, permaBarangayRaw, permaStreet, permaSub, permaHouse, fatherSurname, fatherFirstname, motherSurname, motherFirstname, birthDate, umidNo, pagIbigNo, philHealthNo, philSys, tinNo, agencyNo, spouseSurname, spouseFirstname, spouseMiddle,] = yield Promise.all([
+    const [email, civilStatus, mobileNo, resProvinceRaw, resCityRaw, resBarangayRaw, resStreet, resSub, resHouse, permaProvinceRaw, permaCityRaw, permaBarangayRaw, permaStreet, permaSub, permaHouse, resZip, permaZip, fatherSurname, fatherFirstname, motherSurname, motherFirstname, birthDate, umidNo, pagIbigNo, philHealthNo, philSys, tinNo, agencyNo, spouseSurname, spouseFirstname, spouseMiddle,] = yield Promise.all([
         dec(app.email, app.emailIv),
         dec(app.cvilStatus, app.cvilStatusIv),
         dec(app.mobileNo, app.ivMobileNo),
@@ -409,6 +409,8 @@ const exportPds = (req, res, opts) => __awaiter(void 0, void 0, void 0, function
         dec(app.permaStreet, app.permaStreetIv),
         dec(app.permaSub, app.permaSubIv),
         dec(app.permahouseBlock, app.permahouseBlockIv),
+        dec(app.resZipCode, app.resZipCodeIv),
+        dec(app.permaZipCode, app.permaZipCodeIv),
         dec(app.fatherSurname, app.fatherSurnameIv),
         dec(app.fatherFirstname, app.fatherFirstnameIv),
         dec(app.motherSurname, app.motherSurnameIv),
@@ -623,8 +625,23 @@ const exportPds = (req, res, opts) => __awaiter(void 0, void 0, void 0, function
         }
         zip.file("xl/styles.xml", stylesXml);
     }
-    // Append the "If YES, give details" answers onto their label cells (sheet 4).
     const shared = parseSharedStrings(yield zip.file("xl/sharedStrings.xml").async("string"));
+    /*
+      The two ZIP CODE boxes share a cell with their own label — G24:H24 and
+      G31:H31 are the caption AND the space to write in, exactly as on the
+      printed form. So they are filled the same way the "If YES, give
+      details" answers are: keep the label, append the value.
+  
+      Both zip codes were being collected and encrypted all along and simply
+      never reached the form, which is why every exported PDS had two empty
+      boxes.
+    */
+    const s1 = zip.file("xl/worksheets/sheet1.xml");
+    if (s1) {
+        const xml = yield s1.async("string");
+        zip.file("xl/worksheets/sheet1.xml", appendDetails(xml, { G24: resZip, G31: permaZip }, shared));
+    }
+    // Append the "If YES, give details" answers onto their label cells (sheet 4).
     const s4 = zip.file("xl/worksheets/sheet4.xml");
     if (s4) {
         const xml = yield s4.async("string");
