@@ -24,6 +24,7 @@ const errors_1 = require("../errors/errors");
 const encryption_1 = require("../service/encryption");
 const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
+const callerScope_1 = require("../service/callerScope");
 // jszip@3.1.3 ships no type declarations; a typed require keeps ts-node happy
 // without pulling in a missing @types package.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -348,10 +349,15 @@ const exportOwnPdsExcel = (req, res) => __awaiter(void 0, void 0, void 0, functi
     if (!own)
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
     req.query = { id: own };
-    return (0, exports.exportPdsExcel)(req, res);
+    // No line check: there is no account behind a temp token, and the id
+    // came from the token rather than the caller.
+    return exportPds(req, res, { scopeToCallerLine: false });
 });
 exports.exportOwnPdsExcel = exportOwnPdsExcel;
-const exportPdsExcel = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+/** The HR download. Restricted to the caller's own municipality. */
+const exportPdsExcel = (req, res) => __awaiter(void 0, void 0, void 0, function* () { return exportPds(req, res, { scopeToCallerLine: true }); });
+exports.exportPdsExcel = exportPdsExcel;
+const exportPds = (req, res, opts) => __awaiter(void 0, void 0, void 0, function* () {
     var _a, _b, _c, _d;
     const q = req.query;
     let app = null;
@@ -370,6 +376,22 @@ const exportPdsExcel = (req, res) => __awaiter(void 0, void 0, void 0, function*
     }
     if (!app)
         throw new errors_1.NotFoundError("APPLICATION NOT FOUND");
+    /*
+      This PDS belongs to a municipality, and the id came from the query
+      string. Without this, any signed-in HR user could export any other
+      line's records by changing it.
+  
+      Checked against the record that was actually loaded rather than
+      against a lineId passed alongside it, because a caller who can choose
+      both values can always make them agree.
+  
+      Skipped for the applicant's own copy, which runs on a temp token with
+      no account behind it and is already restricted to one application by
+      exportOwnPdsExcel.
+    */
+    if (opts.scopeToCallerLine) {
+        yield (0, callerScope_1.requireSameLine)(req, app.lineId);
+    }
     // ── Decrypt encrypted PII ─────────────────────────────────────────────
     const [email, civilStatus, mobileNo, resProvinceRaw, resCityRaw, resBarangayRaw, resStreet, resSub, resHouse, permaProvinceRaw, permaCityRaw, permaBarangayRaw, permaStreet, permaSub, permaHouse, fatherSurname, fatherFirstname, motherSurname, motherFirstname, birthDate, umidNo, pagIbigNo, philHealthNo, philSys, tinNo, agencyNo, spouseSurname, spouseFirstname, spouseMiddle,] = yield Promise.all([
         dec(app.email, app.emailIv),
@@ -651,4 +673,3 @@ const exportPdsExcel = (req, res) => __awaiter(void 0, void 0, void 0, function*
     res.header("Content-Disposition", `attachment; filename="PDS_${safeName}.xlsx"`);
     return res.send(out);
 });
-exports.exportPdsExcel = exportPdsExcel;

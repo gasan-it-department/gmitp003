@@ -11,6 +11,7 @@ import { NotFoundError, ValidationError } from "../errors/errors";
 import { EncryptionService } from "../service/encryption";
 import fs from "fs";
 import path from "path";
+import { requireSameLine } from "../service/callerScope";
 
 // jszip@3.1.3 ships no type declarations; a typed require keeps ts-node happy
 // without pulling in a missing @types package.
@@ -365,12 +366,21 @@ export const exportOwnPdsExcel = async (
   const own = (req.user as { id?: string } | undefined)?.id;
   if (!own) throw new ValidationError("INVALID REQUIRED ID");
   (req as { query: unknown }).query = { id: own };
-  return exportPdsExcel(req, res);
+  // No line check: there is no account behind a temp token, and the id
+  // came from the token rather than the caller.
+  return exportPds(req, res, { scopeToCallerLine: false });
 };
 
+/** The HR download. Restricted to the caller's own municipality. */
 export const exportPdsExcel = async (
   req: FastifyRequest,
   res: FastifyReply,
+) => exportPds(req, res, { scopeToCallerLine: true });
+
+const exportPds = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+  opts: { scopeToCallerLine: boolean },
 ) => {
   const q = req.query as { id?: string; userId?: string };
 
@@ -387,6 +397,23 @@ export const exportPdsExcel = async (
     throw new ValidationError("INVALID REQUIRED ID");
   }
   if (!app) throw new NotFoundError("APPLICATION NOT FOUND");
+
+  /*
+    This PDS belongs to a municipality, and the id came from the query
+    string. Without this, any signed-in HR user could export any other
+    line's records by changing it.
+
+    Checked against the record that was actually loaded rather than
+    against a lineId passed alongside it, because a caller who can choose
+    both values can always make them agree.
+
+    Skipped for the applicant's own copy, which runs on a temp token with
+    no account behind it and is already restricted to one application by
+    exportOwnPdsExcel.
+  */
+  if (opts.scopeToCallerLine) {
+    await requireSameLine(req, app.lineId);
+  }
 
   // ── Decrypt encrypted PII ─────────────────────────────────────────────
   const [
