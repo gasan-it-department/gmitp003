@@ -11,17 +11,11 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.signatureBytes = void 0;
 /**
- * A signature's image bytes, from wherever they live.
+ * A signature's image bytes.
  *
- * Unlike a document, a signature is a PNG of a hundred kilobytes or so, and
- * the column is still SELECTed alongside the key as the fallback rather than
- * fetched lazily on a miss. A second query per signature would cost more
- * than the bytes it saved moving — the lazy path in `documentBytes` exists
- * because a PDF can be 77 MB, not as a general rule.
- *
- * Takes the row rather than an id so it works for every one of the shapes
- * the stamping code selects, including the ones that fetch many at once.
+ * Takes the row rather than a key so it works for every shape the stamping
+ * code selects, including the ones that fetch many signatures at once.
  */
 const blobStore_1 = require("./blobStore");
-const signatureBytes = (row) => __awaiter(void 0, void 0, void 0, function* () { var _a; return (0, blobStore_1.readBlob)((_a = row.storageKey) !== null && _a !== void 0 ? _a : null, row.signature); });
+const signatureBytes = (row) => __awaiter(void 0, void 0, void 0, function* () { var _a; return (0, blobStore_1.readBlob)((_a = row.storageKey) !== null && _a !== void 0 ? _a : null); });
 exports.signatureBytes = signatureBytes;

@@ -1503,7 +1503,6 @@ const uploadDisseminationDocument = (req, res) => __awaiter(void 0, void 0, void
                     fileName: upload.filename,
                     fileSize: String(upload.buffer.length),
                     fileType: upload.mimetype,
-                    fileDecoded: stored.column,
                     storageKey: stored.storageKey,
                     storageSha256: stored.storageSha256,
                 },
@@ -1992,7 +1991,6 @@ const viewDissemination = (req, res) => __awaiter(void 0, void 0, void 0, functi
                     id: true,
                     userId: true,
                     title: true,
-                    signature: true,
                     storageKey: true,
                     inkHeightPt: true,
                     baselinePct: true,
@@ -2013,7 +2011,6 @@ const viewDissemination = (req, res) => __awaiter(void 0, void 0, void 0, functi
                         id: true,
                         userId: true,
                         title: true,
-                        signature: true,
                         storageKey: true,
                         inkHeightPt: true,
                         baselinePct: true,
@@ -2023,7 +2020,7 @@ const viewDissemination = (req, res) => __awaiter(void 0, void 0, void 0, functi
                         inkY1: true,
                     },
                 });
-                console.log("[view] fallback sigs for missing users:", fallback.map((s) => ({ userId: s.userId, hasBytes: !!s.signature })));
+                console.log("[view] fallback sigs for missing users:", fallback.map((s) => ({ userId: s.userId, hasBytes: !!s.storageKey })));
                 const seen = new Set();
                 for (const s of fallback) {
                     if (!s.userId || seen.has(s.userId))
@@ -2630,7 +2627,6 @@ const downloadSignedDocument = (req, res) => __awaiter(void 0, void 0, void 0, f
                 select: {
                     id: true,
                     userId: true,
-                    signature: true,
                     storageKey: true,
                     qrEnabled: true,
                     active: true,
@@ -2692,7 +2688,6 @@ const downloadSignedDocument = (req, res) => __awaiter(void 0, void 0, void 0, f
                 where: { id: { in: chosenIds } },
                 select: {
                     id: true,
-                    signature: true,
                     storageKey: true,
                     qrEnabled: true,
                     inkHeightPt: true,

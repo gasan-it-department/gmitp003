@@ -1505,7 +1505,6 @@ export const updateProfilePicture = async (
     file_size: String(file.buffer.length),
     file_type: "image",
     mime: file.mimetype,
-    bytes: stored.column,
     storageKey: stored.storageKey,
     storageSha256: stored.storageSha256,
   };
@@ -1525,9 +1524,9 @@ export const servePhoto = async (req: FastifyRequest, res: FastifyReply) => {
   if (!userId) throw new ValidationError("BAD_REQUEST");
   const pic = await prisma.userProfilePicture.findUnique({
     where: { userId },
-    select: { bytes: true, mime: true, storageKey: true },
+    select: { mime: true, storageKey: true },
   });
-  const photo = pic ? await readBlob(pic.storageKey, pic.bytes) : null;
+  const photo = pic ? await readBlob(pic.storageKey) : null;
   if (!photo) return res.code(404).send({ message: "No photo" });
   return res
     .header("Content-Type", pic?.mime || "image/jpeg")

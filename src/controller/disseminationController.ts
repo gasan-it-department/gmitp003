@@ -1643,7 +1643,6 @@ export const uploadDisseminationDocument = async (
           fileName: upload.filename,
           fileSize: String(upload.buffer.length),
           fileType: upload.mimetype,
-          fileDecoded: stored.column,
           storageKey: stored.storageKey,
           storageSha256: stored.storageSha256,
         },
@@ -2201,7 +2200,6 @@ export const viewDissemination = async (
           id: true,
           userId: true,
           title: true,
-          signature: true,
           storageKey: true,
           inkHeightPt: true,
           baselinePct: true,
@@ -2222,7 +2220,6 @@ export const viewDissemination = async (
             id: true,
             userId: true,
             title: true,
-            signature: true,
             storageKey: true,
             inkHeightPt: true,
             baselinePct: true,
@@ -2234,7 +2231,7 @@ export const viewDissemination = async (
         });
         console.log(
           "[view] fallback sigs for missing users:",
-          fallback.map((s) => ({ userId: s.userId, hasBytes: !!s.signature })),
+          fallback.map((s) => ({ userId: s.userId, hasBytes: !!s.storageKey })),
         );
         const seen = new Set<string>();
         for (const s of fallback) {
@@ -2906,7 +2903,6 @@ export const downloadSignedDocument = async (
           select: {
             id: true,
             userId: true,
-            signature: true,
             storageKey: true,
             qrEnabled: true,
             active: true,
@@ -2987,7 +2983,6 @@ export const downloadSignedDocument = async (
         where: { id: { in: chosenIds } },
         select: {
           id: true,
-          signature: true,
           storageKey: true,
           qrEnabled: true,
           inkHeightPt: true,

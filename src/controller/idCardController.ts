@@ -381,7 +381,7 @@ export const idExportBatch = async (req: FastifyRequest, res: FastifyReply) => {
       status: true,
       verifyCode: true,
       userProfilePictures: {
-        select: { file_url: true, bytes: true, storageKey: true },
+        select: { file_url: true, storageKey: true },
       },
       PositionSlot: {
         select: {
@@ -479,10 +479,7 @@ export const idExportBatch = async (req: FastifyRequest, res: FastifyReply) => {
       // prefer the stored bytes, bucket before column; fall back to a
       // URL (legacy)
       const storedPhoto = u.userProfilePictures
-        ? await readBlob(
-            u.userProfilePictures.storageKey,
-            u.userProfilePictures.bytes,
-          )
+        ? await readBlob(u.userProfilePictures.storageKey)
         : null;
       if (storedPhoto) {
         emp.photo = storedPhoto;

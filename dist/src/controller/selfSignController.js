@@ -128,7 +128,6 @@ const selfSignUpload = (req, res) => __awaiter(void 0, void 0, void 0, function*
                     fileName: upload.fileName,
                     fileSize: String(upload.buffer.length),
                     fileType: upload.mimetype,
-                    fileDecoded: stored.column,
                     storageKey: stored.storageKey,
                     storageSha256: stored.storageSha256,
                 },
@@ -564,7 +563,6 @@ const selfSignDetail = (req, res) => __awaiter(void 0, void 0, void 0, function*
             sigRow = yield prisma_1.prisma.signature.findFirst({
                 where: { id: arrangement.signatureId, userId: actorId },
                 select: {
-                    signature: true,
                     storageKey: true,
                     inkHeightPt: true,
                     baselinePct: true,
@@ -580,7 +578,6 @@ const selfSignDetail = (req, res) => __awaiter(void 0, void 0, void 0, function*
                 where: { userId: actorId },
                 orderBy: [{ active: "desc" }, { timestamp: "desc" }],
                 select: {
-                    signature: true,
                     storageKey: true,
                     inkHeightPt: true,
                     baselinePct: true,

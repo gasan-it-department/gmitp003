@@ -295,7 +295,7 @@ const idExportBatch = (req, res) => __awaiter(void 0, void 0, void 0, function* 
             status: true,
             verifyCode: true,
             userProfilePictures: {
-                select: { file_url: true, bytes: true, storageKey: true },
+                select: { file_url: true, storageKey: true },
             },
             PositionSlot: {
                 select: {
@@ -379,7 +379,7 @@ const idExportBatch = (req, res) => __awaiter(void 0, void 0, void 0, function* 
             // prefer the stored bytes, bucket before column; fall back to a
             // URL (legacy)
             const storedPhoto = u.userProfilePictures
-                ? yield (0, blobStore_1.readBlob)(u.userProfilePictures.storageKey, u.userProfilePictures.bytes)
+                ? yield (0, blobStore_1.readBlob)(u.userProfilePictures.storageKey)
                 : null;
             if (storedPhoto) {
                 emp.photo = storedPhoto;

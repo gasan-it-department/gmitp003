@@ -201,7 +201,7 @@ export const myReceiveStamp = async (
 
   let row = await prisma.receiveStamp.findUnique({
     where: { roomId },
-    select: { ...SHAPE, image: true },
+    select: { ...SHAPE, storageKey: true },
   });
 
   /*
@@ -219,7 +219,7 @@ export const myReceiveStamp = async (
       row = await prisma.receiveStamp.update({
         where: { id: legacy.id },
         data: { roomId, updatedById: actorId },
-        select: { ...SHAPE, image: true },
+        select: { ...SHAPE, storageKey: true },
       });
       if (legacy.nickname) {
         await prisma.receiveStampName.upsert({
@@ -250,12 +250,12 @@ export const myReceiveStamp = async (
   // a different hand than the signature on file would be worse than useless.
   const signature = await prisma.signature.findFirst({
     where: { userId: actorId, active: true },
-    select: { id: true, title: true, signature: true },
+    select: { id: true, title: true, storageKey: true },
   });
 
   return res.code(200).send({
     stamp: row
-      ? { ...row, image: undefined, hasImage: !!row.image }
+      ? { ...row, hasImage: !!row.storageKey }
       : null,
     /** The office this is, and every office I could be acting for. */
     room: { id: roomId, myType: type },
@@ -278,7 +278,11 @@ export const myReceiveStamp = async (
      * instead of silently rendering an empty box.
      */
     signature: signature
-      ? { id: signature.id, title: signature.title, hasImage: !!signature.signature }
+      ? {
+          id: signature.id,
+          title: signature.title,
+          hasImage: !!signature.storageKey,
+        }
       : null,
     // Their own size when they have set one, otherwise the default they
     // will start from.
@@ -300,10 +304,10 @@ export const receiveStampImage = async (
   const { roomId } = await resolveStampRoom(req, q.roomId);
   const row = await prisma.receiveStamp.findUnique({
     where: { roomId },
-    select: { image: true, mime: true, updatedAt: true, storageKey: true },
+    select: { mime: true, updatedAt: true, storageKey: true },
   });
   if (!row) throw new NotFoundError("No stamp artwork uploaded yet");
-  const art = await readBlob(row.storageKey, row.image);
+  const art = await readBlob(row.storageKey);
   if (!art) throw new NotFoundError("No stamp artwork uploaded yet");
   return res
     .header("Content-Type", row.mime || "image/png")
@@ -404,7 +408,6 @@ export const uploadReceiveStampImage = async (
   const saved = await prisma.receiveStamp.upsert({
     where: { roomId },
     update: {
-      image: stored.column,
       storageKey: stored.storageKey,
       storageSha256: stored.storageSha256,
       mime, imageW, imageH, widthMm, heightMm, lineId,
@@ -412,7 +415,6 @@ export const uploadReceiveStampImage = async (
     },
     create: {
       roomId, userId: actorId, updatedById: actorId, lineId,
-      image: stored.column,
       storageKey: stored.storageKey,
       storageSha256: stored.storageSha256,
       mime, imageW, imageH, widthMm, heightMm,
@@ -542,15 +544,15 @@ export const renderReceiveStamp = async (
 ): Promise<Buffer> => {
   const row = await prisma.receiveStamp.findUnique({
     where: { roomId },
-    select: { ...SHAPE, image: true, storageKey: true },
+    select: { ...SHAPE, storageKey: true },
   });
   if (!row) throw new NotFoundError("No stamp artwork uploaded yet");
-  const artwork = await readBlob(row.storageKey, row.image);
+  const artwork = await readBlob(row.storageKey);
   if (!artwork) throw new NotFoundError("No stamp artwork uploaded yet");
 
   const sig = await prisma.signature.findFirst({
     where: { userId, active: true },
-    select: { signature: true, storageKey: true },
+    select: { storageKey: true },
   });
   const sigRaw = sig ? await signatureBytes(sig) : null;
 
@@ -711,11 +713,10 @@ export const applyReceiveStamp = async (
 
   const stamp = await prisma.receiveStamp.findUnique({
     where: { roomId },
-    // The key counts as set up too: the bytes may be in the bucket, which
-    // leaves the column null on a perfectly configured stamp.
-    select: { image: true, storageKey: true },
+    // A stamp is set up when it has an object in the bucket.
+    select: { storageKey: true },
   });
-  if (!stamp?.image && !stamp?.storageKey) {
+  if (!stamp?.storageKey) {
     throw new ValidationError(
       "Your office has not set up its receiving stamp yet — Document module, Manage Receive Stamp. Anyone in the office can upload it, and it then works for everybody.",
     );

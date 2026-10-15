@@ -16,7 +16,7 @@ const adminBackupController_1 = require("../controller/adminBackupController");
 const handler_1 = require("../middleware/handler");
 const request_1 = require("../models/request");
 const adminLineHrController_1 = require("../controller/adminLineHrController");
-const blobBackfillController_1 = require("../controller/blobBackfillController");
+const blobIntegrityController_1 = require("../controller/blobIntegrityController");
 const admin = (fastify) => {
     fastify.post("/admin-login", { schema: request_1.adminLoginScehma }, adminAuth_1.adminAuth);
     fastify.post("/create-admin", { preHandler: handler_1.adminAuthenticated, schema: request_1.adminLoginScehma }, adminAuth_1.creteAdmin);
@@ -25,10 +25,10 @@ const admin = (fastify) => {
     // endpoints (/accounts, /line/list).
     fastify.get("/admin/log-types", { preHandler: handler_1.adminAuthenticated }, adminLogsController_1.adminLogTypes);
     fastify.get("/admin/logs", { preHandler: handler_1.adminAuthenticated }, adminLogsController_1.adminLogs);
-    // Move file bytes out of Postgres into the bucket. Reports what is
-    // pending; pass ?run=1 to actually move it. Never deletes anything, so
-    // the worst a mistaken call does is re-upload what is already there.
-    fastify.post("/admin/blob-backfill", { preHandler: handler_1.adminAuthenticated }, blobBackfillController_1.blobBackfill);
+    // Confirm every file the database points at is still in the bucket and
+    // still matches its recorded digest. Read-only; ?count=1 for row counts
+    // without fetching objects.
+    fastify.post("/admin/blob-integrity", { preHandler: handler_1.adminAuthenticated }, blobIntegrityController_1.blobIntegrity);
     // Full-database backup / restore — gated by the admin token, and the import
     // accepts a large JSON body.
     fastify.get("/admin/backup/export", { preHandler: handler_1.adminAuthenticated }, adminBackupController_1.adminBackupExport);

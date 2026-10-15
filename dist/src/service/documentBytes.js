@@ -11,23 +11,16 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.documentBytes = void 0;
 /**
- * The bytes of a document's file, from wherever they actually live.
+ * The bytes of a document's file.
  *
- * One function so that every caller behaves the same way: the bucket once
- * the row has been migrated, the `fileDecoded` column until then, and the
- * column is never SELECTed unless it is genuinely needed. Spreading that
- * rule across the seven places that open a PDF is how one of them ends up
- * still pulling 77 MB through Postgres a year from now.
+ * Kept as its own function even though it is now a one-liner: every place
+ * that opens a PDF goes through here, so if documents ever move again
+ * there is one thing to change rather than seven.
+ *
+ * It used to prefer the bucket and fall back to the `fileDecoded` column.
+ * That column was dropped once every object had been verified in the
+ * bucket, so there is nothing left to fall back to.
  */
-const prisma_1 = require("../barrel/prisma");
 const blobStore_1 = require("./blobStore");
-const documentBytes = (documentId, storageKey) => __awaiter(void 0, void 0, void 0, function* () {
-    return (0, blobStore_1.readBlobLazy)(storageKey, () => __awaiter(void 0, void 0, void 0, function* () {
-        const row = yield prisma_1.prisma.decodedFile.findUnique({
-            where: { documentId },
-            select: { fileDecoded: true },
-        });
-        return row === null || row === void 0 ? void 0 : row.fileDecoded;
-    }));
-});
+const documentBytes = (_documentId, storageKey) => __awaiter(void 0, void 0, void 0, function* () { return (0, blobStore_1.readBlob)(storageKey); });
 exports.documentBytes = documentBytes;

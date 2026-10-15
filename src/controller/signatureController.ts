@@ -252,7 +252,6 @@ export const uploadUserSignature = async (
           id: stored.id,
           userId,
           title: finalTitle,
-          signature: stored.column,
           storageKey: stored.storageKey,
           storageSha256: stored.storageSha256,
           active: shouldBeActive,

@@ -1017,7 +1017,6 @@ exports.UserProfilePictureScalarFieldEnum = {
     file_type: 'file_type',
     file_public_id: 'file_public_id',
     file_url: 'file_url',
-    bytes: 'bytes',
     mime: 'mime',
     timestamp: 'timestamp',
     userId: 'userId',
@@ -1226,7 +1225,6 @@ exports.ComplaintEvidenceScalarFieldEnum = {
     fileName: 'fileName',
     fileType: 'fileType',
     fileSize: 'fileSize',
-    data: 'data',
     uploadedById: 'uploadedById',
     caption: 'caption',
     createdAt: 'createdAt',
@@ -1495,7 +1493,6 @@ exports.DocumentReceivePageScalarFieldEnum = {
     recordId: 'recordId',
     page: 'page',
     mime: 'mime',
-    bytes: 'bytes',
     createdAt: 'createdAt',
     storageKey: 'storageKey',
     storageSha256: 'storageSha256'
@@ -1520,7 +1517,6 @@ exports.DecodedFileScalarFieldEnum = {
     fileName: 'fileName',
     fileSize: 'fileSize',
     fileType: 'fileType',
-    fileDecoded: 'fileDecoded',
     timestamp: 'timestamp',
     documentId: 'documentId',
     storageKey: 'storageKey',
@@ -1542,7 +1538,6 @@ exports.ReceiveStampScalarFieldEnum = {
     lineId: 'lineId',
     widthMm: 'widthMm',
     heightMm: 'heightMm',
-    image: 'image',
     mime: 'mime',
     imageW: 'imageW',
     imageH: 'imageH',
@@ -1590,7 +1585,6 @@ exports.SignatureScalarFieldEnum = {
     forRenew: 'forRenew',
     active: 'active',
     roomAuthorizedUserId: 'roomAuthorizedUserId',
-    signature: 'signature',
     qrEnabled: 'qrEnabled',
     inkHeightPt: 'inkHeightPt',
     baselinePct: 'baselinePct',
@@ -2113,7 +2107,6 @@ exports.ChatReadStateScalarFieldEnum = {
 exports.ChatImageScalarFieldEnum = {
     id: 'id',
     mime: 'mime',
-    bytes: 'bytes',
     createdAt: 'createdAt',
     storageKey: 'storageKey',
     storageSha256: 'storageSha256'
@@ -2123,7 +2116,6 @@ exports.ChatFileScalarFieldEnum = {
     name: 'name',
     mime: 'mime',
     size: 'size',
-    bytes: 'bytes',
     createdAt: 'createdAt',
     storageKey: 'storageKey',
     storageSha256: 'storageSha256'

@@ -283,7 +283,7 @@ app.get("/test/ai", async (request: FastifyRequest, reply: FastifyReply) => {
 // Public build marker — lets anyone (including the assistant) CONFIRM which
 // build is actually serving, instead of trusting deploy timers. Bump the
 // tag with each meaningful deploy.
-const BUILD_TAG = "2026-10-15-verify-before-drop";
+const BUILD_TAG = "2026-10-15-bytes-columns-dropped";
 
 /**
  * Can this container actually rasterise a PDF page?
@@ -363,9 +363,9 @@ app.get("/health/build", async () => {
     lastSweep,
     pdfSigning: await signingIdentity(),
     objectStorage: await blobStoreStatus(),
-    blobMigration: await (async () => {
-      const m = await import("./service/blobBackfill");
-      return { ...(await m.blobMigrationStatus()), lastRun: m.lastRun };
+    blobs: await (async () => {
+      const m = await import("./service/blobIntegrity");
+      return { ...(await m.blobStatus()), lastCheck: m.lastRun };
     })(),
   };
 });
@@ -383,36 +383,31 @@ app.listen({ port: 3000, host: "0.0.0.0" }, (err, address) => {
   console.log(`Server is running at ${address}`);
 
   /*
-    Move file bytes out of Postgres into the bucket.
+    Confirm every file the database points at is still in the bucket.
 
-    Unattended on purpose. The backfill deletes nothing, reads every
-    upload back byte for byte before recording its key, holds one row in
-    memory at a time, and skips rows already migrated — so an interrupted
-    run is simply finished by the next boot, and a run with nothing to do
-    costs one query per model.
-
-    Delayed so it never competes with the first requests after a deploy.
-    BLOB_BACKFILL_AUTO=0 turns it off.
+    The Bytes columns were dropped once every object had been verified, so
+    the bucket is now the only copy: a missing object is a missing
+    document, and nothing else would notice. Read-only, and delayed so it
+    never competes with the first requests after a deploy.
+    BLOB_INTEGRITY_AUTO=0 turns it off.
   */
-  if (process.env.BLOB_BACKFILL_AUTO !== "0") {
+  if (process.env.BLOB_INTEGRITY_AUTO !== "0") {
     setTimeout(() => {
-      import("./service/blobBackfill")
+      import("./service/blobIntegrity")
         .then((m) =>
-          m.runBlobBackfill({
-            dryRun: false,
-            log: (l) => console.log("[blob-backfill]", l),
+          m.runBlobIntegrityCheck({
+            log: (l) => console.log("[blob-integrity]", l),
           }),
         )
         .then((r) => {
-          if (r && (r.totals.moved || r.totals.failed)) {
-            console.log(
-              `[blob-backfill] moved ${r.totals.moved} object(s), ` +
-                `${(r.totals.bytes / 1024 / 1024).toFixed(1)} MB, ` +
-                `${r.totals.failed} failed`,
+          if (r?.totals.verifiedBad) {
+            console.error(
+              `[blob-integrity] ${r.totals.verifiedBad} object(s) MISSING ` +
+                `or CORRUPT — these files have no other copy`,
             );
           }
         })
-        .catch((e) => console.warn("[blob-backfill] run failed:", e));
+        .catch((e) => console.warn("[blob-integrity] check failed:", e));
     }, 25_000).unref();
   }
 

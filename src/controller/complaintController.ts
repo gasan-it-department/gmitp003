@@ -123,7 +123,6 @@ export const createComplaint = async (
             fileName: f.fileName,
             fileType: f.fileType,
             fileSize: f.buffer.length,
-            data: storedEvidence[i].column,
             storageKey: storedEvidence[i].storageKey,
             storageSha256: storedEvidence[i].storageSha256,
             uploadedById: userId,
@@ -192,7 +191,6 @@ export const addEvidence = async (req: FastifyRequest, res: FastifyReply) => {
         fileName: f.fileName,
         fileType: f.fileType,
         fileSize: f.buffer.length,
-        data: storedEvidence[i].column,
         storageKey: storedEvidence[i].storageKey,
         storageSha256: storedEvidence[i].storageSha256,
         uploadedById: userId,
@@ -219,7 +217,7 @@ export const streamEvidence = async (
       where: { id: params.id },
     });
     if (!row) throw new NotFoundError("Evidence not found");
-    const buf = await readBlob(row.storageKey, row.data);
+    const buf = await readBlob(row.storageKey);
     if (!buf) throw new NotFoundError("Evidence not found");
     res.header("Content-Type", row.fileType || "application/octet-stream");
     res.header(

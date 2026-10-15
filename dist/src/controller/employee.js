@@ -1332,7 +1332,6 @@ const updateProfilePicture = (req, res) => __awaiter(void 0, void 0, void 0, fun
         file_size: String(file.buffer.length),
         file_type: "image",
         mime: file.mimetype,
-        bytes: stored.column,
         storageKey: stored.storageKey,
         storageSha256: stored.storageSha256,
     };
@@ -1352,9 +1351,9 @@ const servePhoto = (req, res) => __awaiter(void 0, void 0, void 0, function* () 
         throw new errors_1.ValidationError("BAD_REQUEST");
     const pic = yield prisma_1.prisma.userProfilePicture.findUnique({
         where: { userId },
-        select: { bytes: true, mime: true, storageKey: true },
+        select: { mime: true, storageKey: true },
     });
-    const photo = pic ? yield (0, blobStore_1.readBlob)(pic.storageKey, pic.bytes) : null;
+    const photo = pic ? yield (0, blobStore_1.readBlob)(pic.storageKey) : null;
     if (!photo)
         return res.code(404).send({ message: "No photo" });
     return res

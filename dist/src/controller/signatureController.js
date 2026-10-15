@@ -247,7 +247,7 @@ const uploadUserSignature = (req, res) => __awaiter(void 0, void 0, void 0, func
                     shouldBeActive = true;
             }
             return tx.signature.create({
-                data: Object.assign({ id: stored.id, userId, title: finalTitle, signature: stored.column, storageKey: stored.storageKey, storageSha256: stored.storageSha256, active: shouldBeActive }, inkFields(ink)),
+                data: Object.assign({ id: stored.id, userId, title: finalTitle, storageKey: stored.storageKey, storageSha256: stored.storageSha256, active: shouldBeActive }, inkFields(ink)),
                 select: {
                     id: true,
                     title: true,

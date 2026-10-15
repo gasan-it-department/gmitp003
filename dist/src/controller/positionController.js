@@ -1623,7 +1623,6 @@ const positionQuickRegister = (req, res) => __awaiter(void 0, void 0, void 0, fu
                     file_size: String(photo.buffer.length),
                     file_type: "image",
                     mime: photo.mimetype,
-                    bytes: stored.column,
                     storageKey: stored.storageKey,
                     storageSha256: stored.storageSha256,
                 };

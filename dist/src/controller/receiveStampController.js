@@ -210,7 +210,7 @@ const myReceiveStamp = (req, res) => __awaiter(void 0, void 0, void 0, function*
     const { actorId, roomId, type, lineId } = yield (0, exports.resolveStampRoom)(req, q.roomId);
     let row = yield prisma_1.prisma.receiveStamp.findUnique({
         where: { roomId },
-        select: Object.assign(Object.assign({}, SHAPE), { image: true }),
+        select: Object.assign(Object.assign({}, SHAPE), { storageKey: true }),
     });
     /*
       The first version of this feature gave each person their own stamp. If
@@ -227,7 +227,7 @@ const myReceiveStamp = (req, res) => __awaiter(void 0, void 0, void 0, function*
             row = yield prisma_1.prisma.receiveStamp.update({
                 where: { id: legacy.id },
                 data: { roomId, updatedById: actorId },
-                select: Object.assign(Object.assign({}, SHAPE), { image: true }),
+                select: Object.assign(Object.assign({}, SHAPE), { storageKey: true }),
             });
             if (legacy.nickname) {
                 yield prisma_1.prisma.receiveStampName.upsert({
@@ -256,11 +256,11 @@ const myReceiveStamp = (req, res) => __awaiter(void 0, void 0, void 0, function*
     // a different hand than the signature on file would be worse than useless.
     const signature = yield prisma_1.prisma.signature.findFirst({
         where: { userId: actorId, active: true },
-        select: { id: true, title: true, signature: true },
+        select: { id: true, title: true, storageKey: true },
     });
     return res.code(200).send({
         stamp: row
-            ? Object.assign(Object.assign({}, row), { image: undefined, hasImage: !!row.image }) : null,
+            ? Object.assign(Object.assign({}, row), { hasImage: !!row.storageKey }) : null,
         /** The office this is, and every office I could be acting for. */
         room: { id: roomId, myType: type },
         rooms: yield myRooms(actorId),
@@ -285,7 +285,11 @@ const myReceiveStamp = (req, res) => __awaiter(void 0, void 0, void 0, function*
          * instead of silently rendering an empty box.
          */
         signature: signature
-            ? { id: signature.id, title: signature.title, hasImage: !!signature.signature }
+            ? {
+                id: signature.id,
+                title: signature.title,
+                hasImage: !!signature.storageKey,
+            }
             : null,
         // Their own size when they have set one, otherwise the default they
         // will start from.
@@ -304,11 +308,11 @@ const receiveStampImage = (req, res) => __awaiter(void 0, void 0, void 0, functi
     const { roomId } = yield (0, exports.resolveStampRoom)(req, q.roomId);
     const row = yield prisma_1.prisma.receiveStamp.findUnique({
         where: { roomId },
-        select: { image: true, mime: true, updatedAt: true, storageKey: true },
+        select: { mime: true, updatedAt: true, storageKey: true },
     });
     if (!row)
         throw new errors_1.NotFoundError("No stamp artwork uploaded yet");
-    const art = yield (0, blobStore_1.readBlob)(row.storageKey, row.image);
+    const art = yield (0, blobStore_1.readBlob)(row.storageKey);
     if (!art)
         throw new errors_1.NotFoundError("No stamp artwork uploaded yet");
     return res
@@ -425,7 +429,6 @@ const uploadReceiveStampImage = (req, res) => __awaiter(void 0, void 0, void 0, 
     const saved = yield prisma_1.prisma.receiveStamp.upsert({
         where: { roomId },
         update: {
-            image: stored.column,
             storageKey: stored.storageKey,
             storageSha256: stored.storageSha256,
             mime, imageW, imageH, widthMm, heightMm, lineId,
@@ -433,7 +436,6 @@ const uploadReceiveStampImage = (req, res) => __awaiter(void 0, void 0, void 0, 
         },
         create: {
             roomId, userId: actorId, updatedById: actorId, lineId,
-            image: stored.column,
             storageKey: stored.storageKey,
             storageSha256: stored.storageSha256,
             mime, imageW, imageH, widthMm, heightMm,
@@ -541,16 +543,16 @@ exports.deleteReceiveStamp = deleteReceiveStamp;
 const renderReceiveStamp = (roomId_1, userId_1, ...args_1) => __awaiter(void 0, [roomId_1, userId_1, ...args_1], void 0, function* (roomId, userId, when = new Date(), widthPx = 900) {
     const row = yield prisma_1.prisma.receiveStamp.findUnique({
         where: { roomId },
-        select: Object.assign(Object.assign({}, SHAPE), { image: true, storageKey: true }),
+        select: Object.assign(Object.assign({}, SHAPE), { storageKey: true }),
     });
     if (!row)
         throw new errors_1.NotFoundError("No stamp artwork uploaded yet");
-    const artwork = yield (0, blobStore_1.readBlob)(row.storageKey, row.image);
+    const artwork = yield (0, blobStore_1.readBlob)(row.storageKey);
     if (!artwork)
         throw new errors_1.NotFoundError("No stamp artwork uploaded yet");
     const sig = yield prisma_1.prisma.signature.findFirst({
         where: { userId, active: true },
-        select: { signature: true, storageKey: true },
+        select: { storageKey: true },
     });
     const sigRaw = sig ? yield (0, signatureBytes_1.signatureBytes)(sig) : null;
     const mine = yield prisma_1.prisma.receiveStampName.findUnique({
@@ -689,11 +691,10 @@ const applyReceiveStamp = (req, res) => __awaiter(void 0, void 0, void 0, functi
     yield requireCanSeeDocument(req, b.documentId);
     const stamp = yield prisma_1.prisma.receiveStamp.findUnique({
         where: { roomId },
-        // The key counts as set up too: the bytes may be in the bucket, which
-        // leaves the column null on a perfectly configured stamp.
-        select: { image: true, storageKey: true },
+        // A stamp is set up when it has an object in the bucket.
+        select: { storageKey: true },
     });
-    if (!(stamp === null || stamp === void 0 ? void 0 : stamp.image) && !(stamp === null || stamp === void 0 ? void 0 : stamp.storageKey)) {
+    if (!(stamp === null || stamp === void 0 ? void 0 : stamp.storageKey)) {
         throw new errors_1.ValidationError("Your office has not set up its receiving stamp yet — Document module, Manage Receive Stamp. Anyone in the office can upload it, and it then works for everybody.");
     }
     const file = yield prisma_1.prisma.decodedFile.findFirst({

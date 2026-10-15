@@ -98,7 +98,6 @@ export const selfSignUpload = async (
           fileName: upload!.fileName,
           fileSize: String(upload!.buffer.length),
           fileType: upload!.mimetype,
-          fileDecoded: stored.column,
           storageKey: stored.storageKey,
           storageSha256: stored.storageSha256,
         },
@@ -585,7 +584,6 @@ export const selfSignDetail = async (
     // squeezed into the box — so the preview and the downloaded PDF end up
     // showing two different things. Same row, same numbers, both places.
     let sigRow: {
-      signature: Uint8Array | null;
       storageKey: string | null;
       inkHeightPt: number | null;
       baselinePct: number;
@@ -598,7 +596,6 @@ export const selfSignDetail = async (
       sigRow = await prisma.signature.findFirst({
         where: { id: arrangement.signatureId, userId: actorId },
         select: {
-          signature: true,
           storageKey: true,
           inkHeightPt: true,
           baselinePct: true,
@@ -614,7 +611,6 @@ export const selfSignDetail = async (
         where: { userId: actorId },
         orderBy: [{ active: "desc" }, { timestamp: "desc" }],
         select: {
-          signature: true,
           storageKey: true,
           inkHeightPt: true,
           baselinePct: true,

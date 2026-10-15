@@ -291,7 +291,6 @@ export const signatoryRegistry = async (
             select: {
               active: true,
               title: true,
-              signature: true,
             },
           },
         },
@@ -1172,7 +1171,6 @@ export const archiveFile = async (req: FastifyRequest, res: FastifyReply) => {
           id: stored.id,
           documentId: doc.id,
           fileName: file.filename,
-          fileDecoded: stored.column,
           storageKey: stored.storageKey,
           storageSha256: stored.storageSha256,
           fileSize: file.buffer.length.toString(),

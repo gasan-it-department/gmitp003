@@ -1,23 +1,17 @@
 /**
- * The bytes of a document's file, from wherever they actually live.
+ * The bytes of a document's file.
  *
- * One function so that every caller behaves the same way: the bucket once
- * the row has been migrated, the `fileDecoded` column until then, and the
- * column is never SELECTed unless it is genuinely needed. Spreading that
- * rule across the seven places that open a PDF is how one of them ends up
- * still pulling 77 MB through Postgres a year from now.
+ * Kept as its own function even though it is now a one-liner: every place
+ * that opens a PDF goes through here, so if documents ever move again
+ * there is one thing to change rather than seven.
+ *
+ * It used to prefer the bucket and fall back to the `fileDecoded` column.
+ * That column was dropped once every object had been verified in the
+ * bucket, so there is nothing left to fall back to.
  */
-import { prisma } from "../barrel/prisma";
-import { readBlobLazy } from "./blobStore";
+import { readBlob } from "./blobStore";
 
 export const documentBytes = async (
-  documentId: string,
+  _documentId: string,
   storageKey: string | null,
-): Promise<Buffer | null> =>
-  readBlobLazy(storageKey, async () => {
-    const row = await prisma.decodedFile.findUnique({
-      where: { documentId },
-      select: { fileDecoded: true },
-    });
-    return row?.fileDecoded;
-  });
+): Promise<Buffer | null> => readBlob(storageKey);

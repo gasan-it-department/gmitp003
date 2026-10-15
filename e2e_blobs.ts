@@ -1,12 +1,25 @@
-/* Does the bucket migration behave when there is NO bucket?
- *
- * That is the question worth testing here, and it is not a contrived one.
- * It is the state of every developer machine, and it is the state Railway
- * falls into the moment the bucket is unreachable. If the answer is ever
- * "uploads fail" or "documents 404", the migration has made the system
- * fragile in exchange for disk space.
+/* The blob layer, now that the Bytes columns are gone.
  *
  *   npx ts-node --transpile-only e2e_blobs.ts
+ *
+ * ── What changed, and why this test changed with it ──────────────────────
+ *
+ * This used to assert the opposite of what it asserts now, and that is the
+ * point rather than a problem.
+ *
+ * While the bytes lived in both places, the contract was "prefer the
+ * bucket, fall back to the column", and the valuable thing to prove was
+ * that a system with NO bucket still worked exactly as before — uploads
+ * succeeded, documents opened. That was true and it was tested.
+ *
+ * The columns have been dropped, so the bucket is the only copy. There is
+ * nothing to fall back to, and an upload that cannot reach the bucket must
+ * now FAIL rather than quietly succeed: a row that claims to have a file
+ * and does not is worse than a refused upload, because nobody finds out
+ * until somebody opens the document.
+ *
+ * So the thing worth proving is the new failure mode — that it fails, and
+ * that it says why.
  */
 import path from "path";
 const entry = path.join(process.cwd(), "src", "index.ts");
@@ -23,7 +36,6 @@ import {
   blobStoreConfigured,
   keyFor,
   readBlob,
-  readBlobLazy,
   sha256,
   storeBlob,
 } from "./src/service/blobStore";
@@ -46,52 +58,36 @@ const ok = (name: string, cond: boolean, detail = "") => {
 
   const body = Buffer.from("a municipal document, pretend it is a PDF");
 
-  // 1. An upload must still succeed, handing the bytes back for the column.
-  const stored = await storeBlob("document", body, "pdf", "application/pdf");
-  ok("storeBlob returns no key", stored.storageKey === null);
+  // 1. An upload must now FAIL, loudly and legibly.
+  let threw: Error | null = null;
+  try {
+    await storeBlob("document", body, "pdf", "application/pdf");
+  } catch (e) {
+    threw = e as Error;
+  }
+  ok("an upload with no bucket throws", threw !== null);
   ok(
-    "storeBlob hands the bytes back for the column",
-    !!stored.column && stored.column.equals(body),
+    "and the message says what to set",
+    !!threw && /BUCKET_ENDPOINT/.test(threw.message),
+    threw?.message.slice(0, 120),
   );
-  ok("storeBlob still mints an id", typeof stored.id === "string" && stored.id.length > 10);
-
-  // 2. An explicit id is honoured, so upsert-keyed rows stay stable.
-  const keyed = await storeBlob("profile", body, "jpg", "image/jpeg", "user-123");
-  ok("explicit id is used", keyed.id === "user-123");
-
-  // 3. Uint8Array input (what pdf-lib hands back) is accepted.
-  const fromU8 = await storeBlob("document", new Uint8Array(body), "pdf");
   ok(
-    "Uint8Array input round-trips",
-    !!fromU8.column && fromU8.column.equals(body),
-  );
-
-  // 4. Reads fall back to the column.
-  const read = await readBlob(null, body);
-  ok("readBlob(null, column) returns the column", !!read && read.equals(body));
-
-  // 5. A row that HAS a key but no reachable bucket must still read, from
-  //    the column. This is the bucket-outage case, and the one that would
-  //    otherwise hand somebody a 404 on a document that exists.
-  const withKey = await readBlob("document/does-not-exist.pdf", body);
-  ok(
-    "a key with no bucket falls back to the column",
-    !!withKey && withKey.equals(body),
+    "and says the column fallback is gone",
+    !!threw && /no longer have a column/.test(threw.message),
+    threw?.message.slice(0, 120),
   );
 
-  // 6. The lazy read only touches the column when it has to, and still
-  //    returns the right bytes when it does.
-  let columnReads = 0;
-  const lazy = await readBlobLazy(null, async () => {
-    columnReads++;
-    return body;
-  });
-  ok("lazy read returns the column bytes", !!lazy && lazy.equals(body));
-  ok("lazy read consulted the column once", columnReads === 1);
+  // 2. Reads return null rather than throwing: a missing object is a 404,
+  //    not a crash.
+  ok("readBlob(null) is null", (await readBlob(null)) === null);
+  ok(
+    "readBlob of an unreachable key is null",
+    (await readBlob("document/does-not-exist.pdf")) === null,
+  );
 
-  // 7. Nothing to read anywhere is null, not a throw.
-  const empty = await readBlob(null, null);
-  ok("no bytes anywhere reads as null", empty === null);
+  // 3. readBlob takes a key and nothing else — the fallback argument is
+  //    gone, so no caller can still be passing a column.
+  ok("readBlob takes exactly one argument", readBlob.length === 1);
 
   console.log("\n── key naming ──");
   ok(
@@ -102,29 +98,40 @@ const ok = (name: string, cond: boolean, detail = "") => {
     "profile keys name the user",
     keyFor("profile", "user-123", "jpg") === "profile/user-123.jpg",
   );
+  ok("digest is stable", sha256(body) === sha256(Buffer.from(body.toString())));
+
+  console.log("\n── the integrity checker ──");
+  const { runBlobIntegrityCheck, TARGETS, blobStatus } = await import(
+    "./src/service/blobIntegrity"
+  );
+  ok("every blob-bearing model is covered", TARGETS.length === 8);
+  const models = TARGETS.map((t) => t.model);
+  for (const m of [
+    "DecodedFile",
+    "Signature",
+    "UserProfilePicture",
+    "ComplaintEvidence",
+    "ChatImage",
+    "ChatFile",
+    "DocumentReceivePage",
+    "ReceiveStamp",
+  ]) {
+    ok(`${m} is checked`, models.includes(m));
+  }
+
+  // Counting must work with no bucket — it only reads the database, and a
+  // health endpoint should not depend on object storage being up.
+  const status = await blobStatus();
   ok(
-    "digest is stable",
-    sha256(body) === sha256(Buffer.from(body.toString())),
+    "row counts work without a bucket",
+    typeof status.withKey === "number" &&
+      Object.keys(status.byModel).length > 0,
+    JSON.stringify(status.byModel).slice(0, 80),
   );
 
-  console.log("\n── the backfill refuses to run without a bucket ──");
-  const { runBlobBackfill, TARGETS } = await import(
-    "./src/service/blobBackfill"
-  );
-  const report = await runBlobBackfill({ dryRun: true });
-  ok("backfill moved nothing", report.totals.moved === 0);
-  ok("backfill reports the bucket unusable", !report.objectStorage.reachable);
-  ok("every blob model is covered", TARGETS.length === 8);
-  const kinds = new Set(TARGETS.map((t) => t.kind));
-  ok("each model has a distinct enough key space", kinds.size >= 6);
-  // The two upsert-keyed models must key by their stable subject, or a
-  // re-upload would orphan the object the backfill created.
-  const byModel = Object.fromEntries(TARGETS.map((t) => [t.model, t]));
-  ok(
-    "avatars key by user",
-    byModel["UserProfilePicture"].keyBy === "userId",
-  );
-  ok("stamps key by room", byModel["ReceiveStamp"].keyBy === "roomId");
+  const report = await runBlobIntegrityCheck({ countOnly: true });
+  ok("a count-only check verifies nothing", report.totals.verifiedOk === 0);
+  ok("and reports itself as not having checked", report.checked === false);
 
   console.log(
     `\n${pass} passed, ${fails.length} failed` +

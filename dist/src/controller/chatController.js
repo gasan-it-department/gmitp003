@@ -910,7 +910,6 @@ const chatUploadImage = (req, res) => __awaiter(void 0, void 0, void 0, function
         data: {
             id: stored.id,
             mime: file.mimetype,
-            bytes: stored.column,
             storageKey: stored.storageKey,
             storageSha256: stored.storageSha256,
         },
@@ -926,9 +925,9 @@ const chatServeImage = (req, res) => __awaiter(void 0, void 0, void 0, function*
         throw new errors_1.ValidationError("BAD_REQUEST");
     const img = yield prisma_1.prisma.chatImage.findUnique({
         where: { id },
-        select: { bytes: true, mime: true, storageKey: true },
+        select: { mime: true, storageKey: true },
     });
-    const body = img ? yield (0, blobStore_1.readBlob)(img.storageKey, img.bytes) : null;
+    const body = img ? yield (0, blobStore_1.readBlob)(img.storageKey) : null;
     if (!body)
         return res.code(404).send({ message: "No image" });
     return res
@@ -994,7 +993,6 @@ const chatUploadFile = (req, res) => __awaiter(void 0, void 0, void 0, function*
             name: file.filename.slice(0, 200),
             mime: file.mimetype,
             size: file.buffer.length,
-            bytes: stored.column,
             storageKey: stored.storageKey,
             storageSha256: stored.storageSha256,
         },
@@ -1015,9 +1013,9 @@ const chatServeFile = (req, res) => __awaiter(void 0, void 0, void 0, function* 
         throw new errors_1.ValidationError("BAD_REQUEST");
     const f = yield prisma_1.prisma.chatFile.findUnique({
         where: { id },
-        select: { bytes: true, mime: true, name: true, storageKey: true },
+        select: { mime: true, name: true, storageKey: true },
     });
-    const body = f ? yield (0, blobStore_1.readBlob)(f.storageKey, f.bytes) : null;
+    const body = f ? yield (0, blobStore_1.readBlob)(f.storageKey) : null;
     if (!body)
         return res.code(404).send({ message: "No file" });
     const safeName = ((f === null || f === void 0 ? void 0 : f.name) || "file").replace(/["\r\n]/g, "");

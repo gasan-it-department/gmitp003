@@ -8,7 +8,7 @@ import {
 import { adminAuthenticated } from "../middleware/handler";
 import { adminLoginScehma } from "../models/request";
 import { openLineHrSession } from "../controller/adminLineHrController";
-import { blobBackfill } from "../controller/blobBackfillController";
+import { blobIntegrity } from "../controller/blobIntegrityController";
 export const admin = (fastify: FastifyInstance) => {
   fastify.post("/admin-login", { schema: adminLoginScehma }, adminAuth);
   fastify.post("/create-admin", { preHandler: adminAuthenticated, schema: adminLoginScehma }, creteAdmin);
@@ -17,13 +17,13 @@ export const admin = (fastify: FastifyInstance) => {
   // endpoints (/accounts, /line/list).
   fastify.get("/admin/log-types", { preHandler: adminAuthenticated }, adminLogTypes);
   fastify.get("/admin/logs", { preHandler: adminAuthenticated }, adminLogs);
-  // Move file bytes out of Postgres into the bucket. Reports what is
-  // pending; pass ?run=1 to actually move it. Never deletes anything, so
-  // the worst a mistaken call does is re-upload what is already there.
+  // Confirm every file the database points at is still in the bucket and
+  // still matches its recorded digest. Read-only; ?count=1 for row counts
+  // without fetching objects.
   fastify.post(
-    "/admin/blob-backfill",
+    "/admin/blob-integrity",
     { preHandler: adminAuthenticated },
-    blobBackfill,
+    blobIntegrity,
   );
   // Full-database backup / restore — gated by the admin token, and the import
   // accepts a large JSON body.

@@ -882,7 +882,6 @@ export const chatUploadImage = async (req: FastifyRequest, res: FastifyReply) =>
     data: {
       id: stored.id,
       mime: file.mimetype,
-      bytes: stored.column,
       storageKey: stored.storageKey,
       storageSha256: stored.storageSha256,
     },
@@ -897,9 +896,9 @@ export const chatServeImage = async (req: FastifyRequest, res: FastifyReply) => 
   if (!id) throw new ValidationError("BAD_REQUEST");
   const img = await prisma.chatImage.findUnique({
     where: { id },
-    select: { bytes: true, mime: true, storageKey: true },
+    select: { mime: true, storageKey: true },
   });
-  const body = img ? await readBlob(img.storageKey, img.bytes) : null;
+  const body = img ? await readBlob(img.storageKey) : null;
   if (!body) return res.code(404).send({ message: "No image" });
   return res
     .header("Content-Type", img?.mime || "image/jpeg")
@@ -935,7 +934,6 @@ export const chatUploadFile = async (req: FastifyRequest, res: FastifyReply) => 
       name: file.filename.slice(0, 200),
       mime: file.mimetype,
       size: file.buffer.length,
-      bytes: stored.column,
       storageKey: stored.storageKey,
       storageSha256: stored.storageSha256,
     },
@@ -955,9 +953,9 @@ export const chatServeFile = async (req: FastifyRequest, res: FastifyReply) => {
   if (!id) throw new ValidationError("BAD_REQUEST");
   const f = await prisma.chatFile.findUnique({
     where: { id },
-    select: { bytes: true, mime: true, name: true, storageKey: true },
+    select: { mime: true, name: true, storageKey: true },
   });
-  const body = f ? await readBlob(f.storageKey, f.bytes) : null;
+  const body = f ? await readBlob(f.storageKey) : null;
   if (!body) return res.code(404).send({ message: "No file" });
   const safeName = (f?.name || "file").replace(/["\r\n]/g, "");
   return res

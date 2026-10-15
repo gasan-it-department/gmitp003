@@ -12,18 +12,28 @@ const accessor = (name: string) => name[0].toLowerCase() + name.slice(1);
 const client = (name: string) =>
   (prisma as unknown as Record<string, any>)[accessor(name)];
 
-// Binary (Bytes) columns are excluded from the backup — they hold large in-row
-// blobs (evidence files, decoded docs, signatures) that would balloon the JSON
-// and exhaust memory. We `omit` them on export.
+/*
+  Binary (Bytes) columns are excluded from the backup: they would balloon
+  the JSON and exhaust memory.
+
+  Evidence files, decoded documents, signatures, avatars, chat attachments,
+  scanned pages and stamp artwork no longer HAVE such a column — their
+  bytes live in object storage and the row carries only a storageKey. Those
+  entries were removed from this list when the columns were dropped,
+  because omitting a field that does not exist makes Prisma throw, and the
+  throw is caught below — which would have quietly dropped those whole
+  tables from every backup.
+
+  A backup now records where each file is rather than nothing at all, which
+  is strictly more than it used to carry.
+*/
 const OMIT_BYTES: Record<string, Record<string, true>> = {
-  ComplaintEvidence: { data: true },
-  DecodedFile: { fileDecoded: true },
-  Signature: { signature: true },
   Test: { test: true, encrypt: true },
 };
-// ...and these models have a REQUIRED Bytes column, so without the binary we
-// can't recreate their rows — skip them on import.
-const SKIP_IMPORT = new Set(["ComplaintEvidence", "Test"]);
+// ...and this model has a REQUIRED Bytes column, so without the binary we
+// can't recreate its rows — skip it on import. ComplaintEvidence used to be
+// here for that reason and no longer needs to be.
+const SKIP_IMPORT = new Set(["Test"]);
 
 // Make a Prisma row JSON-safe. Critically, binary (Bytes) columns come back as
 // Buffers — JSON.stringify would expand each byte into an array element and

@@ -297,7 +297,6 @@ const signatoryRegistry = (req, res) => __awaiter(void 0, void 0, void 0, functi
                         select: {
                             active: true,
                             title: true,
-                            signature: true,
                         },
                     },
                 },
@@ -1122,7 +1121,6 @@ const archiveFile = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
                     id: stored.id,
                     documentId: doc.id,
                     fileName: file.filename,
-                    fileDecoded: stored.column,
                     storageKey: stored.storageKey,
                     storageSha256: stored.storageSha256,
                     fileSize: file.buffer.length.toString(),

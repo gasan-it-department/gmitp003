@@ -139,7 +139,6 @@ const createComplaint = (req, res) => __awaiter(void 0, void 0, void 0, function
                         fileName: f.fileName,
                         fileType: f.fileType,
                         fileSize: f.buffer.length,
-                        data: storedEvidence[i].column,
                         storageKey: storedEvidence[i].storageKey,
                         storageSha256: storedEvidence[i].storageSha256,
                         uploadedById: userId,
@@ -230,7 +229,6 @@ const addEvidence = (req, res) => __awaiter(void 0, void 0, void 0, function* ()
                 fileName: f.fileName,
                 fileType: f.fileType,
                 fileSize: f.buffer.length,
-                data: storedEvidence[i].column,
                 storageKey: storedEvidence[i].storageKey,
                 storageSha256: storedEvidence[i].storageSha256,
                 uploadedById: userId,
@@ -257,7 +255,7 @@ const streamEvidence = (req, res) => __awaiter(void 0, void 0, void 0, function*
         });
         if (!row)
             throw new errors_1.NotFoundError("Evidence not found");
-        const buf = yield (0, blobStore_1.readBlob)(row.storageKey, row.data);
+        const buf = yield (0, blobStore_1.readBlob)(row.storageKey);
         if (!buf)
             throw new errors_1.NotFoundError("Evidence not found");
         res.header("Content-Type", row.fileType || "application/octet-stream");

@@ -511,7 +511,6 @@ const documentReceivePageUpload = (req, res) => __awaiter(void 0, void 0, void 0
             recordId,
             page,
             mime: file.mimetype,
-            bytes: stored.column,
             storageKey: stored.storageKey,
             storageSha256: stored.storageSha256,
         },
@@ -532,9 +531,9 @@ const documentReceivePageServe = (req, res) => __awaiter(void 0, void 0, void 0,
         throw new errors_1.ValidationError("BAD_REQUEST");
     const img = yield prisma_1.prisma.documentReceivePage.findUnique({
         where: { id },
-        select: { bytes: true, mime: true, storageKey: true },
+        select: { mime: true, storageKey: true },
     });
-    const body = img ? yield (0, blobStore_1.readBlob)(img.storageKey, img.bytes) : null;
+    const body = img ? yield (0, blobStore_1.readBlob)(img.storageKey) : null;
     if (!img || !body)
         return res.code(404).send({ message: "Not found" });
     res.header("Content-Type", img.mime);
@@ -584,7 +583,6 @@ const documentReceiveDisseminate = (req, res) => __awaiter(void 0, void 0, void 
             id: true,
             page: true,
             mime: true,
-            bytes: true,
             storageKey: true,
         },
     });
@@ -598,7 +596,7 @@ const documentReceiveDisseminate = (req, res) => __awaiter(void 0, void 0, void 
     const { PDFDocument } = yield Promise.resolve().then(() => __importStar(require("pdf-lib")));
     const pdf = yield PDFDocument.create();
     for (const p of pages) {
-        const buf = yield (0, blobStore_1.readBlob)(p.storageKey, p.bytes);
+        const buf = yield (0, blobStore_1.readBlob)(p.storageKey);
         if (!buf)
             continue;
         let img;
@@ -668,7 +666,6 @@ const documentReceiveDisseminate = (req, res) => __awaiter(void 0, void 0, void 
                 fileName: `${record.barcode}.pdf`,
                 fileSize: String(pdfBytes.length),
                 fileType: "application/pdf",
-                fileDecoded: stored.column,
                 storageKey: stored.storageKey,
                 storageSha256: stored.storageSha256,
             },

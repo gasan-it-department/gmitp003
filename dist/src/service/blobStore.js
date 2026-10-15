@@ -52,7 +52,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.storeBlob = exports.headBlob = exports.blobStoreStatus = exports.deleteBlob = exports.readBlobLazy = exports.readBlob = exports.getBlob = exports.putBlob = exports.sha256 = exports.keyFor = exports.blobStoreConfigured = void 0;
+exports.storeBlob = exports.headBlob = exports.blobStoreStatus = exports.deleteBlob = exports.readBlob = exports.getBlob = exports.putBlob = exports.sha256 = exports.keyFor = exports.blobStoreConfigured = void 0;
 /**
  * Object storage for the things that should never have been in Postgres.
  *
@@ -176,48 +176,19 @@ const getBlob = (key) => __awaiter(void 0, void 0, void 0, function* () {
 });
 exports.getBlob = getBlob;
 /**
- * Read a blob that may live in either place.
+ * Read a blob.
  *
- * This is the whole migration strategy in one function: prefer the bucket,
- * fall back to the column. Before the backfill every read falls back; after
- * it every read hits the bucket; during it, both work. There is no moment
- * where the system is broken, and no deploy that has to be timed against a
- * data move.
+ * There is no longer a fallback: the `Bytes` columns were dropped once
+ * every object had been verified in the bucket, so the bucket is the only
+ * copy. Null means the row has no key, or the object is genuinely absent
+ * — callers turn that into a 404 rather than an empty file.
  */
-const readBlob = (key, fallback) => __awaiter(void 0, void 0, void 0, function* () {
-    if (key) {
-        const fromBucket = yield (0, exports.getBlob)(key);
-        if (fromBucket)
-            return fromBucket;
-    }
-    return fallback ? Buffer.from(fallback) : null;
+const readBlob = (key) => __awaiter(void 0, void 0, void 0, function* () {
+    if (!key)
+        return null;
+    return (0, exports.getBlob)(key);
 });
 exports.readBlob = readBlob;
-/**
- * Read bytes without pulling the `Bytes` column unless they are not in the
- * bucket.
- *
- * `readBlob` takes the column value as its fallback, which means the caller
- * has already SELECTed it — so Postgres ships a 77 MB document over the
- * wire and into Node's heap even when the bytes were served from the
- * bucket. That makes the migration save disk but not memory, and defers the
- * whole benefit to the day the columns are dropped.
- *
- * This takes a thunk instead. The column is queried only when there is no
- * key, or the key turns out to be a miss. After the backfill, the heavy
- * query simply never runs, and dropping the columns later becomes a change
- * with no behaviour left to alter.
- */
-const readBlobLazy = (key, loadColumn) => __awaiter(void 0, void 0, void 0, function* () {
-    if (key) {
-        const fromBucket = yield (0, exports.getBlob)(key);
-        if (fromBucket)
-            return fromBucket;
-    }
-    const column = yield loadColumn();
-    return column ? Buffer.from(column) : null;
-});
-exports.readBlobLazy = readBlobLazy;
 /** Remove an object. Used by the backfill's rollback, not by normal code. */
 const deleteBlob = (key) => __awaiter(void 0, void 0, void 0, function* () {
     if (!(0, exports.blobStoreConfigured)())
@@ -278,22 +249,20 @@ const headBlob = (key) => __awaiter(void 0, void 0, void 0, function* () {
 });
 exports.headBlob = headBlob;
 /**
- * Store an upload, preferring the bucket and degrading to the column.
+ * Store an upload.
  *
- * Two deliberate choices here.
+ * The id is minted here rather than left to Prisma's `@default(uuid())`,
+ * so the upload can happen before any transaction opens while the key
+ * still names the real row. Uploading from inside a transaction would hold
+ * it open for the length of a network call — on a 77 MB document, seconds
+ * — and leave an orphaned object behind on rollback.
  *
- * The id is minted BY THIS FUNCTION rather than left to Prisma's
- * `@default(uuid())`, so the upload can happen before any transaction opens
- * while the key still names the real row. Uploading from inside a
- * transaction would hold it open for the length of a network call — on a
- * 77 MB document, seconds — and leave an orphaned object behind on
- * rollback.
- *
- * A bucket that is down does NOT fail the upload. The bytes go in the
- * column instead and the next backfill run moves them. A municipality that
- * cannot file a document because object storage is unreachable is a worse
- * outcome than a temporarily fat table, and the fallback path is the one
- * that was already there.
+ * This THROWS when the bucket will not take the bytes. It used to hand
+ * them back to be written to a `Bytes` column instead, so that a bucket
+ * outage could not stop the municipality filing a document. That column no
+ * longer exists, so there is nowhere to degrade to: failing loudly is the
+ * only honest option left, because the alternative is a row that claims to
+ * have a file and does not.
  */
 const storeBlob = (kind_1, input_1, ...args_1) => __awaiter(void 0, [kind_1, input_1, ...args_1], void 0, function* (kind, input, ext = "bin", contentType = "application/octet-stream", 
 /**
@@ -306,31 +275,24 @@ explicitId) {
     // Not Buffer.from() on a Buffer: that copies, and these are large.
     const bytes = Buffer.isBuffer(input) ? input : Buffer.from(input);
     const id = explicitId !== null && explicitId !== void 0 ? explicitId : crypto_1.default.randomUUID();
-    const keep = (why) => {
-        if (why)
-            console.error(`[blobStore] keeping bytes in Postgres: ${why}`);
-        return { id, storageKey: null, storageSha256: null, column: bytes };
-    };
-    if (!(0, exports.blobStoreConfigured)())
-        return keep("");
+    if (!(0, exports.blobStoreConfigured)()) {
+        throw new Error("Object storage is not configured, and file bytes no longer have a " +
+            "column to fall back to — set BUCKET_ENDPOINT, BUCKET_ACCESS_KEY, " +
+            "BUCKET_SECRET_KEY and BUCKET_NAME.");
+    }
     const key = (0, exports.keyFor)(kind, id, ext);
-    try {
-        const put = yield (0, exports.putBlob)(key, bytes, contentType);
-        /*
-          The SDK sends a CRC32 that the server validates, so a put that
-          returns success did not store corrupt bytes. What it does not prove
-          is that the object is actually THERE, so confirm existence and size
-          before dropping the only other copy. One HEAD, not a re-download.
-        */
-        const head = yield (0, exports.headBlob)(key);
-        if (!head || head.bytes !== bytes.length) {
-            return keep(`${key} read back as ${head ? `${head.bytes} bytes` : "missing"}, ` +
-                `expected ${bytes.length}`);
-        }
-        return { id, storageKey: key, storageSha256: put.sha256, column: null };
+    const put = yield (0, exports.putBlob)(key, bytes, contentType);
+    /*
+      The SDK sends a CRC32 that the server validates, so a put that returns
+      success did not store corrupt bytes. What it does not prove is that the
+      object is actually THERE, so confirm existence and size before telling
+      the database it exists. One HEAD, not a re-download.
+    */
+    const head = yield (0, exports.headBlob)(key);
+    if (!head || head.bytes !== bytes.length) {
+        throw new Error(`Upload of ${key} could not be confirmed: read back as ` +
+            `${head ? `${head.bytes} bytes` : "missing"}, expected ${bytes.length}.`);
     }
-    catch (e) {
-        return keep(e instanceof Error ? e.message : String(e));
-    }
+    return { id, storageKey: key, storageSha256: put.sha256 };
 });
 exports.storeBlob = storeBlob;

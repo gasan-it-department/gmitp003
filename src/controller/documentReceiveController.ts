@@ -502,7 +502,6 @@ export const documentReceivePageUpload = async (
       recordId,
       page,
       mime: file.mimetype,
-      bytes: stored.column,
       storageKey: stored.storageKey,
       storageSha256: stored.storageSha256,
     },
@@ -525,9 +524,9 @@ export const documentReceivePageServe = async (
   if (!id) throw new ValidationError("BAD_REQUEST");
   const img = await prisma.documentReceivePage.findUnique({
     where: { id },
-    select: { bytes: true, mime: true, storageKey: true },
+    select: { mime: true, storageKey: true },
   });
-  const body = img ? await readBlob(img.storageKey, img.bytes) : null;
+  const body = img ? await readBlob(img.storageKey) : null;
   if (!img || !body) return res.code(404).send({ message: "Not found" });
   res.header("Content-Type", img.mime);
   res.header("Cache-Control", "private, max-age=31536000, immutable");
@@ -580,7 +579,6 @@ export const documentReceiveDisseminate = async (
       id: true,
       page: true,
       mime: true,
-      bytes: true,
       storageKey: true,
     },
   });
@@ -597,7 +595,7 @@ export const documentReceiveDisseminate = async (
   const { PDFDocument } = await import("pdf-lib");
   const pdf = await PDFDocument.create();
   for (const p of pages) {
-    const buf = await readBlob(p.storageKey, p.bytes);
+    const buf = await readBlob(p.storageKey);
     if (!buf) continue;
     let img;
     try {
@@ -677,7 +675,6 @@ export const documentReceiveDisseminate = async (
         fileName: `${record.barcode}.pdf`,
         fileSize: String(pdfBytes.length),
         fileType: "application/pdf",
-        fileDecoded: stored.column,
         storageKey: stored.storageKey,
         storageSha256: stored.storageSha256,
       },

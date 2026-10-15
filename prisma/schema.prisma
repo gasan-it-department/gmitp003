@@ -1227,7 +1227,6 @@ model UserProfilePicture {
   file_type      String?
   file_public_id String
   file_url       String
-  bytes          Bytes? // image stored directly in Postgres (bytea)
   mime           String?
   timestamp      DateTime @default(now())
   userId         String?  @unique
@@ -1576,7 +1575,6 @@ model ComplaintEvidence {
   fileSize     Int
   // Nullable because the bytes may live in the bucket instead; see
   // storageKey below. Relaxing NOT NULL is additive and loses nothing.
-  data         Bytes?
   uploadedById String?
   caption      String?
   createdAt    DateTime  @default(now())
@@ -2012,7 +2010,6 @@ model DocumentReceivePage {
   mime      String
   // Nullable because the bytes may live in the bucket instead; see
   // storageKey below. Relaxing NOT NULL is additive and loses nothing.
-  bytes     Bytes?
   createdAt DateTime @default(now())
 
   @@index([recordId, page])
@@ -2055,7 +2052,6 @@ model DecodedFile {
   fileName    String
   fileSize    String
   fileType    String
-  fileDecoded Bytes?
   timestamp   DateTime  @default(now())
   documentId  String?   @unique
   document    Document? @relation(fields: [documentId], references: [id], onDelete: Cascade)
@@ -2115,7 +2111,6 @@ model ReceiveStamp {
   widthMm    Float    @default(58)
   heightMm   Float    @default(30)
   /// The uploaded stamp artwork. PNG, at the size above.
-  image      Bytes?
   mime       String   @default("image/png")
   imageW     Int      @default(0)
   imageH     Int      @default(0)
@@ -2225,7 +2220,6 @@ model Signature {
   forRenew             DateTime?
   active               Boolean             @default(false)
   roomAuthorizedUserId String?
-  signature            Bytes?
   // Per-signature toggle: when true, downloaded signed PDFs stamp a
   // verification QR beside any box that used THIS signature.
   qrEnabled            Boolean             @default(false)
@@ -3098,7 +3092,6 @@ model ChatImage {
   mime      String
   // Nullable because the bytes may live in the bucket instead; see
   // storageKey below. Relaxing NOT NULL is additive and loses nothing.
-  bytes     Bytes?
   createdAt DateTime @default(now())
   /// Where the bytes live in object storage, once moved there.
   /// Null means they are still in the column beside this one; reads
@@ -3120,7 +3113,6 @@ model ChatFile {
   size      Int
   // Nullable because the bytes may live in the bucket instead; see
   // storageKey below. Relaxing NOT NULL is additive and loses nothing.
-  bytes     Bytes?
   createdAt DateTime @default(now())
   /// Where the bytes live in object storage, once moved there.
   /// Null means they are still in the column beside this one; reads
