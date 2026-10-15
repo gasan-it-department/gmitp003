@@ -343,6 +343,31 @@ const parseSharedStrings = (xml: string): string[] => {
   return out;
 };
 
+/**
+ * The applicant's OWN PDS, for the public application page.
+ *
+ * Identical export, but the application id is taken from the verified temp
+ * token instead of the query string. An applicant's token is scoped to one
+ * application, and `exportPdsExcel` does no scoping of its own — it returns
+ * whatever id it is handed — so trusting the client here would let any
+ * applicant download anybody's PDS, which is their birth date, TIN,
+ * PhilHealth number, home address and parents' names.
+ *
+ * Deriving the id from the token rather than checking it against the token
+ * makes that impossible by construction rather than by remembering to
+ * validate.
+ */
+export const exportOwnPdsExcel = async (
+  req: FastifyRequest,
+  res: FastifyReply,
+) => {
+  // tempAuthenticated has already put the application row on the request.
+  const own = (req.user as { id?: string } | undefined)?.id;
+  if (!own) throw new ValidationError("INVALID REQUIRED ID");
+  (req as { query: unknown }).query = { id: own };
+  return exportPdsExcel(req, res);
+};
+
 export const exportPdsExcel = async (
   req: FastifyRequest,
   res: FastifyReply,

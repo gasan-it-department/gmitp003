@@ -318,7 +318,7 @@ app.get("/test/ai", (request, reply) => __awaiter(void 0, void 0, void 0, functi
 // Public build marker — lets anyone (including the assistant) CONFIRM which
 // build is actually serving, instead of trusting deploy timers. Bump the
 // tag with each meaningful deploy.
-const BUILD_TAG = "2026-10-15-pds-template-2026";
+const BUILD_TAG = "2026-10-15-pds-own-route";
 /**
  * Can this container actually rasterise a PDF page?
  *

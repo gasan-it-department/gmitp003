@@ -9,6 +9,10 @@ const application = (fastify) => {
     // Download a filled CS Form 212 (.xlsx). `?id=<applicationId>` for an
     // application, or `?userId=<userId>` for an onboarded employee.
     fastify.get("/application/pds/export", { preHandler: handler_1.authenticated }, pdsExportController_1.exportPdsExcel);
+    // The applicant's own copy. Gated by the temp session the public
+    // application page already holds; the id comes from that token, never
+    // from the query, so it cannot be pointed at someone else's PDS.
+    fastify.get("/application/pds/export/own", { preHandler: handler_1.tempAuthenticated }, pdsExportController_1.exportOwnPdsExcel);
     fastify.post("/application/post", { preHandler: handler_1.authenticated }, applicationController_1.postJob);
     fastify.patch("/application/post/update/status", { preHandler: handler_1.authenticated }, applicationController_1.updatePostApplication);
     fastify.post("/application/post-requirement", { preHandler: handler_1.authenticated }, applicationController_1.createPobJobRequirements);

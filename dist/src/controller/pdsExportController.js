@@ -18,7 +18,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.exportPdsExcel = exports.DISCLOSURE_BOXES = exports.SHEET1_BOXES = exports.clearCellFills = exports.WHITE_CELLS = exports.applyCells = void 0;
+exports.exportPdsExcel = exports.exportOwnPdsExcel = exports.DISCLOSURE_BOXES = exports.SHEET1_BOXES = exports.clearCellFills = exports.WHITE_CELLS = exports.applyCells = void 0;
 const prisma_1 = require("../barrel/prisma");
 const errors_1 = require("../errors/errors");
 const encryption_1 = require("../service/encryption");
@@ -327,6 +327,30 @@ const parseSharedStrings = (xml) => {
     }
     return out;
 };
+/**
+ * The applicant's OWN PDS, for the public application page.
+ *
+ * Identical export, but the application id is taken from the verified temp
+ * token instead of the query string. An applicant's token is scoped to one
+ * application, and `exportPdsExcel` does no scoping of its own — it returns
+ * whatever id it is handed — so trusting the client here would let any
+ * applicant download anybody's PDS, which is their birth date, TIN,
+ * PhilHealth number, home address and parents' names.
+ *
+ * Deriving the id from the token rather than checking it against the token
+ * makes that impossible by construction rather than by remembering to
+ * validate.
+ */
+const exportOwnPdsExcel = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a;
+    // tempAuthenticated has already put the application row on the request.
+    const own = (_a = req.user) === null || _a === void 0 ? void 0 : _a.id;
+    if (!own)
+        throw new errors_1.ValidationError("INVALID REQUIRED ID");
+    req.query = { id: own };
+    return (0, exports.exportPdsExcel)(req, res);
+});
+exports.exportOwnPdsExcel = exportOwnPdsExcel;
 const exportPdsExcel = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     var _a, _b, _c, _d;
     const q = req.query;

@@ -32,13 +32,24 @@ import {
   updatePublicApplication,
 } from "../controller/applicationController";
 
-import { exportPdsExcel } from "../controller/pdsExportController";
+import {
+  exportOwnPdsExcel,
+  exportPdsExcel,
+} from "../controller/pdsExportController";
 
 export const application = (fastify: FastifyInstance) => {
   fastify.post("/submit-application", () => {});
   // Download a filled CS Form 212 (.xlsx). `?id=<applicationId>` for an
   // application, or `?userId=<userId>` for an onboarded employee.
   fastify.get("/application/pds/export", { preHandler: authenticated }, exportPdsExcel);
+  // The applicant's own copy. Gated by the temp session the public
+  // application page already holds; the id comes from that token, never
+  // from the query, so it cannot be pointed at someone else's PDS.
+  fastify.get(
+    "/application/pds/export/own",
+    { preHandler: tempAuthenticated },
+    exportOwnPdsExcel,
+  );
   fastify.post("/application/post", { preHandler: authenticated }, postJob);
   fastify.patch(
     "/application/post/update/status",
