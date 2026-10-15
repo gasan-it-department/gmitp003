@@ -283,7 +283,7 @@ app.get("/test/ai", async (request: FastifyRequest, reply: FastifyReply) => {
 // Public build marker — lets anyone (including the assistant) CONFIRM which
 // build is actually serving, instead of trusting deploy timers. Bump the
 // tag with each meaningful deploy.
-const BUILD_TAG = "2026-10-15-db-size-report";
+const BUILD_TAG = "2026-10-15-reclaim-disk";
 
 /**
  * Can this container actually rasterise a PDF page?
@@ -441,6 +441,33 @@ app.listen({ port: 3000, host: "0.0.0.0" }, (err, address) => {
         })
         .catch((e) => console.warn("[blob-integrity] check failed:", e));
     }, 25_000).unref();
+  }
+
+  /*
+    Give back the disk the dropped Bytes columns are still occupying.
+
+    DROP COLUMN only marks a column dead; the bytes stay in the table's
+    pages until it is rewritten. Self-limiting: a table is only rewritten
+    when it holds far more space than its live rows can account for, so
+    the first run reclaims everything and later runs find nothing to do.
+    BLOB_RECLAIM_AUTO=0 turns it off.
+  */
+  if (process.env.BLOB_RECLAIM_AUTO !== "0") {
+    setTimeout(() => {
+      import("./service/reclaimBlobSpace")
+        .then((m) =>
+          m.reclaimBlobTableSpace((l) => console.log("[reclaim]", l)),
+        )
+        .then((r) => {
+          if (r?.rewritten.length) {
+            console.log(
+              `[reclaim] returned ${r.freedMB} MB ` +
+                `(${r.databaseBeforeMB} -> ${r.databaseAfterMB} MB)`,
+            );
+          }
+        })
+        .catch((e) => console.warn("[reclaim] failed:", e));
+    }, 45_000).unref();
   }
 
   // One-shot data healer: merge stock batches that were split into
