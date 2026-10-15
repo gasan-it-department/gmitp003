@@ -885,6 +885,7 @@ export const submitApplication = async (
         lastName: formData.lastName,
         middleName: formData.middleName || "N/A",
         birthDate: formData.birthDate,
+        placeOfBirth: formData.placeOfBirth,
         email: formData.email,
         civilStatus: formData.civilStatus,
 
@@ -1039,6 +1040,7 @@ export const submitApplication = async (
       motherFirstname: clean.motherFirstname,
 
       birthDate: clean.birthDate,
+      placeOfBirth: clean.placeOfBirth,
 
       umidNo: clean.umidNo,
       pagIbigNo: clean.pagIbigNo,
@@ -1101,6 +1103,10 @@ export const submitApplication = async (
 
         birthDate: encrypted.birthDate?.encryptedData || "",
         bdayIv: encrypted.birthDate?.iv || "",
+        // Null rather than "" so an application that predates this field
+        // is distinguishable from one where it was left blank.
+        placeOfBirth: encrypted.placeOfBirth?.encryptedData || null,
+        placeOfBirthIv: encrypted.placeOfBirth?.iv || null,
 
         gender: formData.gender || "male",
         filipino: clean.citizenship === "filipino",

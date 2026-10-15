@@ -691,6 +691,10 @@ model SubmittedApplication {
   middleName              String?                   @default("N/A")
   suffix                  String?                   @default("N/A")
   birthDate               String
+  /// Item 4 on the CS Form 212. Nullable because every application
+  /// submitted before this field existed has none, and a blank box is the
+  /// honest rendering of that.
+  placeOfBirth            String?
   email                   String
   gender                  String
   filipino                Boolean
@@ -766,6 +770,7 @@ model SubmittedApplication {
   positionId              String?
   agencyNoIv              String?
   bdayIv                  String?
+  placeOfBirthIv          String?
   cvilStatusIv            String?
   emailIv                 String?
   fatherFirstnameIv       String?

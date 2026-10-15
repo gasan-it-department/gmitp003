@@ -468,6 +468,7 @@ export const submitToInvitationLink = async (
         lastName: formData.lastName,
         middleName: formData.middleName || "N/A",
         birthDate: formData.birthDate,
+        placeOfBirth: formData.placeOfBirth,
         email: formData.email,
         civilStatus: formData.civilStatus,
 
@@ -628,6 +629,7 @@ export const submitToInvitationLink = async (
       spouseMiddle: clean.spouseMiddle,
 
       birthDate: clean.birthDate,
+      placeOfBirth: clean.placeOfBirth,
 
       umidNo: clean.umidNo,
       pagIbigNo: clean.pagIbigNo,
@@ -684,6 +686,10 @@ export const submitToInvitationLink = async (
 
         birthDate: encrypted.birthDate?.encryptedData || "",
         bdayIv: encrypted.birthDate?.iv || "",
+        // Null rather than "" so an application that predates this field
+        // is distinguishable from one where it was left blank.
+        placeOfBirth: encrypted.placeOfBirth?.encryptedData || null,
+        placeOfBirthIv: encrypted.placeOfBirth?.iv || null,
 
         gender: formData.gender || "male",
         filipino: clean.citizenship === "filipino",

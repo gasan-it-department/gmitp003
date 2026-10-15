@@ -393,7 +393,7 @@ const exportPds = (req, res, opts) => __awaiter(void 0, void 0, void 0, function
         yield (0, callerScope_1.requireSameLine)(req, app.lineId);
     }
     // ── Decrypt encrypted PII ─────────────────────────────────────────────
-    const [email, civilStatus, mobileNo, resProvinceRaw, resCityRaw, resBarangayRaw, resStreet, resSub, resHouse, permaProvinceRaw, permaCityRaw, permaBarangayRaw, permaStreet, permaSub, permaHouse, resZip, permaZip, fatherSurname, fatherFirstname, motherSurname, motherFirstname, birthDate, umidNo, pagIbigNo, philHealthNo, philSys, tinNo, agencyNo, spouseSurname, spouseFirstname, spouseMiddle,] = yield Promise.all([
+    const [email, civilStatus, mobileNo, resProvinceRaw, resCityRaw, resBarangayRaw, resStreet, resSub, resHouse, permaProvinceRaw, permaCityRaw, permaBarangayRaw, permaStreet, permaSub, permaHouse, resZip, permaZip, fatherSurname, fatherFirstname, motherSurname, motherFirstname, birthDate, placeOfBirth, umidNo, pagIbigNo, philHealthNo, philSys, tinNo, agencyNo, spouseSurname, spouseFirstname, spouseMiddle,] = yield Promise.all([
         dec(app.email, app.emailIv),
         dec(app.cvilStatus, app.cvilStatusIv),
         dec(app.mobileNo, app.ivMobileNo),
@@ -416,6 +416,7 @@ const exportPds = (req, res, opts) => __awaiter(void 0, void 0, void 0, function
         dec(app.motherSurname, app.motherSurnameIv),
         dec(app.motherFirstname, app.motherFirstnameIv),
         dec(app.birthDate, app.bdayIv),
+        dec(app.placeOfBirth, app.placeOfBirthIv),
         dec(app.umidNo, app.umidNoIv),
         dec(app.pagIbigNo, app.pagIbigNoIv),
         dec(app.philHealthNo, app.philHealthNoIv),
@@ -452,6 +453,7 @@ const exportPds = (req, res, opts) => __awaiter(void 0, void 0, void 0, function
         D12: app.middleName,
         L12: app.suffix,
         D13: fmtDate(birthDate),
+        D15: placeOfBirth,
         // Citizenship (J13), Sex (D16) and Civil Status (D17) are NOT typed here —
         // they are official form-control checkboxes, ticked via tickCheckboxes().
         D22: app.height,

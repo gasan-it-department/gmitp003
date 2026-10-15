@@ -439,6 +439,7 @@ const exportPds = async (
     motherSurname,
     motherFirstname,
     birthDate,
+    placeOfBirth,
     umidNo,
     pagIbigNo,
     philHealthNo,
@@ -471,6 +472,7 @@ const exportPds = async (
     dec(app.motherSurname, app.motherSurnameIv),
     dec(app.motherFirstname, app.motherFirstnameIv),
     dec(app.birthDate, app.bdayIv),
+    dec(app.placeOfBirth, app.placeOfBirthIv),
     dec(app.umidNo, app.umidNoIv),
     dec(app.pagIbigNo, app.pagIbigNoIv),
     dec(app.philHealthNo, app.philHealthNoIv),
@@ -515,6 +517,7 @@ const exportPds = async (
     D12: app.middleName,
     L12: app.suffix,
     D13: fmtDate(birthDate),
+    D15: placeOfBirth,
     // Citizenship (J13), Sex (D16) and Civil Status (D17) are NOT typed here —
     // they are official form-control checkboxes, ticked via tickCheckboxes().
     D22: app.height,
