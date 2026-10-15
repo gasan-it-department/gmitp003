@@ -283,7 +283,7 @@ app.get("/test/ai", async (request: FastifyRequest, reply: FastifyReply) => {
 // Public build marker — lets anyone (including the assistant) CONFIRM which
 // build is actually serving, instead of trusting deploy timers. Bump the
 // tag with each meaningful deploy.
-const BUILD_TAG = "2026-10-15-bytes-columns-dropped";
+const BUILD_TAG = "2026-10-15-db-size-report";
 
 /**
  * Can this container actually rasterise a PDF page?
@@ -366,6 +366,38 @@ app.get("/health/build", async () => {
     blobs: await (async () => {
       const m = await import("./service/blobIntegrity");
       return { ...(await m.blobStatus()), lastCheck: m.lastRun };
+    })(),
+    /*
+      Table sizes, because DROP COLUMN is a metadata change: Postgres marks
+      the column dead and keeps the space until the table is rewritten. So
+      "the columns are gone" and "the disk came back" are different claims
+      and this reports the second one honestly.
+    */
+    dbSize: await (async () => {
+      try {
+        const rows = await prisma.$queryRawUnsafe<
+          Array<{ table: string; bytes: bigint }>
+        >(`
+          SELECT c.relname AS table, pg_total_relation_size(c.oid) AS bytes
+          FROM pg_class c
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = 'public' AND c.relkind = 'r'
+          ORDER BY pg_total_relation_size(c.oid) DESC
+          LIMIT 8
+        `);
+        const total = await prisma.$queryRawUnsafe<
+          Array<{ bytes: bigint }>
+        >(`SELECT pg_database_size(current_database()) AS bytes`);
+        const mb = (b: bigint) => Number(b) / 1024 / 1024;
+        return {
+          databaseMB: Number(mb(total[0].bytes).toFixed(1)),
+          largestTablesMB: Object.fromEntries(
+            rows.map((r) => [r.table, Number(mb(r.bytes).toFixed(1))]),
+          ),
+        };
+      } catch (e) {
+        return { error: e instanceof Error ? e.message : String(e) };
+      }
     })(),
   };
 });
