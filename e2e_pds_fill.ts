@@ -88,8 +88,24 @@ const fillIsColoured = (stylesXml: string, fillId: number) => {
       const fid = Number(attr(beforeXfs.xfs[s], "fillId") ?? 0);
       return fillIsColoured(beforeStyles, fid);
     });
-    ok("the template really does shade all six address cells",
-      greyBefore.length === ADDRESS_BOXES.length, JSON.stringify(greyBefore));
+    /*
+      Whether the template shades these cells is no longer an assertion.
+      The 2026 copy now in service does NOT shade them — the defect this
+      test was written for is gone from the form itself.
+
+      What still has to hold is the OUTCOME: after the pass, those six
+      cells are white. That is true whether they started grey or not, and
+      stays true if a future official file re-introduces the shading, which
+      is the case this test exists to catch. Requiring them to start grey
+      would mean a template without the defect fails the test proving the
+      defect is fixed.
+    */
+    console.log(
+      `  note: the template shades ${greyBefore.length} of ` +
+        `${ADDRESS_BOXES.length} address cells${
+          greyBefore.length ? ` (${greyBefore.join(", ")})` : " — none"
+        }`,
+    );
 
     ok("the fix targets exactly those cells",
       JSON.stringify(WHITE_CELLS[SHEET]) === JSON.stringify(ADDRESS_BOXES),
@@ -130,10 +146,20 @@ const fillIsColoured = (stylesXml: string, fillId: number) => {
     ok("cellXfs count matches the number of entries",
       afterXfs.count === afterXfs.xfs.length,
       `count=${afterXfs.count} entries=${afterXfs.xfs.length}`);
-    ok("styles only grew (no original style was rewritten)",
-      afterXfs.xfs.length > beforeXfs.xfs.length &&
-        afterXfs.xfs.slice(0, beforeXfs.xfs.length).join("") ===
-          beforeXfs.xfs.join(""));
+    /*
+      The property that matters is that EXISTING styles are never rewritten
+      — they are shared with the rest of the workbook, so editing one in
+      place would recolour boxes nobody asked about. Growth itself is only
+      expected when there was a fill to clear.
+    */
+    ok("no original style was rewritten",
+      afterXfs.xfs.slice(0, beforeXfs.xfs.length).join("") ===
+        beforeXfs.xfs.join(""));
+    ok("styles grew only if there was shading to clear",
+      greyBefore.length > 0
+        ? afterXfs.xfs.length > beforeXfs.xfs.length
+        : afterXfs.xfs.length === beforeXfs.xfs.length,
+      `grey=${greyBefore.length} xfs ${beforeXfs.xfs.length}->${afterXfs.xfs.length}`);
     ok("the six cells share the two twins rather than making six",
       afterXfs.xfs.length - beforeXfs.xfs.length <= 3,
       `added ${afterXfs.xfs.length - beforeXfs.xfs.length}`);

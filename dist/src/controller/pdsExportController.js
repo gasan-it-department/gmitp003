@@ -18,7 +18,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.exportPdsExcel = exports.clearCellFills = exports.WHITE_CELLS = void 0;
+exports.exportPdsExcel = exports.DISCLOSURE_BOXES = exports.SHEET1_BOXES = exports.clearCellFills = exports.WHITE_CELLS = exports.applyCells = void 0;
 const prisma_1 = require("../barrel/prisma");
 const errors_1 = require("../errors/errors");
 const encryption_1 = require("../service/encryption");
@@ -131,18 +131,23 @@ const applyCells = (xml, cells) => {
     }
     return xml;
 };
+exports.applyCells = applyCells;
 /**
  * Cells the 2026 template ships with a grey background that should be plain
  * white: the residential CITY/MUNICIPALITY (I24:K24) and PROVINCE (L24:N24)
  * input boxes on sheet C1.
  *
- * The 2025 template had these white; the 2026 revision shades them, so the
- * template swap made every export come out grey in that one block. Every
- * other input box on the form is white, this one included in the printed
- * original, so it reads as a defect rather than a design.
+ * The 2025 template had these white and an earlier 2026 copy shaded them,
+ * which made every export come out grey in that one block. Every other input
+ * box on the form is white, this one included in the printed original, so it
+ * read as a defect rather than a design.
  *
- * Fixed here rather than by editing the template binary, so that dropping in
- * a fresh copy of the official file does not silently bring the shading back.
+ * The template now in service does NOT shade them, so this pass currently
+ * changes nothing. It is kept deliberately: it is cheap, and it means
+ * dropping in a fresh copy of the official file cannot silently bring the
+ * shading back. e2e_pds_template.ts asserts these cells still exist and that
+ * the list covers whole merges, so the guard fails loudly rather than
+ * half-clearing a box if the form is revised again.
  */
 exports.WHITE_CELLS = {
     "xl/worksheets/sheet1.xml": ["I24", "J24", "K24", "L24", "M24", "N24"],
@@ -209,7 +214,7 @@ const VML2 = "xl/drawings/vmlDrawing2.vml"; // sheet 4
 const B1 = (ctrlProp, vmlId) => ({ ctrlProp, vmlFile: VML1, vmlId });
 const B4 = (ctrlProp, vmlId) => ({ ctrlProp, vmlFile: VML2, vmlId });
 // Sheet 1: citizenship / sex / civil status (single-select per group).
-const SHEET1_BOXES = {
+exports.SHEET1_BOXES = {
     filipino: B1("ctrlProp2.xml", "_x0000_s1045"),
     dual: B1("ctrlProp3.xml", "_x0000_s1046"),
     byBirth: B1("ctrlProp11.xml", "_x0000_s1063"),
@@ -223,7 +228,7 @@ const SHEET1_BOXES = {
     separated: B1("ctrlProp10.xml", "_x0000_s1062"),
 };
 // Sheet 4: disclosure questionnaire #34-40 — one YES/NO pair per question.
-const DISCLOSURE_BOXES = {
+exports.DISCLOSURE_BOXES = {
     relatedThirdDegree: { yes: B4("ctrlProp13.xml", "Check_x0020_Box_x0020_1"), no: B4("ctrlProp14.xml", "Check_x0020_Box_x0020_2") },
     relatedFourthDegree: { yes: B4("ctrlProp15.xml", "Check_x0020_Box_x0020_3"), no: B4("ctrlProp16.xml", "Check_x0020_Box_x0020_4") },
     guiltyAdmin: { yes: B4("ctrlProp17.xml", "Check_x0020_Box_x0020_5"), no: B4("ctrlProp18.xml", "Check_x0020_Box_x0020_6") },
@@ -309,7 +314,7 @@ const appendDetails = (xml, fields, shared) => {
         if (!val)
             continue;
         const label = (cellText(xml, ref, shared) || "").replace(/[_\s]+$/, "").trim();
-        xml = applyCells(xml, { [ref]: label ? `${label} ${val}` : val });
+        xml = (0, exports.applyCells)(xml, { [ref]: label ? `${label} ${val}` : val });
     }
     return xml;
 };
@@ -556,7 +561,7 @@ const exportPdsExcel = (req, res) => __awaiter(void 0, void 0, void 0, function*
         if (!entry)
             continue;
         const xml = yield entry.async("string");
-        zip.file(file, applyCells(xml, cells));
+        zip.file(file, (0, exports.applyCells)(xml, cells));
     }
     // Strip the grey background the 2026 template puts on a few input boxes.
     const stylesEntry = zip.file("xl/styles.xml");
@@ -583,7 +588,7 @@ const exportPdsExcel = (req, res) => __awaiter(void 0, void 0, void 0, function*
     //  • sheet 1 — citizenship / sex / civil status
     //  • sheet 4 — disclosure questionnaire #34-40 (YES or NO per question)
     const boxes = [];
-    const add = (k) => SHEET1_BOXES[k] && boxes.push(SHEET1_BOXES[k]);
+    const add = (k) => exports.SHEET1_BOXES[k] && boxes.push(exports.SHEET1_BOXES[k]);
     if (app.filipino)
         add("filipino");
     if (app.dualCitizen) {
@@ -609,7 +614,7 @@ const exportPdsExcel = (req, res) => __awaiter(void 0, void 0, void 0, function*
         add("separated");
     else if (cs.includes("other"))
         add("others");
-    for (const [field, pair] of Object.entries(DISCLOSURE_BOXES)) {
+    for (const [field, pair] of Object.entries(exports.DISCLOSURE_BOXES)) {
         boxes.push(disc[field] ? pair.yes : pair.no);
     }
     yield tickBoxes(zip, boxes);

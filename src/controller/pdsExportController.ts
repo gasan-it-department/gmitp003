@@ -97,7 +97,10 @@ const xmlEsc = (s: string) =>
 // Set the given cells (ref → value) inside one sheet's XML, preserving each
 // cell's existing style (`s` attribute) and writing the value as an inline
 // string. Cells absent from the template are skipped.
-const applyCells = (xml: string, cells: Record<string, unknown>): string => {
+export const applyCells = (
+  xml: string,
+  cells: Record<string, unknown>,
+): string => {
   for (const [ref, raw] of Object.entries(cells)) {
     const val = S(raw);
     if (!val) continue;
@@ -126,13 +129,17 @@ const applyCells = (xml: string, cells: Record<string, unknown>): string => {
  * white: the residential CITY/MUNICIPALITY (I24:K24) and PROVINCE (L24:N24)
  * input boxes on sheet C1.
  *
- * The 2025 template had these white; the 2026 revision shades them, so the
- * template swap made every export come out grey in that one block. Every
- * other input box on the form is white, this one included in the printed
- * original, so it reads as a defect rather than a design.
+ * The 2025 template had these white and an earlier 2026 copy shaded them,
+ * which made every export come out grey in that one block. Every other input
+ * box on the form is white, this one included in the printed original, so it
+ * read as a defect rather than a design.
  *
- * Fixed here rather than by editing the template binary, so that dropping in
- * a fresh copy of the official file does not silently bring the shading back.
+ * The template now in service does NOT shade them, so this pass currently
+ * changes nothing. It is kept deliberately: it is cheap, and it means
+ * dropping in a fresh copy of the official file cannot silently bring the
+ * shading back. e2e_pds_template.ts asserts these cells still exist and that
+ * the list covers whole merges, so the guard fails loudly rather than
+ * half-clearing a box if the form is revised again.
  */
 export const WHITE_CELLS: Record<string, string[]> = {
   "xl/worksheets/sheet1.xml": ["I24", "J24", "K24", "L24", "M24", "N24"],
@@ -216,7 +223,7 @@ const B1 = (ctrlProp: string, vmlId: string): Box => ({ ctrlProp, vmlFile: VML1,
 const B4 = (ctrlProp: string, vmlId: string): Box => ({ ctrlProp, vmlFile: VML2, vmlId });
 
 // Sheet 1: citizenship / sex / civil status (single-select per group).
-const SHEET1_BOXES: Record<string, Box> = {
+export const SHEET1_BOXES: Record<string, Box> = {
   filipino: B1("ctrlProp2.xml", "_x0000_s1045"),
   dual: B1("ctrlProp3.xml", "_x0000_s1046"),
   byBirth: B1("ctrlProp11.xml", "_x0000_s1063"),
@@ -231,7 +238,7 @@ const SHEET1_BOXES: Record<string, Box> = {
 };
 
 // Sheet 4: disclosure questionnaire #34-40 — one YES/NO pair per question.
-const DISCLOSURE_BOXES: Record<string, { yes: Box; no: Box }> = {
+export const DISCLOSURE_BOXES: Record<string, { yes: Box; no: Box }> = {
   relatedThirdDegree: { yes: B4("ctrlProp13.xml", "Check_x0020_Box_x0020_1"), no: B4("ctrlProp14.xml", "Check_x0020_Box_x0020_2") },
   relatedFourthDegree: { yes: B4("ctrlProp15.xml", "Check_x0020_Box_x0020_3"), no: B4("ctrlProp16.xml", "Check_x0020_Box_x0020_4") },
   guiltyAdmin: { yes: B4("ctrlProp17.xml", "Check_x0020_Box_x0020_5"), no: B4("ctrlProp18.xml", "Check_x0020_Box_x0020_6") },
