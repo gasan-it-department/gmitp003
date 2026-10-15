@@ -81,6 +81,7 @@ exports.hasPdfSignature = exports.signingIdentity = exports.padesSign = void 0;
 const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
 const crypto_1 = __importDefault(require("crypto"));
+const blobStore_1 = require("./blobStore");
 /**
  * Where the signing identity lives.
  *
@@ -98,6 +99,24 @@ const P12_BASE64 = process.env.PDF_SIGN_P12_BASE64 || "";
 const P12_PATH = process.env.PDF_SIGN_P12_PATH ||
     path_1.default.join(process.cwd(), ".secrets", "doc-signing.p12");
 const P12_PASSPHRASE = process.env.PDF_SIGN_P12_PASSPHRASE || "";
+/**
+ * Where the identity lives in object storage.
+ *
+ * This is the durable home the env var was standing in for. A bucket
+ * object survives restarts and deploys exactly as an env var does, and
+ * unlike a 3,400-character paste it cannot arrive truncated.
+ */
+const P12_BUCKET_KEY = process.env.PDF_SIGN_P12_KEY || "signing/doc-signing.p12";
+/** A PKCS#12 smaller than this is not a key, it is a mangled paste. */
+const P12_MIN_BYTES = 500;
+/*
+  Cached for the life of the process. ensureP12 is called once per
+  signature and once per health check; without this, every signed document
+  would cost a round trip to the bucket.
+*/
+let cachedIdentity = null;
+/** Why a supplied PDF_SIGN_P12_BASE64 was not used, if it was not. */
+let envRejected = null;
 /** What the certificate claims about who signed. */
 const SUBJECT = {
     commonName: process.env.PDF_SIGN_CN || "Municipality of Gasan",
@@ -114,27 +133,62 @@ const SUBJECT = {
  * in the repository or in an image. It is written to .secrets/ with
  * owner-only permissions, and that directory is gitignored.
  */
-const ensureP12 = () => __awaiter(void 0, void 0, void 0, function* () {
+const ensureP12 = () => __awaiter(void 0, void 0, void 0, function* () { return (yield loadIdentity()).buf; });
+const loadIdentity = () => __awaiter(void 0, void 0, void 0, function* () {
+    if (cachedIdentity)
+        return cachedIdentity;
     /*
-      Supplied identity wins. This is the only branch production should take.
+      An explicitly supplied identity still wins, so nothing changes for a
+      deployment that already has one.
   
       Whitespace is stripped first: a 3,400-character single line pasted into
       a dashboard textarea very often comes back with newlines in it, and
       Buffer.from silently ignores the invalid characters — producing a
       SHORTER, corrupt key rather than an error, which then fails somewhere
-      far less obvious.
+      far less obvious. Better to refuse it loudly than to sign with it.
     */
     if (P12_BASE64) {
         const cleaned = P12_BASE64.replace(/\s+/g, "");
         const buf = Buffer.from(cleaned, "base64");
-        if (buf.length < 500) {
-            throw new Error(`PDF_SIGN_P12_BASE64 decoded to only ${buf.length} bytes from ` +
-                `${cleaned.length} base64 chars — it looks truncated or mangled.`);
+        if (buf.length >= P12_MIN_BYTES) {
+            cachedIdentity = { buf, source: "env" };
+            return cachedIdentity;
         }
-        return buf;
+        /*
+          A corrupt value used to throw, which meant a mangled paste stopped
+          signing altogether until somebody fixed it by hand — and it stayed
+          broken for days because the paste kept arriving truncated.
+    
+          Falling through to the durable identity in the bucket is better: the
+          documents get signed, and the reason the variable was ignored is
+          reported on /health/build rather than buried. It is recorded rather
+          than silently dropped, so this cannot quietly mask a deliberate
+          identity that simply failed to arrive.
+        */
+        envRejected =
+            `ignored: decoded to only ${buf.length} bytes from ` +
+                `${cleaned.length} base64 chars, so it is truncated or mangled`;
+        console.error(`[pades] PDF_SIGN_P12_BASE64 ${envRejected}`);
     }
-    if (fs_1.default.existsSync(P12_PATH))
-        return fs_1.default.readFileSync(P12_PATH);
+    // The bucket: durable across restarts, which is the whole requirement.
+    if ((0, blobStore_1.blobStoreConfigured)()) {
+        try {
+            const fromBucket = yield (0, blobStore_1.getBlob)(P12_BUCKET_KEY);
+            if (fromBucket && fromBucket.length >= P12_MIN_BYTES) {
+                cachedIdentity = { buf: fromBucket, source: "bucket" };
+                return cachedIdentity;
+            }
+        }
+        catch (e) {
+            // Fall through and generate. Signing with a fresh identity beats not
+            // signing at all, and the next boot will find whatever gets stored.
+            console.error(`[pades] could not read ${P12_BUCKET_KEY} from the bucket:`, e instanceof Error ? e.message : e);
+        }
+    }
+    if (fs_1.default.existsSync(P12_PATH)) {
+        cachedIdentity = { buf: fs_1.default.readFileSync(P12_PATH), source: "file" };
+        return cachedIdentity;
+    }
     const forge = yield Promise.resolve().then(() => __importStar(require("node-forge")));
     const pki = forge.default.pki;
     // 2048 is the floor most readers accept without complaint; 3072+ costs
@@ -175,11 +229,47 @@ const ensureP12 = () => __awaiter(void 0, void 0, void 0, function* () {
     const p12Asn1 = forge.default.pkcs12.toPkcs12Asn1(keys.privateKey, [cert], P12_PASSPHRASE, { algorithm: "3des" });
     const der = forge.default.asn1.toDer(p12Asn1).getBytes();
     const buf = Buffer.from(der, "binary");
-    fs_1.default.mkdirSync(path_1.default.dirname(P12_PATH), { recursive: true });
-    fs_1.default.writeFileSync(P12_PATH, buf, { mode: 0o600 });
-    console.log(`[pades] generated a self-signed signing certificate at ${P12_PATH} ` +
-        `(CN=${SUBJECT.commonName}, valid 10 years)`);
-    return buf;
+    /*
+      Persist to the bucket BEFORE anything else, because that is the copy
+      that outlives this container. Without it the identity is regenerated
+      on every restart and documents signed last month name a different
+      signer from this month's.
+    */
+    if ((0, blobStore_1.blobStoreConfigured)()) {
+        try {
+            yield (0, blobStore_1.putBlob)(P12_BUCKET_KEY, buf, "application/x-pkcs12");
+            /*
+              Read it back and adopt whatever is actually stored. If two
+              instances started at once and both generated, this makes them
+              agree on the one that landed rather than each signing with its
+              own.
+            */
+            const stored = yield (0, blobStore_1.getBlob)(P12_BUCKET_KEY);
+            if (stored && stored.length >= P12_MIN_BYTES) {
+                console.log(`[pades] signing identity stored at ${P12_BUCKET_KEY} ` +
+                    `(CN=${SUBJECT.commonName}, valid 10 years)`);
+                cachedIdentity = { buf: stored, source: "bucket" };
+                return cachedIdentity;
+            }
+        }
+        catch (e) {
+            console.error("[pades] could not store the signing identity in the bucket — it " +
+                "will be regenerated on the next restart:", e instanceof Error ? e.message : e);
+        }
+    }
+    // Local development: a file is durable enough when the disk is.
+    try {
+        fs_1.default.mkdirSync(path_1.default.dirname(P12_PATH), { recursive: true });
+        fs_1.default.writeFileSync(P12_PATH, buf, { mode: 0o600 });
+        console.log(`[pades] generated a self-signed signing certificate at ${P12_PATH} ` +
+            `(CN=${SUBJECT.commonName}, valid 10 years)`);
+    }
+    catch (_a) {
+        // A read-only container is fine; the bucket copy above is the one
+        // that matters.
+    }
+    cachedIdentity = { buf, source: "generated" };
+    return cachedIdentity;
 });
 /**
  * Sign a finished PDF.
@@ -240,12 +330,9 @@ exports.padesSign = padesSign;
 const signingIdentity = () => __awaiter(void 0, void 0, void 0, function* () {
     var _a, _b, _c;
     try {
-        const source = P12_BASE64
-            ? "env"
-            : fs_1.default.existsSync(P12_PATH)
-                ? "file"
-                : "generated";
-        const p12 = yield ensureP12();
+        // Asked of the loader rather than guessed from the environment, so
+        // /health/build reports where the key actually came from.
+        const { buf: p12, source } = yield loadIdentity();
         const forge = yield Promise.resolve().then(() => __importStar(require("node-forge")));
         const f = forge.default;
         const asn1 = f.asn1.fromDer(p12.toString("binary"));
@@ -253,18 +340,13 @@ const signingIdentity = () => __awaiter(void 0, void 0, void 0, function* () {
         const bag = (_a = store.getBags({ bagType: f.pki.oids.certBag })[f.pki.oids.certBag]) === null || _a === void 0 ? void 0 : _a[0];
         const cert = bag === null || bag === void 0 ? void 0 : bag.cert;
         if (!cert)
-            return { source, fingerprint: null, subject: null, notAfter: null };
+            return Object.assign({ source, fingerprint: null, subject: null, notAfter: null }, (envRejected ? { envVar: envRejected } : {}));
         const der = f.asn1.toDer(f.pki.certificateToAsn1(cert)).getBytes();
         const sha = crypto_1.default
             .createHash("sha256")
             .update(Buffer.from(der, "binary"))
             .digest("hex");
-        return {
-            source,
-            fingerprint: sha.slice(0, 16),
-            subject: (_c = (_b = cert.subject.getField("CN")) === null || _b === void 0 ? void 0 : _b.value) !== null && _c !== void 0 ? _c : null,
-            notAfter: cert.validity.notAfter.toISOString(),
-        };
+        return Object.assign(Object.assign({ source }, (envRejected ? { envVar: envRejected } : {})), { fingerprint: sha.slice(0, 16), subject: (_c = (_b = cert.subject.getField("CN")) === null || _b === void 0 ? void 0 : _b.value) !== null && _c !== void 0 ? _c : null, notAfter: cert.validity.notAfter.toISOString() });
     }
     catch (e) {
         /*

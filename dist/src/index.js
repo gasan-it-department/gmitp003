@@ -107,7 +107,6 @@ const hrMessage_1 = require("./route/hrMessage");
 const errorHandlers_1 = __importDefault(require("./plugin/errorHandlers"));
 const gemini_1 = require("./utils/gemini");
 const signatureReminders_1 = require("./service/signatureReminders");
-const crypto_1 = __importDefault(require("crypto"));
 // ── Last-line crash guards ──────────────────────────────────────────────
 // Without these, ONE leaked promise rejection anywhere kills the whole
 // process (Node's default), severing every in-flight request — mobile
@@ -318,7 +317,7 @@ app.get("/test/ai", (request, reply) => __awaiter(void 0, void 0, void 0, functi
 // Public build marker — lets anyone (including the assistant) CONFIRM which
 // build is actually serving, instead of trusting deploy timers. Bump the
 // tag with each meaningful deploy.
-const BUILD_TAG = "2026-10-15-pds-line-scope";
+const BUILD_TAG = "2026-10-15-signing-and-backfill";
 /**
  * Can this container actually rasterise a PDF page?
  *
@@ -397,46 +396,11 @@ app.get("/health/build", () => __awaiter(void 0, void 0, void 0, function* () {
         lastSweep,
         pdfSigning: yield signingIdentity(),
         objectStorage: yield blobStoreStatus(),
+        blobMigration: yield (() => __awaiter(void 0, void 0, void 0, function* () {
+            const { blobMigrationStatus } = yield Promise.resolve().then(() => __importStar(require("./service/blobBackfill")));
+            return blobMigrationStatus();
+        }))(),
     };
-}));
-/*
-  Move file bytes out of Postgres and into the bucket.
-
-  This has to run where the database and the bucket credentials both are,
-  which is inside this container — not from a laptop whose .env points at a
-  local development database.
-
-  Gated three ways, because it is an administrative route on a public API:
-  it does not exist unless BLOB_BACKFILL_TOKEN is set, it requires that
-  token in a header, and it reports rather than acts unless asked to run.
-  It never deletes anything, so the worst a mistaken call can do is upload
-  files that are already uploaded.
-*/
-app.post("/admin/blob-backfill", (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    var _a;
-    const expected = process.env.BLOB_BACKFILL_TOKEN || "";
-    // Unset means the route is not here at all. A 401 would confirm its
-    // existence to anybody scanning.
-    if (!expected)
-        return res.code(404).send({ message: "Not found" });
-    const given = String((_a = req.headers["x-backfill-token"]) !== null && _a !== void 0 ? _a : "");
-    const a = Buffer.from(given);
-    const b = Buffer.from(expected);
-    const ok = a.length === b.length && crypto_1.default.timingSafeEqual(a, b);
-    if (!ok)
-        return res.code(404).send({ message: "Not found" });
-    const q = req.query;
-    const { runBlobBackfill } = yield Promise.resolve().then(() => __importStar(require("./service/blobBackfill")));
-    const lines = [];
-    const report = yield runBlobBackfill({
-        dryRun: q.run !== "1",
-        limit: q.limit ? Math.max(1, parseInt(q.limit, 10) || 1) : undefined,
-        log: (l) => {
-            lines.push(l);
-            console.log("[blob-backfill]", l);
-        },
-    });
-    return res.code(200).send(Object.assign(Object.assign({}, report), { log: lines.slice(-200) }));
 }));
 // Nudge signatories who have not got round to it. Paced by columns on
 // SignatoryArrangement rather than by this timer, so the interval only
@@ -448,6 +412,34 @@ app.listen({ port: 3000, host: "0.0.0.0" }, (err, address) => {
         process.exit(1);
     }
     console.log(`Server is running at ${address}`);
+    /*
+      Move file bytes out of Postgres into the bucket.
+  
+      Unattended on purpose. The backfill deletes nothing, reads every
+      upload back byte for byte before recording its key, holds one row in
+      memory at a time, and skips rows already migrated — so an interrupted
+      run is simply finished by the next boot, and a run with nothing to do
+      costs one query per model.
+  
+      Delayed so it never competes with the first requests after a deploy.
+      BLOB_BACKFILL_AUTO=0 turns it off.
+    */
+    if (process.env.BLOB_BACKFILL_AUTO !== "0") {
+        setTimeout(() => {
+            Promise.resolve().then(() => __importStar(require("./service/blobBackfill"))).then((m) => m.runBlobBackfill({
+                dryRun: false,
+                log: (l) => console.log("[blob-backfill]", l),
+            }))
+                .then((r) => {
+                if (r && (r.totals.moved || r.totals.failed)) {
+                    console.log(`[blob-backfill] moved ${r.totals.moved} object(s), ` +
+                        `${(r.totals.bytes / 1024 / 1024).toFixed(1)} MB, ` +
+                        `${r.totals.failed} failed`);
+                }
+            })
+                .catch((e) => console.warn("[blob-backfill] run failed:", e));
+        }, 25000).unref();
+    }
     // One-shot data healer: merge stock batches that were split into
     // multiple rows by client-dependent date times-of-day (web local
     // midnight vs mobile UTC midnight). Best-effort, logged, non-blocking.

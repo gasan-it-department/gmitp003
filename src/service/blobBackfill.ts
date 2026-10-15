@@ -126,12 +126,15 @@ const verifyMigrated = async (
   report: ModelReport,
   limit: number,
 ) => {
-  const rows: Array<{ id: string; storageKey: string; storageSha256: string | null }> =
-    await delegate(t.model).findMany({
-      where: { storageKey: { not: null } },
-      select: { id: true, storageKey: true, storageSha256: true },
-      take: limit,
-    });
+  const rows: Array<{
+    id: string;
+    storageKey: string;
+    storageSha256: string | null;
+  }> = await delegate(t.model).findMany({
+    where: { storageKey: { not: null } },
+    select: { id: true, storageKey: true, storageSha256: true },
+    take: limit,
+  });
   for (const r of rows) {
     try {
       const obj = await getBlob(r.storageKey);
@@ -152,6 +155,14 @@ const verifyMigrated = async (
   }
 };
 
+/*
+  One run at a time. The boot run and an admin triggering it from the panel
+  would otherwise upload the same rows twice and race on the same UPDATE —
+  harmless, since nothing is deleted and every upload is verified, but it
+  doubles the work and makes the log impossible to read.
+*/
+let running = false;
+
 export const runBlobBackfill = async (opts: {
   dryRun: boolean;
   /** Cap per model, so a first run can be tried small. */
@@ -161,6 +172,16 @@ export const runBlobBackfill = async (opts: {
 }): Promise<BackfillReport> => {
   const log = opts.log ?? (() => undefined);
   const limit = opts.limit ?? 10_000;
+  if (running && !opts.dryRun) {
+    log("a backfill is already running — leaving it to finish");
+    return {
+      objectStorage: await blobStoreStatus(),
+      dryRun: opts.dryRun,
+      models: [],
+      totals: { moved: 0, failed: 0, bytes: 0 },
+    };
+  }
+  if (!opts.dryRun) running = true;
   const status = await blobStoreStatus();
   const report: BackfillReport = {
     objectStorage: status,
@@ -176,78 +197,118 @@ export const runBlobBackfill = async (opts: {
     return report;
   }
 
-  for (const t of TARGETS) {
-    const mr: ModelReport = {
-      model: t.model,
-      pending: 0,
-      moved: 0,
-      failed: 0,
-      bytes: 0,
-      verifiedOk: 0,
-      verifiedBad: 0,
-      notes: [],
-    };
-    report.models.push(mr);
+  try {
+    for (const t of TARGETS) {
+      const mr: ModelReport = {
+        model: t.model,
+        pending: 0,
+        moved: 0,
+        failed: 0,
+        bytes: 0,
+        verifiedOk: 0,
+        verifiedBad: 0,
+        notes: [],
+      };
+      report.models.push(mr);
 
-    await verifyMigrated(t, mr, opts.verifyLimit ?? 2_000);
+      await verifyMigrated(t, mr, opts.verifyLimit ?? 2_000);
 
-    /*
+      /*
       Ids only. Selecting the bytes for every row at once is the one thing
       this script must never do.
     */
-    const select: Record<string, boolean> = { id: true };
-    if (t.keyBy) select[t.keyBy] = true;
-    const ids: Array<Record<string, string | null>> = await delegate(
-      t.model,
-    ).findMany({
-      where: { [t.column]: { not: null }, storageKey: null },
-      select,
-      take: limit,
-    });
-    mr.pending = ids.length;
-    log(`${t.model}: ${ids.length} pending`);
-    if (opts.dryRun || ids.length === 0) continue;
+      const select: Record<string, boolean> = { id: true };
+      if (t.keyBy) select[t.keyBy] = true;
+      const ids: Array<Record<string, string | null>> = await delegate(
+        t.model,
+      ).findMany({
+        where: { [t.column]: { not: null }, storageKey: null },
+        select,
+        take: limit,
+      });
+      mr.pending = ids.length;
+      log(`${t.model}: ${ids.length} pending`);
+      if (opts.dryRun || ids.length === 0) continue;
 
-    for (const row of ids) {
-      const id = row.id as string;
-      try {
-        const full = await delegate(t.model).findUnique({
-          where: { id },
-          select: { [t.column]: true },
-        });
-        const raw: Uint8Array | null = full?.[t.column] ?? null;
-        if (!raw || raw.length === 0) continue;
-        const bytes = Buffer.from(raw);
+      for (const row of ids) {
+        const id = row.id as string;
+        try {
+          const full = await delegate(t.model).findUnique({
+            where: { id },
+            select: { [t.column]: true },
+          });
+          const raw: Uint8Array | null = full?.[t.column] ?? null;
+          if (!raw || raw.length === 0) continue;
+          const bytes = Buffer.from(raw);
 
-        // Key by the stable subject where the live write does the same.
-        const keySubject = (t.keyBy && row[t.keyBy]) || id;
-        const key = keyFor(t.kind, keySubject, t.ext);
+          // Key by the stable subject where the live write does the same.
+          const keySubject = (t.keyBy && row[t.keyBy]) || id;
+          const key = keyFor(t.kind, keySubject, t.ext);
 
-        const put = await putBlob(key, bytes);
-        const back = await getBlob(key);
-        if (!back || !back.equals(bytes)) {
+          const put = await putBlob(key, bytes);
+          const back = await getBlob(key);
+          if (!back || !back.equals(bytes)) {
+            mr.failed++;
+            mr.notes.push(
+              `FAIL ${id}: read-back ${back?.length ?? 0} of ${bytes.length} bytes`,
+            );
+            continue;
+          }
+          await delegate(t.model).update({
+            where: { id },
+            data: { storageKey: key, storageSha256: put.sha256 },
+          });
+          mr.moved++;
+          mr.bytes += bytes.length;
+          log(`  ok ${t.model} ${id} -> ${key} (${bytes.length} bytes)`);
+        } catch (e) {
           mr.failed++;
-          mr.notes.push(
-            `FAIL ${id}: read-back ${back?.length ?? 0} of ${bytes.length} bytes`,
-          );
-          continue;
+          mr.notes.push(`FAIL ${id}: ${e instanceof Error ? e.message : e}`);
         }
-        await delegate(t.model).update({
-          where: { id },
-          data: { storageKey: key, storageSha256: put.sha256 },
-        });
-        mr.moved++;
-        mr.bytes += bytes.length;
-        log(`  ok ${t.model} ${id} -> ${key} (${bytes.length} bytes)`);
-      } catch (e) {
-        mr.failed++;
-        mr.notes.push(`FAIL ${id}: ${e instanceof Error ? e.message : e}`);
       }
+      report.totals.moved += mr.moved;
+      report.totals.failed += mr.failed;
+      report.totals.bytes += mr.bytes;
     }
-    report.totals.moved += mr.moved;
-    report.totals.failed += mr.failed;
-    report.totals.bytes += mr.bytes;
+  } finally {
+    running = false;
   }
 
   return report;
+};
+
+/**
+ * How far the move has got, per model.
+ *
+ * Reported on /health/build so progress is observable without running
+ * anything and without credentials: "pending" is rows whose bytes are
+ * still only in Postgres, "migrated" is rows that now carry a key. A
+ * migration nobody can see the state of is one nobody can tell has
+ * stalled.
+ */
+export const blobMigrationStatus = async (): Promise<{
+  pendingRows: number;
+  migratedRows: number;
+  byModel: Record<string, { pending: number; migrated: number }>;
+}> => {
+  const byModel: Record<string, { pending: number; migrated: number }> = {};
+  let pendingRows = 0;
+  let migratedRows = 0;
+  for (const t of TARGETS) {
+    try {
+      const [pending, migrated] = await Promise.all([
+        delegate(t.model).count({
+          where: { [t.column]: { not: null }, storageKey: null },
+        }),
+        delegate(t.model).count({ where: { storageKey: { not: null } } }),
+      ]);
+      byModel[t.model] = { pending, migrated };
+      pendingRows += pending;
+      migratedRows += migrated;
+    } catch {
+      // A model that cannot be counted should not take the health check
+      // down with it.
+    }
+  }
+  return { pendingRows, migratedRows, byModel };
 };

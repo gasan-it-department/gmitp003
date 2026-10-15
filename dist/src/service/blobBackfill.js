@@ -9,7 +9,7 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
     });
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.runBlobBackfill = exports.TARGETS = void 0;
+exports.blobMigrationStatus = exports.runBlobBackfill = exports.TARGETS = void 0;
 /**
  * Move file bytes out of Postgres and into the bucket.
  *
@@ -106,10 +106,28 @@ const verifyMigrated = (t, report, limit) => __awaiter(void 0, void 0, void 0, f
         }
     }
 });
+/*
+  One run at a time. The boot run and an admin triggering it from the panel
+  would otherwise upload the same rows twice and race on the same UPDATE —
+  harmless, since nothing is deleted and every upload is verified, but it
+  doubles the work and makes the log impossible to read.
+*/
+let running = false;
 const runBlobBackfill = (opts) => __awaiter(void 0, void 0, void 0, function* () {
     var _a, _b, _c, _d, _e;
     const log = (_a = opts.log) !== null && _a !== void 0 ? _a : (() => undefined);
     const limit = (_b = opts.limit) !== null && _b !== void 0 ? _b : 10000;
+    if (running && !opts.dryRun) {
+        log("a backfill is already running — leaving it to finish");
+        return {
+            objectStorage: yield (0, blobStore_1.blobStoreStatus)(),
+            dryRun: opts.dryRun,
+            models: [],
+            totals: { moved: 0, failed: 0, bytes: 0 },
+        };
+    }
+    if (!opts.dryRun)
+        running = true;
     const status = yield (0, blobStore_1.blobStoreStatus)();
     const report = {
         objectStorage: status,
@@ -122,73 +140,111 @@ const runBlobBackfill = (opts) => __awaiter(void 0, void 0, void 0, function* ()
             "BUCKET_ACCESS_KEY, BUCKET_SECRET_KEY and BUCKET_NAME.");
         return report;
     }
-    for (const t of exports.TARGETS) {
-        const mr = {
-            model: t.model,
-            pending: 0,
-            moved: 0,
-            failed: 0,
-            bytes: 0,
-            verifiedOk: 0,
-            verifiedBad: 0,
-            notes: [],
-        };
-        report.models.push(mr);
-        yield verifyMigrated(t, mr, (_c = opts.verifyLimit) !== null && _c !== void 0 ? _c : 2000);
-        /*
-          Ids only. Selecting the bytes for every row at once is the one thing
-          this script must never do.
-        */
-        const select = { id: true };
-        if (t.keyBy)
-            select[t.keyBy] = true;
-        const ids = yield delegate(t.model).findMany({
-            where: { [t.column]: { not: null }, storageKey: null },
-            select,
-            take: limit,
-        });
-        mr.pending = ids.length;
-        log(`${t.model}: ${ids.length} pending`);
-        if (opts.dryRun || ids.length === 0)
-            continue;
-        for (const row of ids) {
-            const id = row.id;
-            try {
-                const full = yield delegate(t.model).findUnique({
-                    where: { id },
-                    select: { [t.column]: true },
-                });
-                const raw = (_d = full === null || full === void 0 ? void 0 : full[t.column]) !== null && _d !== void 0 ? _d : null;
-                if (!raw || raw.length === 0)
-                    continue;
-                const bytes = Buffer.from(raw);
-                // Key by the stable subject where the live write does the same.
-                const keySubject = (t.keyBy && row[t.keyBy]) || id;
-                const key = (0, blobStore_1.keyFor)(t.kind, keySubject, t.ext);
-                const put = yield (0, blobStore_1.putBlob)(key, bytes);
-                const back = yield (0, blobStore_1.getBlob)(key);
-                if (!back || !back.equals(bytes)) {
-                    mr.failed++;
-                    mr.notes.push(`FAIL ${id}: read-back ${(_e = back === null || back === void 0 ? void 0 : back.length) !== null && _e !== void 0 ? _e : 0} of ${bytes.length} bytes`);
-                    continue;
+    try {
+        for (const t of exports.TARGETS) {
+            const mr = {
+                model: t.model,
+                pending: 0,
+                moved: 0,
+                failed: 0,
+                bytes: 0,
+                verifiedOk: 0,
+                verifiedBad: 0,
+                notes: [],
+            };
+            report.models.push(mr);
+            yield verifyMigrated(t, mr, (_c = opts.verifyLimit) !== null && _c !== void 0 ? _c : 2000);
+            /*
+            Ids only. Selecting the bytes for every row at once is the one thing
+            this script must never do.
+          */
+            const select = { id: true };
+            if (t.keyBy)
+                select[t.keyBy] = true;
+            const ids = yield delegate(t.model).findMany({
+                where: { [t.column]: { not: null }, storageKey: null },
+                select,
+                take: limit,
+            });
+            mr.pending = ids.length;
+            log(`${t.model}: ${ids.length} pending`);
+            if (opts.dryRun || ids.length === 0)
+                continue;
+            for (const row of ids) {
+                const id = row.id;
+                try {
+                    const full = yield delegate(t.model).findUnique({
+                        where: { id },
+                        select: { [t.column]: true },
+                    });
+                    const raw = (_d = full === null || full === void 0 ? void 0 : full[t.column]) !== null && _d !== void 0 ? _d : null;
+                    if (!raw || raw.length === 0)
+                        continue;
+                    const bytes = Buffer.from(raw);
+                    // Key by the stable subject where the live write does the same.
+                    const keySubject = (t.keyBy && row[t.keyBy]) || id;
+                    const key = (0, blobStore_1.keyFor)(t.kind, keySubject, t.ext);
+                    const put = yield (0, blobStore_1.putBlob)(key, bytes);
+                    const back = yield (0, blobStore_1.getBlob)(key);
+                    if (!back || !back.equals(bytes)) {
+                        mr.failed++;
+                        mr.notes.push(`FAIL ${id}: read-back ${(_e = back === null || back === void 0 ? void 0 : back.length) !== null && _e !== void 0 ? _e : 0} of ${bytes.length} bytes`);
+                        continue;
+                    }
+                    yield delegate(t.model).update({
+                        where: { id },
+                        data: { storageKey: key, storageSha256: put.sha256 },
+                    });
+                    mr.moved++;
+                    mr.bytes += bytes.length;
+                    log(`  ok ${t.model} ${id} -> ${key} (${bytes.length} bytes)`);
                 }
-                yield delegate(t.model).update({
-                    where: { id },
-                    data: { storageKey: key, storageSha256: put.sha256 },
-                });
-                mr.moved++;
-                mr.bytes += bytes.length;
-                log(`  ok ${t.model} ${id} -> ${key} (${bytes.length} bytes)`);
+                catch (e) {
+                    mr.failed++;
+                    mr.notes.push(`FAIL ${id}: ${e instanceof Error ? e.message : e}`);
+                }
             }
-            catch (e) {
-                mr.failed++;
-                mr.notes.push(`FAIL ${id}: ${e instanceof Error ? e.message : e}`);
-            }
+            report.totals.moved += mr.moved;
+            report.totals.failed += mr.failed;
+            report.totals.bytes += mr.bytes;
         }
-        report.totals.moved += mr.moved;
-        report.totals.failed += mr.failed;
-        report.totals.bytes += mr.bytes;
+    }
+    finally {
+        running = false;
     }
     return report;
 });
 exports.runBlobBackfill = runBlobBackfill;
+/**
+ * How far the move has got, per model.
+ *
+ * Reported on /health/build so progress is observable without running
+ * anything and without credentials: "pending" is rows whose bytes are
+ * still only in Postgres, "migrated" is rows that now carry a key. A
+ * migration nobody can see the state of is one nobody can tell has
+ * stalled.
+ */
+const blobMigrationStatus = () => __awaiter(void 0, void 0, void 0, function* () {
+    const byModel = {};
+    let pendingRows = 0;
+    let migratedRows = 0;
+    for (const t of exports.TARGETS) {
+        try {
+            const [pending, migrated] = yield Promise.all([
+                delegate(t.model).count({
+                    where: { [t.column]: { not: null }, storageKey: null },
+                }),
+                delegate(t.model).count({ where: { storageKey: { not: null } } }),
+            ]);
+            byModel[t.model] = { pending, migrated };
+            pendingRows += pending;
+            migratedRows += migrated;
+        }
+        catch (_a) {
+            // A model that cannot be counted should not take the health check
+            // down with it.
+        }
+    }
+    return { pendingRows, migratedRows, byModel };
+});
+exports.blobMigrationStatus = blobMigrationStatus;

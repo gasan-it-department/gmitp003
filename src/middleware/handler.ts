@@ -69,10 +69,10 @@ export const adminAuthenticated = async (
     if (!token) {
       throw new Error("No token provided");
     }
-    console.log({ token });
-
+    // The raw token and the decoded payload were logged here. A bearer
+    // token in the logs is a credential in the logs: anyone who can read
+    // them can act as that admin until it expires.
     const decoded = await request.jwtVerify<{ id: string }>();
-    console.log({ decoded });
 
     const user = await prisma.admin.findUnique({
       where: {
