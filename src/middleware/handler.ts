@@ -163,6 +163,18 @@ export const authenticated = async (
 
     request.user = user;
 
+    /*
+      A super-admin borrowing this line's session.
+
+      Only /admin/line/:lineId/hr-session mints an imp token and that route
+      is admin-gated, so the flag is exactly as trustworthy as the
+      super-admin who created it. It is stashed on the request because the
+      line above replaces request.user with the account row, which drops
+      the JWT payload — and downstream scope checks need to know.
+    */
+    (request as FastifyRequest & { impersonated?: boolean }).impersonated =
+      decoded.imp === true;
+
     // ── Super-admin HR impersonation (imp:true tokens) ────────────────────
     // Every write stamps the request's `userId` into a User foreign-key column
     // (audit logs, created rows). The impersonating browser session sends a

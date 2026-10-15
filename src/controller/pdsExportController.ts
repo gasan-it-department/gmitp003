@@ -11,7 +11,7 @@ import { NotFoundError, ValidationError } from "../errors/errors";
 import { EncryptionService } from "../service/encryption";
 import fs from "fs";
 import path from "path";
-import { requireSameLine } from "../service/callerScope";
+import { requireHrOrSelf } from "../service/callerScope";
 
 // jszip@3.1.3 ships no type declarations; a typed require keeps ts-node happy
 // without pulling in a missing @types package.
@@ -399,20 +399,36 @@ const exportPds = async (
   if (!app) throw new NotFoundError("APPLICATION NOT FOUND");
 
   /*
-    This PDS belongs to a municipality, and the id came from the query
-    string. Without this, any signed-in HR user could export any other
-    line's records by changing it.
+    A PDS belongs to ONE PERSON, not to an office. The id came from the
+    query string, so without this any signed-in employee could export a
+    colleague's birth date, place of birth, TIN, PhilHealth number, home
+    address and parents' names by changing it.
+
+    Same line is not enough for that, so this is you, or HR of the
+    municipality the record belongs to.
 
     Checked against the record that was actually loaded rather than
-    against a lineId passed alongside it, because a caller who can choose
-    both values can always make them agree.
+    against values passed alongside the id, because a caller who can
+    choose both can always make them agree.
 
     Skipped for the applicant's own copy, which runs on a temp token with
     no account behind it and is already restricted to one application by
     exportOwnPdsExcel.
   */
   if (opts.scopeToCallerLine) {
-    await requireSameLine(req, app.lineId);
+    const { caller, via } = await requireHrOrSelf(
+      req,
+      { userId: app.userId, lineId: app.lineId },
+      "a Personal Data Sheet",
+    );
+    // Somebody reading their own file and HR reading somebody else's are
+    // different events; they should not look the same in the log.
+    if (via === "hr") {
+      console.log(
+        `[pds] HR ${caller.actorId} exported the PDS of ` +
+          `${app.userId ?? `application ${app.id}`}`,
+      );
+    }
   }
 
   // ── Decrypt encrypted PII ─────────────────────────────────────────────

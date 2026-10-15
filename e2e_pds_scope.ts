@@ -1,23 +1,30 @@
-/* Can one municipality's HR export another municipality's PDS?
+/* Who can export whose Personal Data Sheet?
  *
  *   npx ts-node --transpile-only e2e_pds_scope.ts
  *
- * /application/pds/export takes the record id from the query string, and
- * the exporter looks it up and returns it. Until requireSameLine was added
- * nothing tied that id to the caller, so any signed-in HR user could read
- * any other line's PDS — birth date, TIN, PhilHealth number, home address,
- * parents' names — by changing one parameter.
+ * A PDS holds a person's birth date, place of birth, TIN, PhilHealth
+ * number, home address and parents' names. The id comes from the query
+ * string, so the only thing standing between a curious employee and a
+ * colleague's file is this check.
  *
- * A test that only proves the door is shut is half a test: it would also
- * pass if the door were welded shut and nobody could export anything. So
- * this checks all three paths against the real database:
+ * It used to be requireSameLine, which is a ceiling and not a fence: it
+ * stopped another municipality and nothing else. Now it is the person
+ * themselves, or HR of the municipality the record belongs to.
  *
- *   1. same line   -> allowed   (the fix did not break the feature)
- *   2. other line  -> refused   (the hole is closed)
- *   3. applicant   -> allowed   (the temp-token path is not line-checked,
- *                                because there is no account behind it)
+ * Six cases, because a test that only proves refusal would also pass if
+ * the feature were welded shut, and one that only proves access would
+ * pass with no check at all:
  *
- * It reads existing rows and writes nothing.
+ *   1. the person themselves        allowed
+ *   2. a colleague, same line       REFUSED   <- the gap being closed
+ *   3. HR of that line              allowed
+ *   4. HR whose grant is suspended  REFUSED   <- status, not just the row
+ *   5. another municipality         REFUSED
+ *   6. the applicant's own copy     allowed   (temp token, unaffected)
+ *
+ * Case 3 needs an HR user in the same line as an application and the
+ * development database has none, so the test grants one, uses it, and
+ * removes it again in a finally block. Nothing else is written.
  */
 import path from "path";
 const entry = path.join(process.cwd(), "src", "index.ts");
@@ -48,7 +55,6 @@ const ok = (name: string, cond: boolean, detail = "") => {
   }
 };
 
-/** A reply just real enough for the handler to finish. */
 const makeRes = () => {
   const r: any = {
     headers: {} as Record<string, string>,
@@ -69,7 +75,7 @@ const makeRes = () => {
 };
 
 type Outcome =
-  | { kind: "sent"; bytes: number; filename: string }
+  | { kind: "sent"; bytes: number }
   | { kind: "threw"; name: string; message: string };
 
 const run = async (
@@ -79,11 +85,7 @@ const run = async (
   const res = makeRes();
   try {
     await handler(req, res);
-    return {
-      kind: "sent",
-      bytes: res.body ? res.body.length : 0,
-      filename: res.headers["Content-Disposition"] || "",
-    };
+    return { kind: "sent", bytes: res.body ? res.body.length : 0 };
   } catch (e: any) {
     return {
       kind: "threw",
@@ -93,116 +95,189 @@ const run = async (
   }
 };
 
+const allowed = (o: Outcome) => o.kind === "sent" && o.bytes > 10000;
+const why = (o: Outcome) =>
+  o.kind === "threw" ? `${o.name}: ${o.message}` : `${o.bytes} bytes`;
+
 (async () => {
-  // ── find a real application, and accounts inside and outside its line ──
-  const app = await prisma.submittedApplication.findFirst({
-    where: { lineId: { not: undefined } },
-    select: { id: true, lineId: true, lastname: true },
-  });
-  if (!app) {
-    console.log("no applications in this database — cannot test");
-    await prisma.$disconnect();
-    process.exit(1);
-  }
+  let grantId: string | null = null;
+  try {
+    // ── an application that belongs to a real employee ─────────────────
+    const app = await prisma.submittedApplication.findFirst({
+      where: { userId: { not: null } },
+      select: { id: true, lineId: true, userId: true, lastname: true },
+    });
+    if (!app?.userId) {
+      console.log("no application linked to a user — cannot test");
+      process.exit(1);
+    }
 
-  const insider = await prisma.account.findFirst({
-    where: { User: { is: { lineId: app.lineId } } },
-    select: { id: true, User: { select: { lineId: true } } },
-  });
-  const outsider = await prisma.account.findFirst({
-    where: { User: { is: { lineId: { not: app.lineId } } } },
-    select: { id: true, User: { select: { lineId: true } } },
-  });
+    // the person themselves
+    const self = await prisma.account.findFirst({
+      where: { User: { is: { id: app.userId } } },
+      select: { id: true },
+    });
+    // a colleague in the same municipality who is not that person
+    const colleague = await prisma.account.findFirst({
+      where: {
+        User: { is: { lineId: app.lineId, id: { not: app.userId } } },
+      },
+      select: { id: true, User: { select: { id: true } } },
+    });
+    const outsider = await prisma.account.findFirst({
+      where: { User: { is: { lineId: { not: app.lineId } } } },
+      select: { id: true },
+    });
 
-  console.log(`\napplication ${app.id.slice(0, 8)} belongs to line ${app.lineId.slice(0, 8)}`);
-  console.log(`  insider  account ${insider?.id.slice(0, 8)} (line ${insider?.User?.lineId?.slice(0, 8)})`);
-  console.log(`  outsider account ${outsider?.id.slice(0, 8)} (line ${outsider?.User?.lineId?.slice(0, 8)})`);
-
-  if (!insider || !outsider) {
-    console.log("\nneed one account inside and one outside the line — cannot test");
-    await prisma.$disconnect();
-    process.exit(1);
-  }
-
-  // ── 1. same line: must still work ──────────────────────────────────
-  console.log("\n── 1. HR of the SAME line ──");
-  const same = await run(exportPdsExcel, {
-    query: { id: app.id },
-    user: { id: insider.id },
-    headers: {},
-  });
-  ok(
-    "same-line HR gets the workbook",
-    same.kind === "sent" && same.bytes > 10000,
-    same.kind === "threw" ? `${same.name}: ${same.message}` : `${same.bytes} bytes`,
-  );
-  if (same.kind === "sent") {
-    ok("it is named after the applicant", same.filename.includes(".xlsx"),
-      same.filename);
-  }
-
-  // ── 2. another line: must be refused ───────────────────────────────
-  console.log("\n── 2. HR of ANOTHER line ──");
-  const other = await run(exportPdsExcel, {
-    query: { id: app.id },
-    user: { id: outsider.id },
-    headers: {},
-  });
-  ok(
-    "cross-line export is refused",
-    other.kind === "threw",
-    other.kind === "sent"
-      ? `LEAK: got ${other.bytes} bytes of another line's PDS`
-      : `${other.name}: ${other.message}`,
-  );
-  if (other.kind === "threw") {
-    ok(
-      "refused as unauthorised, not as a crash",
-      /Unauthorized/i.test(other.name) ||
-        /municipality|not your/i.test(other.message),
-      `${other.name}: ${other.message}`,
+    console.log(
+      `\napplication ${app.id.slice(0, 8)} (${app.lastname}) ` +
+        `belongs to user ${app.userId.slice(0, 8)} in line ${app.lineId.slice(0, 8)}`,
     );
-  }
+    if (!self || !colleague?.User || !outsider) {
+      console.log("  need self + a same-line colleague + an outsider");
+      process.exit(1);
+    }
+    console.log(`  self      account ${self.id.slice(0, 8)}`);
+    console.log(`  colleague account ${colleague.id.slice(0, 8)}`);
+    console.log(`  outsider  account ${outsider.id.slice(0, 8)}`);
 
-  // ── 3. the applicant's own copy: no line check ─────────────────────
-  console.log("\n── 3. the applicant's OWN copy (temp token) ──");
-  const own = await run(exportOwnPdsExcel, {
-    // tempAuthenticated puts the application row on the request
-    user: { id: app.id },
-    query: {},
-    headers: {},
-  });
-  ok(
-    "the applicant still gets their own workbook",
-    own.kind === "sent" && own.bytes > 10000,
-    own.kind === "threw" ? `${own.name}: ${own.message}` : `${own.bytes} bytes`,
-  );
+    const asHr = { query: { id: app.id }, headers: {} };
 
-  // ── 4. and cannot ask for somebody else's ──────────────────────────
-  const otherApp = await prisma.submittedApplication.findFirst({
-    where: { id: { not: app.id } },
-    select: { id: true },
-  });
-  if (otherApp) {
-    console.log("\n── 4. applicant pointing at someone else's id ──");
+    // ── 1. the person themselves ───────────────────────────────────────
+    console.log("\n── 1. the person themselves ──");
+    const mine = await run(exportPdsExcel, { ...asHr, user: { id: self.id } });
+    ok("a person can export their own PDS", allowed(mine), why(mine));
+
+    // ── 2. a colleague in the same municipality ────────────────────────
+    console.log("\n── 2. a colleague, same municipality, not HR ──");
+    const peer = await run(exportPdsExcel, {
+      ...asHr,
+      user: { id: colleague.id },
+    });
+    ok(
+      "a colleague is refused",
+      peer.kind === "threw",
+      peer.kind === "sent"
+        ? `LEAK: got ${peer.bytes} bytes of someone else's PDS`
+        : why(peer),
+    );
+    if (peer.kind === "threw") {
+      ok(
+        "and told it is an HR-only action",
+        /only hr/i.test(peer.message),
+        peer.message,
+      );
+    }
+
+    // ── 3. HR of that municipality ─────────────────────────────────────
+    console.log("\n── 3. HR of that municipality ──");
+    const grant = await prisma.module.create({
+      data: {
+        userId: colleague.User.id,
+        lineId: app.lineId,
+        moduleName: "human-resources",
+        moduleIndex: "hr",
+        privilege: 1,
+        status: 1,
+      },
+      select: { id: true },
+    });
+    grantId = grant.id;
+    const hr = await run(exportPdsExcel, {
+      ...asHr,
+      user: { id: colleague.id },
+    });
+    ok("HR can export a colleague's PDS", allowed(hr), why(hr));
+
+    // ── 4. a suspended grant ───────────────────────────────────────────
+    console.log("\n── 4. the same HR, access suspended ──");
+    await prisma.module.update({
+      where: { id: grant.id },
+      data: { status: 0 },
+    });
+    const susp = await run(exportPdsExcel, {
+      ...asHr,
+      user: { id: colleague.id },
+    });
+    ok(
+      "a suspended HR grant is refused",
+      susp.kind === "threw",
+      susp.kind === "sent"
+        ? "LEAK: revoked access still worked"
+        : why(susp),
+    );
+
+    // ── 5. another municipality ────────────────────────────────────────
+    console.log("\n── 5. another municipality ──");
+    const other = await run(exportPdsExcel, {
+      ...asHr,
+      user: { id: outsider.id },
+    });
+    ok(
+      "another line is refused",
+      other.kind === "threw",
+      other.kind === "sent" ? "LEAK" : why(other),
+    );
+    if (other.kind === "threw") {
+      ok(
+        "and told it is another municipality's data",
+        /municipality/i.test(other.message),
+        other.message,
+      );
+    }
+
+    // ── 6. a super-admin borrowing the line ────────────────────────────
+    console.log("\n-- 6. super-admin impersonating this line --");
+    // The colleague's grant is still suspended from case 4, so this
+    // proves the impersonation flag carried it, not a lingering module.
+    const imp = await run(exportPdsExcel, {
+      ...asHr,
+      user: { id: colleague.id },
+      impersonated: true,
+    });
+    ok("an impersonated session can export", allowed(imp), why(imp));
+
+    const impElsewhere = await run(exportPdsExcel, {
+      ...asHr,
+      user: { id: outsider.id },
+      impersonated: true,
+    });
+    ok(
+      "but is still confined to the line it borrowed",
+      impElsewhere.kind === "threw",
+      impElsewhere.kind === "sent"
+        ? "LEAK: impersonation crossed a municipality"
+        : why(impElsewhere),
+    );
+
+    // ── 7. the applicant's own copy ────────────────────────────────────
+    console.log("\n── 7. the applicant's own copy (temp token) ──");
+    const own = await run(exportOwnPdsExcel, {
+      user: { id: app.id },
+      query: {},
+      headers: {},
+    });
+    ok("the applicant still gets their own workbook", allowed(own), why(own));
+
     const stolen = await run(exportOwnPdsExcel, {
       user: { id: app.id },
-      // the client tries to choose; the handler must ignore it
-      query: { id: otherApp.id },
+      query: { id: "some-other-application" },
       headers: {},
     });
     ok(
-      "the query id is ignored in favour of the token's",
-      stolen.kind === "sent" &&
-        stolen.filename === (own.kind === "sent" ? own.filename : "?"),
-      stolen.kind === "sent"
-        ? `got ${stolen.filename} (own was ${own.kind === "sent" ? own.filename : "?"})`
-        : `${stolen.name}: ${stolen.message}`,
+      "and the query id is still ignored",
+      allowed(stolen),
+      why(stolen),
     );
+  } finally {
+    if (grantId) {
+      await prisma.module.delete({ where: { id: grantId } });
+      console.log("\n(temporary HR grant removed)");
+    }
+    await prisma.$disconnect();
   }
 
   console.log(`\n${pass} passed, ${fails.length} failed`);
   if (fails.length) for (const f of fails) console.log(`  FAIL  ${f}`);
-  await prisma.$disconnect();
   process.exit(fails.length ? 1 : 0);
 })();

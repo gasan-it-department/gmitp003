@@ -358,7 +358,7 @@ exports.exportOwnPdsExcel = exportOwnPdsExcel;
 const exportPdsExcel = (req, res) => __awaiter(void 0, void 0, void 0, function* () { return exportPds(req, res, { scopeToCallerLine: true }); });
 exports.exportPdsExcel = exportPdsExcel;
 const exportPds = (req, res, opts) => __awaiter(void 0, void 0, void 0, function* () {
-    var _a, _b, _c, _d;
+    var _a, _b, _c, _d, _e;
     const q = req.query;
     let app = null;
     if (q.id) {
@@ -377,20 +377,30 @@ const exportPds = (req, res, opts) => __awaiter(void 0, void 0, void 0, function
     if (!app)
         throw new errors_1.NotFoundError("APPLICATION NOT FOUND");
     /*
-      This PDS belongs to a municipality, and the id came from the query
-      string. Without this, any signed-in HR user could export any other
-      line's records by changing it.
+      A PDS belongs to ONE PERSON, not to an office. The id came from the
+      query string, so without this any signed-in employee could export a
+      colleague's birth date, place of birth, TIN, PhilHealth number, home
+      address and parents' names by changing it.
+  
+      Same line is not enough for that, so this is you, or HR of the
+      municipality the record belongs to.
   
       Checked against the record that was actually loaded rather than
-      against a lineId passed alongside it, because a caller who can choose
-      both values can always make them agree.
+      against values passed alongside the id, because a caller who can
+      choose both can always make them agree.
   
       Skipped for the applicant's own copy, which runs on a temp token with
       no account behind it and is already restricted to one application by
       exportOwnPdsExcel.
     */
     if (opts.scopeToCallerLine) {
-        yield (0, callerScope_1.requireSameLine)(req, app.lineId);
+        const { caller, via } = yield (0, callerScope_1.requireHrOrSelf)(req, { userId: app.userId, lineId: app.lineId }, "a Personal Data Sheet");
+        // Somebody reading their own file and HR reading somebody else's are
+        // different events; they should not look the same in the log.
+        if (via === "hr") {
+            console.log(`[pds] HR ${caller.actorId} exported the PDS of ` +
+                `${(_b = app.userId) !== null && _b !== void 0 ? _b : `application ${app.id}`}`);
+        }
     }
     // ── Decrypt encrypted PII ─────────────────────────────────────────────
     const [email, civilStatus, mobileNo, resProvinceRaw, resCityRaw, resBarangayRaw, resStreet, resSub, resHouse, permaProvinceRaw, permaCityRaw, permaBarangayRaw, permaStreet, permaSub, permaHouse, resZip, permaZip, fatherSurname, fatherFirstname, motherSurname, motherFirstname, birthDate, placeOfBirth, umidNo, pagIbigNo, philHealthNo, philSys, tinNo, agencyNo, spouseSurname, spouseFirstname, spouseMiddle,] = yield Promise.all([
@@ -438,12 +448,12 @@ const exportPds = (req, res, opts) => __awaiter(void 0, void 0, void 0, function
     ]);
     const govId = obj(app.govId);
     const disc = obj(app.disclosures);
-    const otherInfo = (_b = arr(app.otherInfo)[0]) !== null && _b !== void 0 ? _b : {};
+    const otherInfo = (_c = arr(app.otherInfo)[0]) !== null && _c !== void 0 ? _c : {};
     let children = [];
     try {
         children = JSON.parse(app.children || "[]");
     }
-    catch (_e) {
+    catch (_f) {
         children = [];
     }
     // ── Build the per-sheet cell maps ─────────────────────────────────────
@@ -567,8 +577,8 @@ const exportPds = (req, res, opts) => __awaiter(void 0, void 0, void 0, function
         c3[`I${r}`] = t === null || t === void 0 ? void 0 : t.conductedBy;
     });
     c3["A42"] = otherInfo.specialSkills;
-    c3["C42"] = (_c = otherInfo.distinctions) !== null && _c !== void 0 ? _c : otherInfo.recognition;
-    c3["I42"] = (_d = otherInfo.memberships) !== null && _d !== void 0 ? _d : otherInfo.membership;
+    c3["C42"] = (_d = otherInfo.distinctions) !== null && _d !== void 0 ? _d : otherInfo.recognition;
+    c3["I42"] = (_e = otherInfo.memberships) !== null && _e !== void 0 ? _e : otherInfo.membership;
     // C4 #34-40 YES/NO are checkboxes (ticked below) — only Gov-ID + references
     // are plain answer cells here.
     const c4 = {

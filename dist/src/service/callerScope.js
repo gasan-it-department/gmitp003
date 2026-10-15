@@ -9,7 +9,7 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
     });
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.requireRoomMember = exports.requireSelf = exports.requireSameLine = exports.callerContext = void 0;
+exports.requireRoomMember = exports.requireSelf = exports.requireHrOrSelf = exports.requireSameLine = exports.callerContext = void 0;
 const prisma_1 = require("../barrel/prisma");
 const errors_1 = require("../errors/errors");
 const callerContext = (req) => __awaiter(void 0, void 0, void 0, function* () {
@@ -48,6 +48,75 @@ const requireSameLine = (req, lineId) => __awaiter(void 0, void 0, void 0, funct
     return caller;
 });
 exports.requireSameLine = requireSameLine;
+/**
+ * The person themselves, or HR of the municipality the record belongs to.
+ *
+ * `requireSameLine` is the right shape for data that belongs to an office:
+ * anybody who works there may see it. It is the wrong shape for a record
+ * that belongs to ONE PERSON. A Personal Data Sheet holds a colleague's
+ * birth date, place of birth, TIN, PhilHealth number, home address and
+ * parents' names, and "we work for the same municipality" is not a reason
+ * to be handed it.
+ *
+ * So: you, or someone whose job is personnel records.
+ *
+ * The module check is deliberately stricter than the ad-hoc one in
+ * employee.ts, which matches on userId + moduleName alone:
+ *
+ *   - `status: 1`, because access is suspended by flipping that column as
+ *     well as by deleting the row. Ignoring it keeps a revoked grant
+ *     working, which is the opposite of what revoking means.
+ *   - the module's own `lineId`, because a Module row is per line. HR in
+ *     one municipality is not HR in another.
+ *
+ * Returns how the caller got in, so the handler can log it: "HR exported
+ * someone else's PDS" and "a person exported their own" are different
+ * events and should not look identical afterwards.
+ */
+const requireHrOrSelf = (req_1, subject_1, ...args_1) => __awaiter(void 0, [req_1, subject_1, ...args_1], void 0, function* (req, subject, what = "this record") {
+    var _a;
+    const caller = yield (0, exports.callerContext)(req);
+    // Yourself, always — regardless of line, module, or anything else.
+    if (subject.userId && subject.userId === caller.actorId) {
+        return { caller, via: "self" };
+    }
+    if (!subject.lineId || !caller.lineId || caller.lineId !== subject.lineId) {
+        console.warn(`[scope] refused: user ${caller.actorId} (line ${caller.lineId}) ` +
+            `asked for ${what} in line ${subject.lineId}`);
+        throw new errors_1.UnauthorizedError("This is not your municipality's data.");
+    }
+    /*
+      A super-admin managing this line through "Manage HR".
+  
+      That feature mints a real session for an account of the line, and
+      PREFERS an HR one — but falls back to the line admin, or any active
+      account, when the line has no HR user at all. Those are exactly the
+      lines a super-admin needs to go in and fix, so requiring the module
+      here would lock them out of the case the feature exists for.
+  
+      Deliberately checked after the same-line test above, so a borrowed
+      session is still confined to the line it was borrowed for.
+    */
+    if (req.impersonated) {
+        return { caller, via: "hr" };
+    }
+    const hr = yield prisma_1.prisma.module.findFirst({
+        where: {
+            userId: caller.actorId,
+            lineId: subject.lineId,
+            moduleName: "human-resources",
+            status: 1,
+        },
+        select: { id: true },
+    });
+    if (!hr) {
+        console.warn(`[scope] refused: user ${caller.actorId} is not HR and asked for ` +
+            `${what} belonging to ${(_a = subject.userId) !== null && _a !== void 0 ? _a : "another person"}`);
+        throw new errors_1.UnauthorizedError("Only HR can open another person's records.");
+    }
+    return { caller, via: "hr" };
+});
+exports.requireHrOrSelf = requireHrOrSelf;
 /** Acting on a person: it has to be yourself. */
 const requireSelf = (req, userId) => __awaiter(void 0, void 0, void 0, function* () {
     const caller = yield (0, exports.callerContext)(req);
