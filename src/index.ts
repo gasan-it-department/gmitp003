@@ -283,7 +283,7 @@ app.get("/test/ai", async (request: FastifyRequest, reply: FastifyReply) => {
 // Public build marker — lets anyone (including the assistant) CONFIRM which
 // build is actually serving, instead of trusting deploy timers. Bump the
 // tag with each meaningful deploy.
-const BUILD_TAG = "2026-10-15-identity-persists";
+const BUILD_TAG = "2026-10-15-verify-before-drop";
 
 /**
  * Can this container actually rasterise a PDF page?
@@ -364,8 +364,8 @@ app.get("/health/build", async () => {
     pdfSigning: await signingIdentity(),
     objectStorage: await blobStoreStatus(),
     blobMigration: await (async () => {
-      const { blobMigrationStatus } = await import("./service/blobBackfill");
-      return blobMigrationStatus();
+      const m = await import("./service/blobBackfill");
+      return { ...(await m.blobMigrationStatus()), lastRun: m.lastRun };
     })(),
   };
 });

@@ -9,7 +9,7 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
     });
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.blobMigrationStatus = exports.runBlobBackfill = exports.TARGETS = void 0;
+exports.blobMigrationStatus = exports.runBlobBackfill = exports.lastRun = exports.TARGETS = void 0;
 /**
  * Move file bytes out of Postgres and into the bucket.
  *
@@ -113,6 +113,16 @@ const verifyMigrated = (t, report, limit) => __awaiter(void 0, void 0, void 0, f
   doubles the work and makes the log impossible to read.
 */
 let running = false;
+/**
+ * The last run's outcome, for /health/build.
+ *
+ * Every run re-reads each migrated object and compares it against the
+ * digest recorded at upload, so this is a FRESH statement that the bucket
+ * still holds what the database thinks it does — not a record of what was
+ * true when the row was migrated. Nothing should drop a Bytes column until
+ * this says every object verified.
+ */
+exports.lastRun = null;
 const runBlobBackfill = (opts) => __awaiter(void 0, void 0, void 0, function* () {
     var _a, _b, _c, _d, _e;
     const log = (_a = opts.log) !== null && _a !== void 0 ? _a : (() => undefined);
@@ -212,6 +222,14 @@ const runBlobBackfill = (opts) => __awaiter(void 0, void 0, void 0, function* ()
     finally {
         running = false;
     }
+    exports.lastRun = {
+        at: new Date().toISOString(),
+        verifiedOk: report.models.reduce((a, m) => a + m.verifiedOk, 0),
+        verifiedBad: report.models.reduce((a, m) => a + m.verifiedBad, 0),
+        moved: report.totals.moved,
+        failed: report.totals.failed,
+        problems: report.models.flatMap((m) => m.notes.map((x) => `${m.model}: ${x}`)).slice(0, 40),
+    };
     return report;
 });
 exports.runBlobBackfill = runBlobBackfill;

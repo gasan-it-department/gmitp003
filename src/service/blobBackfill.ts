@@ -163,6 +163,24 @@ const verifyMigrated = async (
 */
 let running = false;
 
+/**
+ * The last run's outcome, for /health/build.
+ *
+ * Every run re-reads each migrated object and compares it against the
+ * digest recorded at upload, so this is a FRESH statement that the bucket
+ * still holds what the database thinks it does — not a record of what was
+ * true when the row was migrated. Nothing should drop a Bytes column until
+ * this says every object verified.
+ */
+export let lastRun: {
+  at: string;
+  verifiedOk: number;
+  verifiedBad: number;
+  moved: number;
+  failed: number;
+  problems: string[];
+} | null = null;
+
 export const runBlobBackfill = async (opts: {
   dryRun: boolean;
   /** Cap per model, so a first run can be tried small. */
@@ -273,6 +291,17 @@ export const runBlobBackfill = async (opts: {
   } finally {
     running = false;
   }
+
+  lastRun = {
+    at: new Date().toISOString(),
+    verifiedOk: report.models.reduce((a, m) => a + m.verifiedOk, 0),
+    verifiedBad: report.models.reduce((a, m) => a + m.verifiedBad, 0),
+    moved: report.totals.moved,
+    failed: report.totals.failed,
+    problems: report.models.flatMap((m) =>
+      m.notes.map((x) => `${m.model}: ${x}`),
+    ).slice(0, 40),
+  };
 
   return report;
 };

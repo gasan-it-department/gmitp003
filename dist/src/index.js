@@ -317,7 +317,7 @@ app.get("/test/ai", (request, reply) => __awaiter(void 0, void 0, void 0, functi
 // Public build marker — lets anyone (including the assistant) CONFIRM which
 // build is actually serving, instead of trusting deploy timers. Bump the
 // tag with each meaningful deploy.
-const BUILD_TAG = "2026-10-15-identity-persists";
+const BUILD_TAG = "2026-10-15-verify-before-drop";
 /**
  * Can this container actually rasterise a PDF page?
  *
@@ -397,8 +397,8 @@ app.get("/health/build", () => __awaiter(void 0, void 0, void 0, function* () {
         pdfSigning: yield signingIdentity(),
         objectStorage: yield blobStoreStatus(),
         blobMigration: yield (() => __awaiter(void 0, void 0, void 0, function* () {
-            const { blobMigrationStatus } = yield Promise.resolve().then(() => __importStar(require("./service/blobBackfill")));
-            return blobMigrationStatus();
+            const m = yield Promise.resolve().then(() => __importStar(require("./service/blobBackfill")));
+            return Object.assign(Object.assign({}, (yield m.blobMigrationStatus())), { lastRun: m.lastRun });
         }))(),
     };
 }));
