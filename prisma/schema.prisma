@@ -733,6 +733,9 @@ model SubmittedApplication {
   /// Items 22 OCCUPATION and EMPLOYER/BUSINESS NAME. Plain, like the
   /// two fields below them: where a spouse works is not the same kind of
   /// secret as who they are, and the four belong together.
+  /// Item 22 NAME EXTENSION (JR., SR). Plain, like `suffix` and
+  /// `fatherSuffix` — a suffix identifies nobody on its own.
+  spouseSuffix            String?                   @default("N/A")
   spouseOccupation        String?                   @default("N/A")
   spouseEmployer          String?                   @default("N/A")
   spouseBusinessAddress   String?                   @default("N/A")

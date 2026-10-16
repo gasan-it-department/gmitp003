@@ -896,6 +896,7 @@ export const submitApplication = async (
         spouseSurname: formData.spouseSurname,
         spouseFirstname: formData.spouseFirstname,
         spouseMiddle: formData.spouseMiddle,
+        spouseSuffix: formData.spouseSuffix,
         spouseOccupation: formData.spouseOccupation,
         spouseEmployer: formData.spouseEmployer,
         spouseBusinessAddress: formData.spouseBusinessAddress,
@@ -1132,6 +1133,7 @@ export const submitApplication = async (
         spouseMiddle: encrypted.spouseMiddle?.encryptedData || null,
         spouseMiddleIv: encrypted.spouseMiddle?.iv || null,
         // Plain, like spouseBusinessAddress / spouseTelephone beside them.
+        spouseSuffix: clean.spouseSuffix || null,
         spouseOccupation: clean.spouseOccupation || null,
         spouseEmployer: clean.spouseEmployer || null,
         spouseBusinessAddress: clean.spouseBusinessAddress || null,
@@ -2685,7 +2687,7 @@ const APP_PLAIN_STR = new Set([
   "height", "weight", "bloodType", "dualCitizenHalf",
   "resStreet", "resSub", "resZipCode", "reshouseBlock",
   "permaStreet", "permaSub", "permaZipCode", "permahouseBlock",
-  "spouseOccupation", "spouseEmployer",
+  "spouseSuffix", "spouseOccupation", "spouseEmployer",
   "spouseBusinessAddress", "spouseTelephone",
   "children", // stored as a JSON string column
 ]);

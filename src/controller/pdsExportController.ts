@@ -611,9 +611,7 @@ const exportPds = async (
       the map deliberately so the boxes are filled rather than silently
       skipped. The other three have data and were simply never written.
     */
-    // The spouse's name extension is still collected by nothing, so it
-    // prints N/A like any other unfilled box.
-    G37: undefined,
+    G37: app.spouseSuffix,
     D39: app.spouseOccupation,
     D40: app.spouseEmployer,
     D41: app.spouseBusinessAddress,

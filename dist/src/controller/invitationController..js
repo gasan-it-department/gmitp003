@@ -512,6 +512,7 @@ const submitToInvitationLink = (req, res) => __awaiter(void 0, void 0, void 0, f
                 spouseSurname: formData.spouseSurname,
                 spouseFirstname: formData.spouseFirstname,
                 spouseMiddle: formData.spouseMiddle,
+                spouseSuffix: formData.spouseSuffix,
                 spouseOccupation: formData.spouseOccupation,
                 spouseEmployer: formData.spouseEmployer,
                 spouseBusinessAddress: formData.spouseBusinessAddress,
@@ -719,6 +720,7 @@ const submitToInvitationLink = (req, res) => __awaiter(void 0, void 0, void 0, f
                 spouseMiddle: ((_15 = encrypted.spouseMiddle) === null || _15 === void 0 ? void 0 : _15.encryptedData) || "N/A",
                 spouseMiddleIv: ((_16 = encrypted.spouseMiddle) === null || _16 === void 0 ? void 0 : _16.iv) || null,
                 // Plain, like the two fields they sit beside on the form.
+                spouseSuffix: clean.spouseSuffix || null,
                 spouseOccupation: clean.spouseOccupation || null,
                 spouseEmployer: clean.spouseEmployer || null,
                 spouseBusinessAddress: clean.spouseBusinessAddress || null,

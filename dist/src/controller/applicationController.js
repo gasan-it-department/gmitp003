@@ -899,6 +899,7 @@ const submitApplication = (req, res) => __awaiter(void 0, void 0, void 0, functi
                 spouseSurname: formData.spouseSurname,
                 spouseFirstname: formData.spouseFirstname,
                 spouseMiddle: formData.spouseMiddle,
+                spouseSuffix: formData.spouseSuffix,
                 spouseOccupation: formData.spouseOccupation,
                 spouseEmployer: formData.spouseEmployer,
                 spouseBusinessAddress: formData.spouseBusinessAddress,
@@ -1100,6 +1101,7 @@ const submitApplication = (req, res) => __awaiter(void 0, void 0, void 0, functi
                 spouseMiddle: ((_q = encrypted.spouseMiddle) === null || _q === void 0 ? void 0 : _q.encryptedData) || null,
                 spouseMiddleIv: ((_r = encrypted.spouseMiddle) === null || _r === void 0 ? void 0 : _r.iv) || null,
                 // Plain, like spouseBusinessAddress / spouseTelephone beside them.
+                spouseSuffix: clean.spouseSuffix || null,
                 spouseOccupation: clean.spouseOccupation || null,
                 spouseEmployer: clean.spouseEmployer || null,
                 spouseBusinessAddress: clean.spouseBusinessAddress || null,
@@ -2423,7 +2425,7 @@ const APP_PLAIN_STR = new Set([
     "height", "weight", "bloodType", "dualCitizenHalf",
     "resStreet", "resSub", "resZipCode", "reshouseBlock",
     "permaStreet", "permaSub", "permaZipCode", "permahouseBlock",
-    "spouseOccupation", "spouseEmployer",
+    "spouseSuffix", "spouseOccupation", "spouseEmployer",
     "spouseBusinessAddress", "spouseTelephone",
     "children", // stored as a JSON string column
 ]);

@@ -516,6 +516,7 @@ export const submitToInvitationLink = async (
         spouseSurname: formData.spouseSurname,
         spouseFirstname: formData.spouseFirstname,
         spouseMiddle: formData.spouseMiddle,
+        spouseSuffix: formData.spouseSuffix,
         spouseOccupation: formData.spouseOccupation,
         spouseEmployer: formData.spouseEmployer,
         spouseBusinessAddress: formData.spouseBusinessAddress,
@@ -757,6 +758,7 @@ export const submitToInvitationLink = async (
         spouseMiddle: encrypted.spouseMiddle?.encryptedData || "N/A",
         spouseMiddleIv: encrypted.spouseMiddle?.iv || null,
         // Plain, like the two fields they sit beside on the form.
+        spouseSuffix: clean.spouseSuffix || null,
         spouseOccupation: clean.spouseOccupation || null,
         spouseEmployer: clean.spouseEmployer || null,
         spouseBusinessAddress: clean.spouseBusinessAddress || null,
