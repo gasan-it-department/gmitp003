@@ -98,7 +98,7 @@ const TARGETS: Record<string, string[]> = {
   ],
   "xl/worksheets/sheet2.xml": [
     ...grid(["A", "F", "G", "I", "L", "M"], range(5, 11)),
-    ...grid(["A", "C", "D", "G", "L", "M"], range(18, 45)),
+    ...grid(["A", "C", "D", "G", "J", "K", "L", "M"], range(18, 45)),
   ],
   "xl/worksheets/sheet3.xml": [
     ...grid(["A", "E", "F", "G", "H"], range(6, 12)),

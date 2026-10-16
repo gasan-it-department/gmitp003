@@ -412,7 +412,7 @@ const exportPds = (req, res, opts) => __awaiter(void 0, void 0, void 0, function
         }
     }
     // ── Decrypt encrypted PII ─────────────────────────────────────────────
-    const [email, civilStatus, mobileNo, resProvinceRaw, resCityRaw, resBarangayRaw, resStreet, resSub, resHouse, permaProvinceRaw, permaCityRaw, permaBarangayRaw, permaStreet, permaSub, permaHouse, resZip, permaZip, fatherSurname, fatherFirstname, motherSurname, motherFirstname, birthDate, placeOfBirth, umidNo, pagIbigNo, philHealthNo, philSys, tinNo, agencyNo, spouseSurname, spouseFirstname, spouseMiddle,] = yield Promise.all([
+    const [email, civilStatus, mobileNo, resProvinceRaw, resCityRaw, resBarangayRaw, resStreet, resSub, resHouse, permaProvinceRaw, permaCityRaw, permaBarangayRaw, permaStreet, permaSub, permaHouse, resZip, permaZip, fatherSurname, fatherFirstname, fatherMiddlename, motherSurname, motherFirstname, motherMiddlename, birthDate, placeOfBirth, umidNo, pagIbigNo, philHealthNo, philSys, tinNo, agencyNo, spouseSurname, spouseFirstname, spouseMiddle,] = yield Promise.all([
         dec(app.email, app.emailIv),
         dec(app.cvilStatus, app.cvilStatusIv),
         dec(app.mobileNo, app.ivMobileNo),
@@ -432,8 +432,10 @@ const exportPds = (req, res, opts) => __awaiter(void 0, void 0, void 0, function
         dec(app.permaZipCode, app.permaZipCodeIv),
         dec(app.fatherSurname, app.fatherSurnameIv),
         dec(app.fatherFirstname, app.fatherFirstnameIv),
+        dec(app.fatherMiddlename, app.fatherMiddlenameIv),
         dec(app.motherSurname, app.motherSurnameIv),
         dec(app.motherFirstname, app.motherFirstnameIv),
+        dec(app.motherMiddlename, app.motherMiddlenameIv),
         dec(app.birthDate, app.bdayIv),
         dec(app.placeOfBirth, app.placeOfBirthIv),
         dec(app.umidNo, app.umidNoIv),
@@ -523,10 +525,25 @@ const exportPds = (req, res, opts) => __awaiter(void 0, void 0, void 0, function
         D36: spouseSurname,
         D37: spouseFirstname,
         D38: spouseMiddle,
+        /*
+          The rest of item 22. OCCUPATION, EMPLOYER/BUSINESS NAME and the
+          spouse's name extension have no field in the schema and are not on
+          either application form, so they can only ever print N/A — left in
+          the map deliberately so the boxes are filled rather than silently
+          skipped. The other three have data and were simply never written.
+        */
+        G37: undefined, // spouse name extension — not collected
+        D39: undefined, // spouse occupation — not collected
+        D40: undefined, // spouse employer / business name — not collected
+        D41: app.spouseBusinessAddress,
+        D42: app.spouseTelephone,
         D43: fatherSurname,
         D44: fatherFirstname,
+        G44: app.fatherSuffix,
+        D45: fatherMiddlename,
         D47: motherSurname,
         D48: motherFirstname,
+        D49: motherMiddlename,
     };
     children.slice(0, 11).forEach((ch, i) => {
         c1[`I${37 + i}`] = ch === null || ch === void 0 ? void 0 : ch.fullname;
@@ -669,7 +686,7 @@ const exportPds = (req, res, opts) => __awaiter(void 0, void 0, void 0, function
             for (const ref of ["F3", "G3", "I3", "L4", "M4"])
                 out[ref] = "center";
             // V. Work Experience — centred throughout.
-            put(["A", "C", "D", "G", "L", "M"], (0, xlsxStyle_1.rowsFrom)(18, 28), "center");
+            put(["A", "C", "D", "G", "J", "K", "L", "M"], (0, xlsxStyle_1.rowsFrom)(18, 28), "center");
         }
         if (sheet === "sheet3") {
             // VI. Voluntary Work — the organisation's name and address is prose.
@@ -696,24 +713,35 @@ const exportPds = (req, res, opts) => __awaiter(void 0, void 0, void 0, function
         return cells;
     };
     /*
-      A repeating block with no records at all gets N/A across its first
-      row, which is how the form is filled by hand — not down all seven
-      eligibility rows or all twenty-eight work rows, which would bury the
-      page in it.
+      Every box in a repeating section that has no value says N/A — not just
+      the first row of an empty one.
+  
+      The form prints "Indicate N/A if not applicable" at the top, and a
+      reader cannot tell a row nobody answered from a row that does not
+      apply. Leaving the unused rows blank made that ambiguous on every
+      exported sheet.
     */
-    const emptySection = (cells, cols, firstRow, count) => {
+    const fillGrid = (cells, cols, firstRow, count) => {
         for (let r = firstRow; r < firstRow + count; r++) {
-            for (const c of cols)
-                if (S(cells[`${c}${r}`]))
-                    return;
+            for (const c of cols) {
+                const ref = `${c}${r}`;
+                if (!S(cells[ref]))
+                    cells[ref] = "N/A";
+            }
         }
-        for (const c of cols)
-            cells[`${c}${firstRow}`] = "N/A";
     };
-    emptySection(c2, ["A", "F", "G", "I", "L", "M"], 5, 7); // eligibility
-    emptySection(c2, ["A", "C", "D", "G", "L", "M"], 18, 28); // work
-    emptySection(c3, ["A", "E", "F", "G", "H"], 6, 7); // voluntary
-    emptySection(c3, ["A", "E", "F", "G", "H", "I"], 18, 20); // L&D
+    fillGrid(c1, ["I", "M"], 37, 11); // 23. children
+    fillGrid(c1, ["D", "G", "J", "K", "L", "M", "N"], 54, 5); // III. education
+    fillGrid(c2, ["A", "F", "G", "I", "L", "M"], 5, 7); // IV. eligibility
+    /*
+      J and K are MONTHLY SALARY and SALARY/JOB/PAY GRADE, added by the 2026
+      revision. Nothing collects either, so they were left blank for the
+      employee to write in by hand — but a blank box and an inapplicable one
+      look identical, so they say N/A like every other unfilled box.
+    */
+    fillGrid(c2, ["A", "C", "D", "G", "J", "K", "L", "M"], 18, 28); // V. work
+    fillGrid(c3, ["A", "E", "F", "G", "H"], 6, 7); // VI. voluntary work
+    fillGrid(c3, ["A", "E", "F", "G", "H", "I"], 18, 20); // VII. L&D
     naFill(c1);
     naFill(c2);
     naFill(c3);
