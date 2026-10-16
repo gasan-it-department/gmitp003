@@ -475,23 +475,38 @@ const exportPds = (req, res, opts) => __awaiter(void 0, void 0, void 0, function
         D32: philSys,
         D33: tinNo,
         D34: agencyNo,
-        I19: resHouse,
-        L19: resStreet,
-        I22: resSub,
-        L22: resBarangay,
+        /*
+          On this form the caption sits BENEATH the box it describes, not
+          above it: a writing box, then "House/Block/Lot No." underneath in
+          italics. Every address value was being written one row too low — into
+          the box belonging to the NEXT caption — so the house number printed
+          under "Subdivision/Village", the subdivision under
+          "City/Municipality", and the city and province ended up in the ZIP
+          CODE box at the bottom of the block.
+    
+          Each value now goes in the box its own caption describes.
+        */
+        I17: resHouse,
+        L17: resStreet,
+        I19: resSub,
+        L19: resBarangay,
+        I22: resCity,
+        L22: resProvince,
+        // The ZIP row is one wide box spanning I:N, which is why it takes the
+        // whole value rather than sharing the row.
+        I24: resZip,
         // City and Province are SEPARATE cells. The 2025 template merged
         // I24:N24 into one box, so both had to be crammed into a single
         // string; the 2026 revision splits it into I24:K24 + L24:N24.
-        I24: resCity,
-        L24: resProvince,
-        I27: permaHouse,
-        L27: permaStreet,
-        I29: permaSub,
-        L29: permaBarangay,
+        I25: permaHouse,
+        L25: permaStreet,
+        I27: permaSub,
+        L27: permaBarangay,
+        I29: permaCity,
+        L29: permaProvince,
+        I31: permaZip,
         // I31:K31 / L31:N31 were ALREADY separate cells in the 2025
         // template — cramming them here also left Province blank.
-        I31: permaCity,
-        L31: permaProvince,
         I32: app.teleNo,
         I33: mobileNo,
         I34: email,
@@ -639,20 +654,12 @@ const exportPds = (req, res, opts) => __awaiter(void 0, void 0, void 0, function
     }
     const shared = parseSharedStrings(yield zip.file("xl/sharedStrings.xml").async("string"));
     /*
-      The two ZIP CODE boxes share a cell with their own label — G24:H24 and
-      G31:H31 are the caption AND the space to write in, exactly as on the
-      printed form. So they are filled the same way the "If YES, give
-      details" answers are: keep the label, append the value.
-  
-      Both zip codes were being collected and encrypted all along and simply
-      never reached the form, which is why every exported PDS had two empty
-      boxes.
+      The zip codes used to be appended onto their own G24/G31 label cells,
+      because the address values had pushed down into the boxes those zips
+      belong in and there was nowhere else to put them. With every value
+      back on its own caption, I24 and I31 are free and the zips are written
+      there like any other field.
     */
-    const s1 = zip.file("xl/worksheets/sheet1.xml");
-    if (s1) {
-        const xml = yield s1.async("string");
-        zip.file("xl/worksheets/sheet1.xml", appendDetails(xml, { G24: resZip, G31: permaZip }, shared));
-    }
     // Append the "If YES, give details" answers onto their label cells (sheet 4).
     const s4 = zip.file("xl/worksheets/sheet4.xml");
     if (s4) {

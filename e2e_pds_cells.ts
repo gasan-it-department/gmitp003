@@ -80,8 +80,10 @@ const TARGETS: Record<string, string[]> = {
   "xl/worksheets/sheet1.xml": [
     "D10", "D11", "D12", "L12", "D13", "D22", "D24", "D25",
     "D27", "D29", "D31", "D32", "D33", "D34",
-    "I19", "L19", "I22", "L22", "I24", "L24",
-    "I27", "L27", "I29", "L29", "I31", "L31",
+    // Each value sits in the box ABOVE its caption; the ZIP row is
+    // one wide box so it has no right-hand partner.
+    "I17", "L17", "I19", "L19", "I22", "L22", "I24",
+    "I25", "L25", "I27", "L27", "I29", "L29", "I31",
     "I32", "I33", "I34",
     "D36", "D37", "D38", "D43", "D44", "D47", "D48",
   ],
@@ -248,10 +250,10 @@ const ok = (cond: boolean, name: string) => {
   ok(!!re.file("xl/drawings/vmlDrawing1.vml"), "reopened workbook lost VML 1");
   ok(!!re.file("xl/drawings/vmlDrawing2.vml"), "reopened workbook lost VML 2");
   const s1: string = await re.file("xl/worksheets/sheet1.xml")!.async("string");
-  ok(s1.includes("ZZ-L24-ZZ"), "the province sentinel is not in the output");
-  ok(s1.includes("ZZ-I24-ZZ"), "the city sentinel is not in the output");
-  ok(s1.includes("ZZ-I29-ZZ"), "the permanent-subdivision sentinel is missing");
-  ok(s1.includes("ZZ-L29-ZZ"), "the permanent-barangay sentinel is missing");
+  ok(s1.includes("ZZ-L22-ZZ"), "the province sentinel is not in the output");
+  ok(s1.includes("ZZ-I22-ZZ"), "the city sentinel is not in the output");
+  ok(s1.includes("ZZ-I27-ZZ"), "the permanent-subdivision sentinel is missing");
+  ok(s1.includes("ZZ-L27-ZZ"), "the permanent-barangay sentinel is missing");
   console.log(`  kept at ${tmp} for inspection`);
 
   console.log(

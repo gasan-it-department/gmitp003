@@ -86,9 +86,11 @@ const TARGETS: Record<string, string[]> = {
     "D10", "D11", "D12", "L12", "D13", "D22", "D24", "D25",
     "D27", "D29", "D31", "D32", "D33", "D34",
     // residential address
-    "I19", "L19", "I22", "L22", "I24", "L24",
+    // Each value sits in the box ABOVE its caption; the ZIP row is one
+    // wide box (I24:N24 / I31:K31) so it has no right-hand partner.
+    "I17", "L17", "I19", "L19", "I22", "L22", "I24",
     // permanent address
-    "I27", "L27", "I29", "L29", "I31", "L31",
+    "I25", "L25", "I27", "L27", "I29", "L29", "I31",
     // contact
     "I32", "I33", "I34",
     // family
