@@ -12,6 +12,12 @@ import { EncryptionService } from "../service/encryption";
 import fs from "fs";
 import path from "path";
 import { requireHrOrSelf } from "../service/callerScope";
+import {
+  Align,
+  ensureFont,
+  restyleCells,
+  rowsFrom,
+} from "../service/xlsxStyle";
 
 // jszip@3.1.3 ships no type declarations; a typed require keeps ts-node happy
 // without pulling in a missing @types package.
@@ -34,10 +40,18 @@ const obj = (v: unknown): any => (v && typeof v === "object" ? v : {});
 const S = (v: unknown) => {
   if (v === null || v === undefined) return "";
   const s = String(v).trim();
-  // Treat placeholder/garbage values as empty so they never render on the form.
-  // (Older submissions saved literal "undefined"/"null" strings for blank fields.)
+  /*
+    Older submissions saved literal "undefined"/"null" strings for blank
+    fields; those are garbage and must never reach the form.
+
+    "N/A" used to be stripped here on the same reasoning. It is not any
+    more: the form itself says "Indicate N/A if not applicable", so a box
+    reading N/A is the correct rendering of a field that does not apply,
+    and the export now writes it deliberately. Stripping it here silently
+    swallowed every one.
+  */
   const low = s.toLowerCase();
-  if (s === "N/A" || low === "undefined" || low === "null") return "";
+  if (low === "undefined" || low === "null") return "";
   return s;
 };
 
@@ -697,6 +711,95 @@ const exportPds = async (
     G48: disc.soloParentId,
   };
 
+  /*
+    One look for every value.
+
+    The template's boxes carry whatever font each revision's author used —
+    Arial Narrow at 7, 8, 9 and 10 points, some bold, some not — so a
+    filled form came out ragged while a blank one looks tidy. Arial Narrow
+    keeps the form's own face; 9pt is the middle of the range it already
+    uses and clears the shortest row; regular weight because bold at this
+    size turns a dense table into a smear.
+  */
+  const VALUE_FONT = { name: "Arial Narrow", size: 9, bold: false };
+
+  /*
+    Where the sections want their values. Columns come from the write map
+    above, so these stay in step with what is actually filled in.
+
+    C4 is deliberately absent — it is left exactly as the form ships.
+  */
+  const alignFor = (
+    sheet: "sheet1" | "sheet2" | "sheet3",
+  ): Record<string, Align> => {
+    const out: Record<string, Align> = {};
+    const put = (cols: string[], rows: number[], align: Align) => {
+      for (const r of rows) for (const c of cols) out[`${c}${r}`] = align;
+    };
+    if (sheet === "sheet1") {
+      // III. Educational Background — every value centred.
+      put(["D", "G", "J", "K", "L", "M", "N"], rowsFrom(54, 5), "center");
+    }
+    if (sheet === "sheet2") {
+      // IV. Civil Service Eligibility — the examination title reads as a
+      // sentence and stays left; everything measured about it is centred.
+      put(["A"], rowsFrom(5, 7), "left");
+      put(["F", "G", "I", "L", "M"], rowsFrom(5, 7), "center");
+      // ...and its column headers.
+      for (const ref of ["F3", "G3", "I3", "L4", "M4"]) out[ref] = "center";
+      // V. Work Experience — centred throughout.
+      put(["A", "C", "D", "G", "L", "M"], rowsFrom(18, 28), "center");
+    }
+    if (sheet === "sheet3") {
+      // VI. Voluntary Work — the organisation's name and address is prose.
+      put(["A"], rowsFrom(6, 7), "left");
+      put(["E", "F", "G", "H"], rowsFrom(6, 7), "center");
+      // VII. Learning and Development — likewise the programme title.
+      put(["A"], rowsFrom(18, 20), "left");
+      put(["E", "F", "G", "H", "I"], rowsFrom(18, 20), "center");
+    }
+    return out;
+  };
+
+  /*
+    "Indicate N/A if not applicable" is printed at the top of the form, so
+    a box the generator manages and cannot fill says so rather than being
+    left ambiguously empty. Only cells already in the write map are
+    touched: a repeating block only has entries for records that exist, so
+    unused rows stay blank instead of filling with N/A.
+  */
+  const naFill = (cells: Record<string, unknown>) => {
+    for (const k of Object.keys(cells)) {
+      if (!S(cells[k])) cells[k] = "N/A";
+    }
+    return cells;
+  };
+  /*
+    A repeating block with no records at all gets N/A across its first
+    row, which is how the form is filled by hand — not down all seven
+    eligibility rows or all twenty-eight work rows, which would bury the
+    page in it.
+  */
+  const emptySection = (
+    cells: Record<string, unknown>,
+    cols: string[],
+    firstRow: number,
+    count: number,
+  ) => {
+    for (let r = firstRow; r < firstRow + count; r++) {
+      for (const c of cols) if (S(cells[`${c}${r}`])) return;
+    }
+    for (const c of cols) cells[`${c}${firstRow}`] = "N/A";
+  };
+  emptySection(c2, ["A", "F", "G", "I", "L", "M"], 5, 7); // eligibility
+  emptySection(c2, ["A", "C", "D", "G", "L", "M"], 18, 28); // work
+  emptySection(c3, ["A", "E", "F", "G", "H"], 6, 7); // voluntary
+  emptySection(c3, ["A", "E", "F", "G", "H", "I"], 18, 20); // L&D
+
+  naFill(c1);
+  naFill(c2);
+  naFill(c3);
+
   // ── Open the template ZIP, edit cell XML in place, repackage ───────────
   const zip = await JSZip.loadAsync(fs.readFileSync(TEMPLATE));
   const sheets: Record<string, Record<string, unknown>> = {
@@ -710,6 +813,52 @@ const exportPds = async (
     if (!entry) continue;
     const xml = await entry.async("string");
     zip.file(file, applyCells(xml, cells));
+  }
+
+  /*
+    Restyle AFTER the values are written: a style on a cell that holds
+    nothing renders nothing, and restyleCells deliberately skips cells
+    that do not exist yet.
+  */
+  const stylesEntry0 = zip.file("xl/styles.xml");
+  if (stylesEntry0) {
+    let stylesXml0 = await stylesEntry0.async("string");
+    const font = ensureFont(stylesXml0, VALUE_FONT);
+    stylesXml0 = font.styles;
+
+    for (const sheetName of ["sheet1", "sheet2", "sheet3"] as const) {
+      const file = `xl/worksheets/${sheetName}.xml`;
+      const e2 = zip.file(file);
+      if (!e2) continue;
+      const cells = sheets[file] ?? {};
+      const aligns = alignFor(sheetName);
+
+      // Every value this sheet carries gets the font; alignment only
+      // where a section asks for it. Headers named in alignFor but never
+      // written keep their own font and are only realigned.
+      /*
+        Column headers are part of the printed form, so they are only
+        realigned — their own face is left alone. Everything else is a
+        value box and takes the house font whether or not it holds
+        anything today, so an empty row does not sit at a different size
+        from a filled one.
+      */
+      const HEADERS = new Set(["F3", "G3", "I3", "L4", "M4"]);
+      const specs: Record<string, { fontId?: number; align?: Align }> = {};
+      for (const [ref, align] of Object.entries(aligns)) {
+        specs[ref] = HEADERS.has(ref)
+          ? { align }
+          : { fontId: font.fontId, align };
+      }
+      for (const ref of Object.keys(cells)) {
+        specs[ref] = { fontId: font.fontId, align: aligns[ref] };
+      }
+
+      const out = restyleCells(await e2.async("string"), stylesXml0, specs);
+      zip.file(file, out.sheet);
+      stylesXml0 = out.styles;
+    }
+    zip.file("xl/styles.xml", stylesXml0);
   }
 
   // Strip the grey background the 2026 template puts on a few input boxes.
@@ -775,15 +924,24 @@ const exportPds = async (
     compression: "DEFLATE",
   });
 
+  /*
+    Named after the person: "Juan_Dela_Cruz.xlsx". HR downloads these in
+    batches, and a folder of files all called PDS_something is no use to
+    anybody.
+  */
   const safeName =
-    `${app.lastname || "PDS"}_${app.firstname || ""}`.replace(/[^\w.-]/g, "_");
+    [S(app.firstname), S(app.lastname)]
+      .filter(Boolean)
+      .join("_")
+      .replace(/[^\w.-]+/g, "_")
+      .replace(/^_+|_+$/g, "") || "PDS";
   res.header(
     "Content-Type",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   );
   res.header(
     "Content-Disposition",
-    `attachment; filename="PDS_${safeName}.xlsx"`,
+    `attachment; filename="${safeName}.xlsx"`,
   );
   return res.send(out);
 };
