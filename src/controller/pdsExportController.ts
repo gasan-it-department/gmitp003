@@ -624,7 +624,8 @@ const exportPds = async (
     D48: motherFirstname,
     D49: motherMiddlename,
   };
-  children.slice(0, 11).forEach((ch, i) => {
+  // 23. NAME of CHILDREN — the form has twelve slots, rows 37-48.
+  children.slice(0, 12).forEach((ch, i) => {
     c1[`I${37 + i}`] = ch?.fullname;
     c1[`M${37 + i}`] = fmtDate(ch?.dateOfBirth);
   });
@@ -687,7 +688,7 @@ const exportPds = async (
       c3[`H${r}`] = v?.position;
     });
   arr(app.learningDev)
-    .slice(0, 20)
+    .slice(0, 21)
     .forEach((t, i) => {
       const r = 18 + i;
       c3[`A${r}`] = t?.title; // title is merged A:D — anchor cell is A, not B
@@ -778,8 +779,8 @@ const exportPds = async (
       put(["A"], rowsFrom(6, 7), "left");
       put(["E", "F", "G", "H"], rowsFrom(6, 7), "center");
       // VII. Learning and Development — likewise the programme title.
-      put(["A"], rowsFrom(18, 20), "left");
-      put(["E", "F", "G", "H", "I"], rowsFrom(18, 20), "center");
+      put(["A"], rowsFrom(18, 21), "left");
+      put(["E", "F", "G", "H", "I"], rowsFrom(18, 21), "center");
     }
     return out;
   };
@@ -819,7 +820,7 @@ const exportPds = async (
       }
     }
   };
-  fillGrid(c1, ["I", "M"], 37, 11); // 23. children
+  fillGrid(c1, ["I", "M"], 37, 12); // 23. children
   fillGrid(c1, ["D", "G", "J", "K", "L", "M", "N"], 54, 5); // III. education
   fillGrid(c2, ["A", "F", "G", "I", "L", "M"], 5, 7); // IV. eligibility
   /*
@@ -830,7 +831,14 @@ const exportPds = async (
   */
   fillGrid(c2, ["A", "C", "D", "G", "J", "K", "L", "M"], 18, 28); // V. work
   fillGrid(c3, ["A", "E", "F", "G", "H"], 6, 7); // VI. voluntary work
-  fillGrid(c3, ["A", "E", "F", "G", "H", "I"], 18, 20); // VII. L&D
+  fillGrid(c3, ["A", "E", "F", "G", "H", "I"], 18, 21); // VII. L&D
+  /*
+    VIII. Other Information is three independent lists of seven lines —
+    skills, distinctions, memberships. The form collects one free-text
+    value per column, so only row 42 is ever filled and the six rows
+    under it were being left blank.
+  */
+  fillGrid(c3, ["A", "C", "I"], 42, 7); // VIII. other information
 
   naFill(c1);
   naFill(c2);

@@ -95,6 +95,8 @@ const TARGETS: Record<string, string[]> = {
     "I32", "I33", "I34",
     // family
     "D36", "D37", "D38", "D43", "D44", "D47", "D48",
+    // 23. NAME of CHILDREN — twelve slots, rows 37-48
+    ...grid(["I", "M"], range(37, 48)),
   ],
   "xl/worksheets/sheet2.xml": [
     ...grid(["A", "F", "G", "I", "L", "M"], range(5, 11)),
@@ -102,8 +104,8 @@ const TARGETS: Record<string, string[]> = {
   ],
   "xl/worksheets/sheet3.xml": [
     ...grid(["A", "E", "F", "G", "H"], range(6, 12)),
-    ...grid(["A", "E", "F", "G", "H", "I"], range(18, 37)),
-    "A42", "C42", "I42",
+    ...grid(["A", "E", "F", "G", "H", "I"], range(18, 38)),
+    ...grid(["A", "C", "I"], range(42, 48)),
   ],
   "xl/worksheets/sheet4.xml": [
     "D61", "D62", "D64",
