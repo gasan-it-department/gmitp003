@@ -1408,6 +1408,36 @@ model HumanResourcesLogs {
   user      User     @relation(fields: [userId], references: [id], onDelete: SetDefault)
 }
 
+/// The Philippine salary grid: a monthly rate per (grade, step, tranche).
+///
+/// Separate from SalaryGrade on purpose. A position, a job post and a
+/// plantilla item carry a GRADE and have no step — only a person has a
+/// step — so turning SalaryGrade into the grid would give every position
+/// a meaningless step. The grid is looked up instead.
+///
+/// Rates are per tranche: EO 64 pays out over four of them (1 January
+/// 2024 through 2027), and recomputing an old payslip must use the
+/// schedule that was in force then, not the newest one.
+model SalaryStepRate {
+  id String @id @default(uuid())
+  /// "" is the national schedule; a line id overrides it for that
+  /// municipality. Deliberately NOT a foreign key and NOT nullable: "" is
+  /// not a Line, the national table must outlive any line, and a nullable
+  /// column cannot carry the compound uniqueness below (in SQL two NULLs
+  /// are not equal, so the same row could be loaded twice).
+  lineId        String   @default("")
+  grade         Int
+  step          Int
+  amount        Float
+  effectiveFrom DateTime
+  /// Where the figure came from, e.g. "EO 64 3rd tranche (DBM NBC 601)".
+  note          String?
+  createdAt     DateTime @default(now())
+
+  @@unique([lineId, grade, step, effectiveFrom])
+  @@index([grade, step, effectiveFrom])
+}
+
 model SalaryGradeHistory {
   id            String      @id @default(uuid())
   userId        String
@@ -1520,6 +1550,12 @@ model Payslip {
   periodId        String
   lineId          String
   salaryGradeId   String?
+  /// The step this slip was paid at, and where the rate came from
+  /// ("line", "national", or "grade-default" before the grid is loaded).
+  /// Frozen here with basicMonthly so a payslip stays explainable after
+  /// the person moves a step or a new tranche lands.
+  step            Int?
+  rateSource      String?
   basicMonthly    Float         @default(0)
   workingDays     Float         @default(0)
   daysAbsent      Float         @default(0)

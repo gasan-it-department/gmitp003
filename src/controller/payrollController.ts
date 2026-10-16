@@ -12,6 +12,7 @@ import { FastifyReply, FastifyRequest } from "../barrel/fastify";
 import { prisma, Prisma } from "../barrel/prisma";
 import { AppError, NotFoundError, ValidationError } from "../errors/errors";
 import { computePayslip } from "../utils/phPayroll";
+import { resolveMonthlyRate } from "../service/salaryStep";
 
 const businessDaysBetween = (start: Date, end: Date): number => {
   const s = new Date(start);
@@ -184,7 +185,8 @@ export const computePayrollPeriod = async (
         firstName: true,
         lastName: true,
         salaryGradeId: true,
-        SalaryGrade: { select: { id: true, amount: true } },
+        step: true,
+        SalaryGrade: { select: { id: true, amount: true, grade: true } },
       },
     });
 
@@ -198,7 +200,31 @@ export const computePayrollPeriod = async (
 
     let computed = 0;
     for (const emp of employees) {
-      const basic = emp.SalaryGrade?.amount ?? 0;
+      /*
+        Pay is a function of GRADE AND STEP, not grade alone.
+
+        The rate is read from the schedule in force at the START of the
+        period, so recomputing an old payroll uses the tranche that
+        actually applied then rather than whatever is newest.
+
+        When the grid has no row — which is every run until somebody keys
+        in a tranche — this falls back to SalaryGrade.amount and behaves
+        exactly as it did before the grid existed. That fallback is why
+        installing this changes nobody's pay.
+      */
+      const grade = emp.SalaryGrade?.grade;
+      const step = emp.step ?? 1;
+      const rate =
+        grade != null
+          ? await resolveMonthlyRate({
+              lineId: period.lineId,
+              grade,
+              step,
+              on: period.periodStart,
+            })
+          : null;
+      const basic = rate?.amount ?? emp.SalaryGrade?.amount ?? 0;
+      const rateSource = rate?.source ?? "grade-default";
       if (!basic) continue;
 
       // Leaves that overlap this period and are already approved.
@@ -250,6 +276,8 @@ export const computePayrollPeriod = async (
           periodId: period.id,
           lineId: period.lineId,
           salaryGradeId: emp.salaryGradeId,
+          step,
+          rateSource,
           basicMonthly: basic,
           workingDays: totalWorkingDays,
           daysAbsent: 0,

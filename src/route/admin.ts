@@ -9,6 +9,10 @@ import { adminAuthenticated } from "../middleware/handler";
 import { adminLoginScehma } from "../models/request";
 import { openLineHrSession } from "../controller/adminLineHrController";
 import { blobIntegrity } from "../controller/blobIntegrityController";
+import {
+  getSalarySteps,
+  putSalarySteps,
+} from "../controller/salaryStepController";
 export const admin = (fastify: FastifyInstance) => {
   fastify.post("/admin-login", { schema: adminLoginScehma }, adminAuth);
   fastify.post("/create-admin", { preHandler: adminAuthenticated, schema: adminLoginScehma }, creteAdmin);
@@ -20,6 +24,22 @@ export const admin = (fastify: FastifyInstance) => {
   // Confirm every file the database points at is still in the bucket and
   // still matches its recorded digest. Read-only; ?count=1 for row counts
   // without fetching objects.
+  /*
+    The salary grid: grade x step x tranche. Admin-gated because these
+    figures are everybody's pay, and keyed by hand from a scanned DBM
+    circular. GET with no grade reports coverage per tranche, so a
+    half-entered schedule is visible before a payroll run uses it.
+  */
+  fastify.get(
+    "/admin/salary-steps",
+    { preHandler: adminAuthenticated },
+    getSalarySteps,
+  );
+  fastify.post(
+    "/admin/salary-steps",
+    { preHandler: adminAuthenticated },
+    putSalarySteps,
+  );
   fastify.post(
     "/admin/blob-integrity",
     { preHandler: adminAuthenticated },

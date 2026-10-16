@@ -17,6 +17,7 @@ const handler_1 = require("../middleware/handler");
 const request_1 = require("../models/request");
 const adminLineHrController_1 = require("../controller/adminLineHrController");
 const blobIntegrityController_1 = require("../controller/blobIntegrityController");
+const salaryStepController_1 = require("../controller/salaryStepController");
 const admin = (fastify) => {
     fastify.post("/admin-login", { schema: request_1.adminLoginScehma }, adminAuth_1.adminAuth);
     fastify.post("/create-admin", { preHandler: handler_1.adminAuthenticated, schema: request_1.adminLoginScehma }, adminAuth_1.creteAdmin);
@@ -28,6 +29,14 @@ const admin = (fastify) => {
     // Confirm every file the database points at is still in the bucket and
     // still matches its recorded digest. Read-only; ?count=1 for row counts
     // without fetching objects.
+    /*
+      The salary grid: grade x step x tranche. Admin-gated because these
+      figures are everybody's pay, and keyed by hand from a scanned DBM
+      circular. GET with no grade reports coverage per tranche, so a
+      half-entered schedule is visible before a payroll run uses it.
+    */
+    fastify.get("/admin/salary-steps", { preHandler: handler_1.adminAuthenticated }, salaryStepController_1.getSalarySteps);
+    fastify.post("/admin/salary-steps", { preHandler: handler_1.adminAuthenticated }, salaryStepController_1.putSalarySteps);
     fastify.post("/admin/blob-integrity", { preHandler: handler_1.adminAuthenticated }, blobIntegrityController_1.blobIntegrity);
     // Full-database backup / restore — gated by the admin token, and the import
     // accepts a large JSON body.

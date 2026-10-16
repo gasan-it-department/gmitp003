@@ -22,6 +22,7 @@ exports.removeDeduction = exports.upsertDeduction = exports.listDeductions = exp
 const prisma_1 = require("../barrel/prisma");
 const errors_1 = require("../errors/errors");
 const phPayroll_1 = require("../utils/phPayroll");
+const salaryStep_1 = require("../service/salaryStep");
 const businessDaysBetween = (start, end) => {
     const s = new Date(start);
     s.setHours(0, 0, 0, 0);
@@ -146,7 +147,7 @@ exports.removePayrollPeriod = removePayrollPeriod;
 // Idempotent — re-running on a draft/computed period rebuilds every
 // payslip from current source data. Refuses to run on released periods.
 const computePayrollPeriod = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    var _a, _b;
+    var _a, _b, _c, _d, _e, _f;
     const body = req.body;
     if (!body.periodId)
         throw new errors_1.ValidationError("INVALID REQUIRED ID");
@@ -168,7 +169,8 @@ const computePayrollPeriod = (req, res) => __awaiter(void 0, void 0, void 0, fun
                 firstName: true,
                 lastName: true,
                 salaryGradeId: true,
-                SalaryGrade: { select: { id: true, amount: true } },
+                step: true,
+                SalaryGrade: { select: { id: true, amount: true, grade: true } },
             },
         });
         const totalWorkingDays = businessDaysBetween(period.periodStart, period.periodEnd);
@@ -176,7 +178,30 @@ const computePayrollPeriod = (req, res) => __awaiter(void 0, void 0, void 0, fun
         yield prisma_1.prisma.payslip.deleteMany({ where: { periodId: period.id } });
         let computed = 0;
         for (const emp of employees) {
-            const basic = (_b = (_a = emp.SalaryGrade) === null || _a === void 0 ? void 0 : _a.amount) !== null && _b !== void 0 ? _b : 0;
+            /*
+              Pay is a function of GRADE AND STEP, not grade alone.
+      
+              The rate is read from the schedule in force at the START of the
+              period, so recomputing an old payroll uses the tranche that
+              actually applied then rather than whatever is newest.
+      
+              When the grid has no row — which is every run until somebody keys
+              in a tranche — this falls back to SalaryGrade.amount and behaves
+              exactly as it did before the grid existed. That fallback is why
+              installing this changes nobody's pay.
+            */
+            const grade = (_a = emp.SalaryGrade) === null || _a === void 0 ? void 0 : _a.grade;
+            const step = (_b = emp.step) !== null && _b !== void 0 ? _b : 1;
+            const rate = grade != null
+                ? yield (0, salaryStep_1.resolveMonthlyRate)({
+                    lineId: period.lineId,
+                    grade,
+                    step,
+                    on: period.periodStart,
+                })
+                : null;
+            const basic = (_e = (_c = rate === null || rate === void 0 ? void 0 : rate.amount) !== null && _c !== void 0 ? _c : (_d = emp.SalaryGrade) === null || _d === void 0 ? void 0 : _d.amount) !== null && _e !== void 0 ? _e : 0;
+            const rateSource = (_f = rate === null || rate === void 0 ? void 0 : rate.source) !== null && _f !== void 0 ? _f : "grade-default";
             if (!basic)
                 continue;
             // Leaves that overlap this period and are already approved.
@@ -219,6 +244,8 @@ const computePayrollPeriod = (req, res) => __awaiter(void 0, void 0, void 0, fun
                     periodId: period.id,
                     lineId: period.lineId,
                     salaryGradeId: emp.salaryGradeId,
+                    step,
+                    rateSource,
                     basicMonthly: basic,
                     workingDays: totalWorkingDays,
                     daysAbsent: 0,
