@@ -30,12 +30,51 @@ import {
 
 //models, interface
 import { employeeSchema } from "../models/request";
+import {
+  stepIncrementsDecide,
+  stepIncrementsSetServiceRecord,
+  stepIncrementsDue,
+  stepIncrementsList,
+  stepIncrementsPropose,
+} from "../controller/stepIncrementController";
 
 export const employee = (fastify: FastifyInstance) => {
   fastify.post("/employees", { schema: employeeSchema }, getAllEmpoyees);
   fastify.get("/search-user", { preHandler: authenticated }, searchUser);
   fastify.get("/employee-list", { preHandler: authenticated }, employees);
   fastify.get("/user/profile", { preHandler: authenticated }, decryptUserData);
+
+  /*
+    Step increments by length of service. HR only — `requireHr` inside
+    each handler, on top of `authenticated` here, because approving an
+    increment raises somebody's pay and the person it benefits must not
+    be the one who approves it.
+  */
+  fastify.get(
+    "/hr/step-increments/due",
+    { preHandler: authenticated },
+    stepIncrementsDue,
+  );
+  fastify.get(
+    "/hr/step-increments",
+    { preHandler: authenticated },
+    stepIncrementsList,
+  );
+  fastify.post(
+    "/hr/step-increments/propose",
+    { preHandler: authenticated },
+    stepIncrementsPropose,
+  );
+  fastify.post(
+    "/hr/step-increments/decide",
+    { preHandler: authenticated },
+    stepIncrementsDecide,
+  );
+  fastify.post(
+    "/hr/step-increments/service-record",
+    { preHandler: authenticated },
+    stepIncrementsSetServiceRecord,
+  );
   fastify.get(
     "/user/view-profile",
     { preHandler: authenticated },

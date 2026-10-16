@@ -89,6 +89,7 @@ model Line {
   hrMessageBatches        HrMessageBatch[]
   attendanceEvents        AttendanceEvent[]
   AttendanceMobileAccess  AttendanceMobileAccess[]
+  stepIncrements       StepIncrement[]
 }
 
 model LineInvitation {
@@ -1086,6 +1087,18 @@ model User {
   provinceId                       String?
   regionId                         String?
   step                             Int                              @default(1)
+  /// Entry into government service. Distinct from createdAt, which is
+  /// when this ROW was made — often years later, and useless for
+  /// anything that counts service.
+  originalAppointmentDate          DateTime?
+  /// Date the person assumed their PRESENT position. The step increment
+  /// rule counts three years of continuous service in the present
+  /// position, so this — not the original appointment — is what the
+  /// first increment is reckoned from.
+  presentPositionDate              DateTime?
+  /// When the CURRENT step took effect. After the first increment this
+  /// supersedes presentPositionDate as the reckoning date.
+  stepEffectiveDate                DateTime?
   type                             String                           @default("M")
   lineId                           String?
   gender                           String?                          @default("--/--")
@@ -1199,6 +1212,8 @@ model User {
   supplyRecipient                  SupplyDispenseRecord[]           @relation("supplyRecipeint")
   SupplyIncharge                   SupplyIncharge[]
   SupplyOrderStatus                SupplyOrderStatus[]
+  stepIncrements                   StepIncrement[]                  @relation("StepIncrementSubject")
+  stepIncrementsDecided            StepIncrement[]                  @relation("StepIncrementDecider")
   supplyTransactions               SupplyTransaction[]
   transferTo                       TransferredSupplies[]            @relation("transferTo")
   TransferredSupplies              TransferredSupplies[]
@@ -1418,6 +1433,51 @@ model HumanResourcesLogs {
 /// Rates are per tranche: EO 64 pays out over four of them (1 January
 /// 2024 through 2027), and recomputing an old payslip must use the
 /// schedule that was in force then, not the newest one.
+/// A step increment: the record of a person moving up one or two steps.
+///
+/// Proposed by the system, DECIDED by HR. Never applied automatically: a
+/// step increment is a legal act that issues a Notice of Step Increment,
+/// and the condition the rules turn on — three years of *satisfactory*
+/// service — is a judgement this system cannot make, because there is no
+/// performance-rating module. HR certifies it at approval, and that
+/// certification is recorded here rather than assumed.
+model StepIncrement {
+  id     String @id @default(uuid())
+  userId String
+  lineId String
+  fromStep Int
+  toStep   Int
+  /// "length-of-service" today. "merit" needs an SPMS/IPCR module first.
+  basis    String @default("length-of-service")
+  /// When the new step takes effect, and the date the NEXT increment is
+  /// reckoned from.
+  effectiveDate DateTime
+  /// The service window that earned it, kept so the arithmetic can be
+  /// re-checked years later against the rules as they stood.
+  serviceFrom DateTime
+  serviceTo   DateTime
+  /// Approved days of leave WITHOUT pay inside that window. The rules cap
+  /// this; recorded whether or not it blocked the grant, so a decision
+  /// can be explained.
+  lwopDays Float @default(0)
+  /// proposed | approved | rejected
+  status String @default("proposed")
+  /// HR's explicit certification that service was satisfactory. The
+  /// system cannot determine this and must not pretend to.
+  certifiedSatisfactory Boolean @default(false)
+  nosiNumber String?
+  note       String?
+  proposedAt DateTime  @default(now())
+  decidedAt  DateTime?
+  decidedByUserId String?
+  user      User  @relation("StepIncrementSubject", fields: [userId], references: [id], onDelete: Cascade)
+  decidedBy User? @relation("StepIncrementDecider", fields: [decidedByUserId], references: [id])
+  line      Line  @relation(fields: [lineId], references: [id], onDelete: Cascade)
+
+  @@index([lineId, status])
+  @@index([userId, effectiveDate])
+}
+
 model SalaryStepRate {
   id String @id @default(uuid())
   /// "" is the national schedule; a line id overrides it for that

@@ -8,11 +8,23 @@ const employee_1 = require("../controller/employee");
 const idCardController_1 = require("../controller/idCardController");
 //models, interface
 const request_1 = require("../models/request");
+const stepIncrementController_1 = require("../controller/stepIncrementController");
 const employee = (fastify) => {
     fastify.post("/employees", { schema: request_1.employeeSchema }, employee_1.getAllEmpoyees);
     fastify.get("/search-user", { preHandler: handler_1.authenticated }, employee_1.searchUser);
     fastify.get("/employee-list", { preHandler: handler_1.authenticated }, employee_1.employees);
     fastify.get("/user/profile", { preHandler: handler_1.authenticated }, employee_1.decryptUserData);
+    /*
+      Step increments by length of service. HR only — `requireHr` inside
+      each handler, on top of `authenticated` here, because approving an
+      increment raises somebody's pay and the person it benefits must not
+      be the one who approves it.
+    */
+    fastify.get("/hr/step-increments/due", { preHandler: handler_1.authenticated }, stepIncrementController_1.stepIncrementsDue);
+    fastify.get("/hr/step-increments", { preHandler: handler_1.authenticated }, stepIncrementController_1.stepIncrementsList);
+    fastify.post("/hr/step-increments/propose", { preHandler: handler_1.authenticated }, stepIncrementController_1.stepIncrementsPropose);
+    fastify.post("/hr/step-increments/decide", { preHandler: handler_1.authenticated }, stepIncrementController_1.stepIncrementsDecide);
+    fastify.post("/hr/step-increments/service-record", { preHandler: handler_1.authenticated }, stepIncrementController_1.stepIncrementsSetServiceRecord);
     fastify.get("/user/view-profile", { preHandler: handler_1.authenticated }, employee_1.viewUserProfile);
     fastify.get("/user/module-access", { preHandler: handler_1.authenticated }, employee_1.userModuleAccess);
     // The logged-in employee's ID-card verify QR (mobile profile screen).

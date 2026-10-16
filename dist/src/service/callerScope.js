@@ -9,7 +9,7 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
     });
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.requireRoomMember = exports.requireSelf = exports.requireHrOrSelf = exports.requireSameLine = exports.callerContext = void 0;
+exports.requireRoomMember = exports.requireSelf = exports.requireHr = exports.requireHrOrSelf = exports.requireSameLine = exports.callerContext = void 0;
 const prisma_1 = require("../barrel/prisma");
 const errors_1 = require("../errors/errors");
 const callerContext = (req) => __awaiter(void 0, void 0, void 0, function* () {
@@ -117,6 +117,44 @@ const requireHrOrSelf = (req_1, subject_1, ...args_1) => __awaiter(void 0, [req_
     return { caller, via: "hr" };
 });
 exports.requireHrOrSelf = requireHrOrSelf;
+/**
+ * HR of this municipality, and nobody else — not even the subject.
+ *
+ * `requireHrOrSelf` lets a person through for their OWN record, which is
+ * right for reading a payslip or a PDS. It is wrong for an act performed
+ * ON somebody: granting a step increment is a decision about pay, and the
+ * person it benefits must not be the one who approves it.
+ *
+ * Same module rules as requireHrOrSelf — active grant, in this line — and
+ * the same deliberate exception for a super-admin's borrowed session,
+ * checked after the line test so it stays confined to that line.
+ */
+const requireHr = (req_1, lineId_1, ...args_1) => __awaiter(void 0, [req_1, lineId_1, ...args_1], void 0, function* (req, lineId, what = "this action") {
+    const caller = yield (0, exports.callerContext)(req);
+    if (!lineId || !caller.lineId || caller.lineId !== lineId) {
+        console.warn(`[scope] refused: user ${caller.actorId} (line ${caller.lineId}) ` +
+            `attempted ${what} in line ${lineId}`);
+        throw new errors_1.UnauthorizedError("This is not your municipality's data.");
+    }
+    if (req.impersonated) {
+        return caller;
+    }
+    const hr = yield prisma_1.prisma.module.findFirst({
+        where: {
+            userId: caller.actorId,
+            lineId,
+            moduleName: "human-resources",
+            status: 1,
+        },
+        select: { id: true },
+    });
+    if (!hr) {
+        console.warn(`[scope] refused: user ${caller.actorId} is not HR and attempted ${what}`);
+        throw new errors_1.UnauthorizedError("Only HR can do this.");
+    }
+    return caller;
+});
+exports.requireHr = requireHr;
 /** Acting on a person: it has to be yourself. */
 const requireSelf = (req, userId) => __awaiter(void 0, void 0, void 0, function* () {
     const caller = yield (0, exports.callerContext)(req);
