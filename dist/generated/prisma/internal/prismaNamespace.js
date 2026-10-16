@@ -738,6 +738,8 @@ exports.SubmittedApplicationScalarFieldEnum = {
     spouseSurname: 'spouseSurname',
     spouseFirstname: 'spouseFirstname',
     spouseMiddle: 'spouseMiddle',
+    spouseOccupation: 'spouseOccupation',
+    spouseEmployer: 'spouseEmployer',
     spouseBusinessAddress: 'spouseBusinessAddress',
     spouseTelephone: 'spouseTelephone',
     fatherSurname: 'fatherSurname',

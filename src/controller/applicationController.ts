@@ -886,6 +886,20 @@ export const submitApplication = async (
         middleName: formData.middleName || "N/A",
         birthDate: formData.birthDate,
         placeOfBirth: formData.placeOfBirth,
+
+        /*
+          The spouse block. ApplicationForm.tsx has collected the surname,
+          first and middle name all along and this whitelist never listed
+          them, so every public applicant's spouse was dropped here while
+          the invitation path saved it.
+        */
+        spouseSurname: formData.spouseSurname,
+        spouseFirstname: formData.spouseFirstname,
+        spouseMiddle: formData.spouseMiddle,
+        spouseOccupation: formData.spouseOccupation,
+        spouseEmployer: formData.spouseEmployer,
+        spouseBusinessAddress: formData.spouseBusinessAddress,
+        spouseTelephone: formData.spouseTelephone,
         email: formData.email,
         civilStatus: formData.civilStatus,
 
@@ -1041,6 +1055,9 @@ export const submitApplication = async (
 
       birthDate: clean.birthDate,
       placeOfBirth: clean.placeOfBirth,
+      spouseSurname: clean.spouseSurname,
+      spouseFirstname: clean.spouseFirstname,
+      spouseMiddle: clean.spouseMiddle,
 
       umidNo: clean.umidNo,
       pagIbigNo: clean.pagIbigNo,
@@ -1107,6 +1124,18 @@ export const submitApplication = async (
         // is distinguishable from one where it was left blank.
         placeOfBirth: encrypted.placeOfBirth?.encryptedData || null,
         placeOfBirthIv: encrypted.placeOfBirth?.iv || null,
+
+        spouseSurname: encrypted.spouseSurname?.encryptedData || null,
+        spouseSurnameIv: encrypted.spouseSurname?.iv || null,
+        spouseFirstname: encrypted.spouseFirstname?.encryptedData || null,
+        spouseFirstnameIv: encrypted.spouseFirstname?.iv || null,
+        spouseMiddle: encrypted.spouseMiddle?.encryptedData || null,
+        spouseMiddleIv: encrypted.spouseMiddle?.iv || null,
+        // Plain, like spouseBusinessAddress / spouseTelephone beside them.
+        spouseOccupation: clean.spouseOccupation || null,
+        spouseEmployer: clean.spouseEmployer || null,
+        spouseBusinessAddress: clean.spouseBusinessAddress || null,
+        spouseTelephone: clean.spouseTelephone || null,
 
         gender: formData.gender || "male",
         filipino: clean.citizenship === "filipino",
@@ -2631,6 +2660,18 @@ const APP_ENCRYPTED: Record<string, string> = {
   motherSurname: "motherSurnameIv",
   motherFirstname: "motherFirstnameIv",
   birthDate: "bdayIv",
+  /*
+    placeOfBirth was missing here, so editing an application silently
+    discarded it — the loop below ignores any key it does not recognise.
+
+    The three spouse names were in the PLAIN list while both create paths
+    encrypt them, which meant an edit wrote plaintext into a column the
+    export tries to decrypt.
+  */
+  placeOfBirth: "placeOfBirthIv",
+  spouseSurname: "spouseSurnameIv",
+  spouseFirstname: "spouseFirstnameIv",
+  spouseMiddle: "spouseMiddleIv",
   umidNo: "umidNoIv",
   pagIbigNo: "pagIbigNoIv",
   philHealthNo: "philHealthNoIv",
@@ -2644,7 +2685,7 @@ const APP_PLAIN_STR = new Set([
   "height", "weight", "bloodType", "dualCitizenHalf",
   "resStreet", "resSub", "resZipCode", "reshouseBlock",
   "permaStreet", "permaSub", "permaZipCode", "permahouseBlock",
-  "spouseSurname", "spouseFirstname", "spouseMiddle",
+  "spouseOccupation", "spouseEmployer",
   "spouseBusinessAddress", "spouseTelephone",
   "children", // stored as a JSON string column
 ]);

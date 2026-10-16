@@ -890,6 +890,19 @@ const submitApplication = (req, res) => __awaiter(void 0, void 0, void 0, functi
                 middleName: formData.middleName || "N/A",
                 birthDate: formData.birthDate,
                 placeOfBirth: formData.placeOfBirth,
+                /*
+                  The spouse block. ApplicationForm.tsx has collected the surname,
+                  first and middle name all along and this whitelist never listed
+                  them, so every public applicant's spouse was dropped here while
+                  the invitation path saved it.
+                */
+                spouseSurname: formData.spouseSurname,
+                spouseFirstname: formData.spouseFirstname,
+                spouseMiddle: formData.spouseMiddle,
+                spouseOccupation: formData.spouseOccupation,
+                spouseEmployer: formData.spouseEmployer,
+                spouseBusinessAddress: formData.spouseBusinessAddress,
+                spouseTelephone: formData.spouseTelephone,
                 email: formData.email,
                 civilStatus: formData.civilStatus,
                 bloodType: formData.bloodType,
@@ -1024,6 +1037,9 @@ const submitApplication = (req, res) => __awaiter(void 0, void 0, void 0, functi
             motherFirstname: clean.motherFirstname,
             birthDate: clean.birthDate,
             placeOfBirth: clean.placeOfBirth,
+            spouseSurname: clean.spouseSurname,
+            spouseFirstname: clean.spouseFirstname,
+            spouseMiddle: clean.spouseMiddle,
             umidNo: clean.umidNo,
             pagIbigNo: clean.pagIbigNo,
             philHealthNo: clean.philHealthNo,
@@ -1042,7 +1058,7 @@ const submitApplication = (req, res) => __awaiter(void 0, void 0, void 0, functi
         }
         yield Promise.all(encPromises);
         const result = yield prisma_1.prisma.$transaction((tx) => __awaiter(void 0, void 0, void 0, function* () {
-            var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _0, _1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, _13, _14, _15, _16, _17, _18, _19, _20;
+            var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _0, _1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, _13, _14, _15, _16, _17, _18, _19, _20, _21, _22, _23, _24, _25, _26;
             const municipal = yield tx.municipal.findUnique({
                 where: { id: formData.municipalId },
             });
@@ -1077,6 +1093,17 @@ const submitApplication = (req, res) => __awaiter(void 0, void 0, void 0, functi
                 // is distinguishable from one where it was left blank.
                 placeOfBirth: ((_j = encrypted.placeOfBirth) === null || _j === void 0 ? void 0 : _j.encryptedData) || null,
                 placeOfBirthIv: ((_k = encrypted.placeOfBirth) === null || _k === void 0 ? void 0 : _k.iv) || null,
+                spouseSurname: ((_l = encrypted.spouseSurname) === null || _l === void 0 ? void 0 : _l.encryptedData) || null,
+                spouseSurnameIv: ((_m = encrypted.spouseSurname) === null || _m === void 0 ? void 0 : _m.iv) || null,
+                spouseFirstname: ((_o = encrypted.spouseFirstname) === null || _o === void 0 ? void 0 : _o.encryptedData) || null,
+                spouseFirstnameIv: ((_p = encrypted.spouseFirstname) === null || _p === void 0 ? void 0 : _p.iv) || null,
+                spouseMiddle: ((_q = encrypted.spouseMiddle) === null || _q === void 0 ? void 0 : _q.encryptedData) || null,
+                spouseMiddleIv: ((_r = encrypted.spouseMiddle) === null || _r === void 0 ? void 0 : _r.iv) || null,
+                // Plain, like spouseBusinessAddress / spouseTelephone beside them.
+                spouseOccupation: clean.spouseOccupation || null,
+                spouseEmployer: clean.spouseEmployer || null,
+                spouseBusinessAddress: clean.spouseBusinessAddress || null,
+                spouseTelephone: clean.spouseTelephone || null,
                 gender: formData.gender || "male",
                 filipino: clean.citizenship === "filipino",
                 dualCitizen: clean.citizenship === "dual",
@@ -1087,41 +1114,41 @@ const submitApplication = (req, res) => __awaiter(void 0, void 0, void 0, functi
                 // REQUIRED → NO ENCRYPTION
                 dualCitizenHalf: clean.country || "N/A",
                 // RESIDENTIAL ADDRESS
-                resProvince: ((_l = encrypted.resProvince) === null || _l === void 0 ? void 0 : _l.encryptedData) || "",
-                resProvinceIv: ((_m = encrypted.resProvince) === null || _m === void 0 ? void 0 : _m.iv) || "",
-                resCity: ((_o = encrypted.resCity) === null || _o === void 0 ? void 0 : _o.encryptedData) || "",
-                resCityIv: ((_p = encrypted.resCity) === null || _p === void 0 ? void 0 : _p.iv) || "",
-                resBarangay: ((_q = encrypted.resBarangay) === null || _q === void 0 ? void 0 : _q.encryptedData) || "",
-                resBarangayIv: ((_r = encrypted.resBarangay) === null || _r === void 0 ? void 0 : _r.iv) || "",
+                resProvince: ((_s = encrypted.resProvince) === null || _s === void 0 ? void 0 : _s.encryptedData) || "",
+                resProvinceIv: ((_t = encrypted.resProvince) === null || _t === void 0 ? void 0 : _t.iv) || "",
+                resCity: ((_u = encrypted.resCity) === null || _u === void 0 ? void 0 : _u.encryptedData) || "",
+                resCityIv: ((_v = encrypted.resCity) === null || _v === void 0 ? void 0 : _v.iv) || "",
+                resBarangay: ((_w = encrypted.resBarangay) === null || _w === void 0 ? void 0 : _w.encryptedData) || "",
+                resBarangayIv: ((_x = encrypted.resBarangay) === null || _x === void 0 ? void 0 : _x.iv) || "",
                 resZipCode: clean.resZipCode || "",
                 resZipCodeIv: null,
                 // PERMANENT ADDRESS
-                permaProvince: ((_s = encrypted.permaProvince) === null || _s === void 0 ? void 0 : _s.encryptedData) || "",
-                permaProvinceIv: ((_t = encrypted.permaProvince) === null || _t === void 0 ? void 0 : _t.iv) || "",
-                permaCity: ((_u = encrypted.permaCity) === null || _u === void 0 ? void 0 : _u.encryptedData) || "",
-                permaCityIv: ((_v = encrypted.permaCity) === null || _v === void 0 ? void 0 : _v.iv) || "",
-                permaBarangay: ((_w = encrypted.permaBarangay) === null || _w === void 0 ? void 0 : _w.encryptedData) || "",
-                permaBarangayIv: ((_x = encrypted.permaBarangay) === null || _x === void 0 ? void 0 : _x.iv) || "",
+                permaProvince: ((_y = encrypted.permaProvince) === null || _y === void 0 ? void 0 : _y.encryptedData) || "",
+                permaProvinceIv: ((_z = encrypted.permaProvince) === null || _z === void 0 ? void 0 : _z.iv) || "",
+                permaCity: ((_0 = encrypted.permaCity) === null || _0 === void 0 ? void 0 : _0.encryptedData) || "",
+                permaCityIv: ((_1 = encrypted.permaCity) === null || _1 === void 0 ? void 0 : _1.iv) || "",
+                permaBarangay: ((_2 = encrypted.permaBarangay) === null || _2 === void 0 ? void 0 : _2.encryptedData) || "",
+                permaBarangayIv: ((_3 = encrypted.permaBarangay) === null || _3 === void 0 ? void 0 : _3.iv) || "",
                 permaZipCode: clean.permaZipCode || "",
                 permaZipCodeIv: null,
                 // CONTACTS
-                mobileNo: ((_y = encrypted.mobileNo) === null || _y === void 0 ? void 0 : _y.encryptedData) || "",
-                ivMobileNo: ((_z = encrypted.mobileNo) === null || _z === void 0 ? void 0 : _z.iv) || "",
+                mobileNo: ((_4 = encrypted.mobileNo) === null || _4 === void 0 ? void 0 : _4.encryptedData) || "",
+                ivMobileNo: ((_5 = encrypted.mobileNo) === null || _5 === void 0 ? void 0 : _5.iv) || "",
                 teleNo: formData.telephoneNumber || "",
                 // PHYSICAL INFO
                 height: parseFloat(formData.height) || 0,
                 weight: parseFloat(formData.weight) || 0,
                 bloodType: formData.bloodType || "N/A",
                 // PARENTS — REQUIRED FIELDS
-                fatherSurname: ((_0 = encrypted.fatherSurname) === null || _0 === void 0 ? void 0 : _0.encryptedData) || "N/A",
-                fatherSurnameIv: ((_1 = encrypted.fatherSurname) === null || _1 === void 0 ? void 0 : _1.iv) || null,
-                fatherFirstname: ((_2 = encrypted.fatherFirstname) === null || _2 === void 0 ? void 0 : _2.encryptedData) || "N/A",
-                fatherFirstnameIv: ((_3 = encrypted.fatherFirstname) === null || _3 === void 0 ? void 0 : _3.iv) || null,
+                fatherSurname: ((_6 = encrypted.fatherSurname) === null || _6 === void 0 ? void 0 : _6.encryptedData) || "N/A",
+                fatherSurnameIv: ((_7 = encrypted.fatherSurname) === null || _7 === void 0 ? void 0 : _7.iv) || null,
+                fatherFirstname: ((_8 = encrypted.fatherFirstname) === null || _8 === void 0 ? void 0 : _8.encryptedData) || "N/A",
+                fatherFirstnameIv: ((_9 = encrypted.fatherFirstname) === null || _9 === void 0 ? void 0 : _9.iv) || null,
                 fatherAge: fatherAge,
-                motherSurname: ((_4 = encrypted.motherSurname) === null || _4 === void 0 ? void 0 : _4.encryptedData) || "N/A",
-                motherSurnameIv: ((_5 = encrypted.motherSurname) === null || _5 === void 0 ? void 0 : _5.iv) || null,
-                motherFirstname: ((_6 = encrypted.motherFirstname) === null || _6 === void 0 ? void 0 : _6.encryptedData) || "N/A",
-                motherFirstnameIv: ((_7 = encrypted.motherFirstname) === null || _7 === void 0 ? void 0 : _7.iv) || null,
+                motherSurname: ((_10 = encrypted.motherSurname) === null || _10 === void 0 ? void 0 : _10.encryptedData) || "N/A",
+                motherSurnameIv: ((_11 = encrypted.motherSurname) === null || _11 === void 0 ? void 0 : _11.iv) || null,
+                motherFirstname: ((_12 = encrypted.motherFirstname) === null || _12 === void 0 ? void 0 : _12.encryptedData) || "N/A",
+                motherFirstnameIv: ((_13 = encrypted.motherFirstname) === null || _13 === void 0 ? void 0 : _13.iv) || null,
                 motherAge: motherAge,
                 // EDUCATION - These are Json fields (pass objects directly)
                 elementary: clean.elementary,
@@ -1142,20 +1169,20 @@ const submitApplication = (req, res) => __awaiter(void 0, void 0, void 0, functi
                 disclosures: clean.disclosures,
                 // GOV ID - This is a Json field (pass object directly)
                 govId: clean.govId,
-                umidNo: ((_8 = encrypted.umidNo) === null || _8 === void 0 ? void 0 : _8.encryptedData) || "N/A",
-                umidNoIv: ((_9 = encrypted.umidNo) === null || _9 === void 0 ? void 0 : _9.iv) || null,
-                pagIbigNo: ((_10 = encrypted.pagIbigNo) === null || _10 === void 0 ? void 0 : _10.encryptedData) || "N/A",
-                pagIbigNoIv: ((_11 = encrypted.pagIbigNo) === null || _11 === void 0 ? void 0 : _11.iv) || null,
-                philHealthNo: ((_12 = encrypted.philHealthNo) === null || _12 === void 0 ? void 0 : _12.encryptedData) || "N/A",
-                philHealthNoIv: ((_13 = encrypted.philHealthNo) === null || _13 === void 0 ? void 0 : _13.iv) || null,
-                philSys: ((_14 = encrypted.philSys) === null || _14 === void 0 ? void 0 : _14.encryptedData) || "N/A",
-                philSysIv: ((_15 = encrypted.philSys) === null || _15 === void 0 ? void 0 : _15.iv) || null,
-                tinNo: ((_16 = encrypted.tinNo) === null || _16 === void 0 ? void 0 : _16.encryptedData) || "N/A",
-                tinNoIv: ((_17 = encrypted.tinNo) === null || _17 === void 0 ? void 0 : _17.iv) || null,
-                agencyNo: ((_18 = encrypted.agencyNo) === null || _18 === void 0 ? void 0 : _18.encryptedData) || "N/A",
-                agencyNoIv: ((_19 = encrypted.agencyNo) === null || _19 === void 0 ? void 0 : _19.iv) || null,
+                umidNo: ((_14 = encrypted.umidNo) === null || _14 === void 0 ? void 0 : _14.encryptedData) || "N/A",
+                umidNoIv: ((_15 = encrypted.umidNo) === null || _15 === void 0 ? void 0 : _15.iv) || null,
+                pagIbigNo: ((_16 = encrypted.pagIbigNo) === null || _16 === void 0 ? void 0 : _16.encryptedData) || "N/A",
+                pagIbigNoIv: ((_17 = encrypted.pagIbigNo) === null || _17 === void 0 ? void 0 : _17.iv) || null,
+                philHealthNo: ((_18 = encrypted.philHealthNo) === null || _18 === void 0 ? void 0 : _18.encryptedData) || "N/A",
+                philHealthNoIv: ((_19 = encrypted.philHealthNo) === null || _19 === void 0 ? void 0 : _19.iv) || null,
+                philSys: ((_20 = encrypted.philSys) === null || _20 === void 0 ? void 0 : _20.encryptedData) || "N/A",
+                philSysIv: ((_21 = encrypted.philSys) === null || _21 === void 0 ? void 0 : _21.iv) || null,
+                tinNo: ((_22 = encrypted.tinNo) === null || _22 === void 0 ? void 0 : _22.encryptedData) || "N/A",
+                tinNoIv: ((_23 = encrypted.tinNo) === null || _23 === void 0 ? void 0 : _23.iv) || null,
+                agencyNo: ((_24 = encrypted.agencyNo) === null || _24 === void 0 ? void 0 : _24.encryptedData) || "N/A",
+                agencyNoIv: ((_25 = encrypted.agencyNo) === null || _25 === void 0 ? void 0 : _25.iv) || null,
                 // job linking
-                lineId: (_20 = position.line) === null || _20 === void 0 ? void 0 : _20.id,
+                lineId: (_26 = position.line) === null || _26 === void 0 ? void 0 : _26.id,
                 positionId: formData.positionId,
                 unitPositionId: jobPost.unitPositionId,
                 // REQUIRED Date
@@ -2371,6 +2398,18 @@ const APP_ENCRYPTED = {
     motherSurname: "motherSurnameIv",
     motherFirstname: "motherFirstnameIv",
     birthDate: "bdayIv",
+    /*
+      placeOfBirth was missing here, so editing an application silently
+      discarded it — the loop below ignores any key it does not recognise.
+  
+      The three spouse names were in the PLAIN list while both create paths
+      encrypt them, which meant an edit wrote plaintext into a column the
+      export tries to decrypt.
+    */
+    placeOfBirth: "placeOfBirthIv",
+    spouseSurname: "spouseSurnameIv",
+    spouseFirstname: "spouseFirstnameIv",
+    spouseMiddle: "spouseMiddleIv",
     umidNo: "umidNoIv",
     pagIbigNo: "pagIbigNoIv",
     philHealthNo: "philHealthNoIv",
@@ -2384,7 +2423,7 @@ const APP_PLAIN_STR = new Set([
     "height", "weight", "bloodType", "dualCitizenHalf",
     "resStreet", "resSub", "resZipCode", "reshouseBlock",
     "permaStreet", "permaSub", "permaZipCode", "permahouseBlock",
-    "spouseSurname", "spouseFirstname", "spouseMiddle",
+    "spouseOccupation", "spouseEmployer",
     "spouseBusinessAddress", "spouseTelephone",
     "children", // stored as a JSON string column
 ]);

@@ -532,9 +532,11 @@ const exportPds = (req, res, opts) => __awaiter(void 0, void 0, void 0, function
           the map deliberately so the boxes are filled rather than silently
           skipped. The other three have data and were simply never written.
         */
-        G37: undefined, // spouse name extension — not collected
-        D39: undefined, // spouse occupation — not collected
-        D40: undefined, // spouse employer / business name — not collected
+        // The spouse's name extension is still collected by nothing, so it
+        // prints N/A like any other unfilled box.
+        G37: undefined,
+        D39: app.spouseOccupation,
+        D40: app.spouseEmployer,
         D41: app.spouseBusinessAddress,
         D42: app.spouseTelephone,
         D43: fatherSurname,
