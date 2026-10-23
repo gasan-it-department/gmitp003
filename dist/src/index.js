@@ -340,7 +340,7 @@ app.get("/test/ai", (request, reply) => __awaiter(void 0, void 0, void 0, functi
 const handler_1 = require("./middleware/handler");
 const encryption_1 = require("./service/encryption");
 const reencryptPii_1 = require("./service/reencryptPii");
-const BUILD_TAG = "2026-10-23-backfill-runner";
+const BUILD_TAG = "2026-10-23-rotatable-flag";
 /**
  * Can this container actually rasterise a PDF page?
  *

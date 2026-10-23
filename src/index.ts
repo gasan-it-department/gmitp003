@@ -310,7 +310,7 @@ import {
   maybeRunReencryptionAtBoot,
 } from "./service/reencryptPii";
 
-const BUILD_TAG = "2026-10-23-backfill-runner";
+const BUILD_TAG = "2026-10-23-rotatable-flag";
 
 /**
  * Can this container actually rasterise a PDF page?

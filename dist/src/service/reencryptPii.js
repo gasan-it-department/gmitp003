@@ -230,12 +230,17 @@ const runReencryption = (opts) => __awaiter(void 0, void 0, void 0, function* ()
       Getting this wrong invites rotating JWT_SECRET while legacy values
       still depend on it, destroying them.
     */
+    /*
+      A DRY run that finds nothing is the proof, which is why `apply` is not
+      required here. Requiring it made the flag unreachable: an apply run
+      counts the legacy values it has just converted, so `legacy` is never
+      zero on the pass that does the work, and a dry run was disqualified
+      for not writing. The question being answered is "does anything still
+      depend on JWT_SECRET", and a full unfiltered scan reporting zero
+      answers it whether or not it was willing to write.
+    */
     result.jwtSecretNowRotatable =
-        opts.apply &&
-            !result.totals.failed &&
-            !result.totals.legacy &&
-            !ONLY &&
-            !FROM_KEY;
+        !result.totals.failed && !result.totals.legacy && !ONLY && !FROM_KEY;
     return result;
 });
 exports.runReencryption = runReencryption;
