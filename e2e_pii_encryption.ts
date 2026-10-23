@@ -204,6 +204,17 @@ const SAMPLE = "Maria Elena Sanchez-O'Brien ñ 09171234567";
 
     process.env.PII_ENCRYPTION_KEY = KEY;
     E = load();
+    const fpA = E.encryptionPosture().keyFingerprint;
+    process.env.PII_ENCRYPTION_KEY = "c".repeat(64);
+    E = load();
+    const fpC = E.encryptionPosture().keyFingerprint;
+    ok("the key fingerprint CHANGES when the key does, so a rotation is " +
+      "verifiable from outside", !!fpA && !!fpC && fpA !== fpC, fpA + " vs " + fpC);
+    ok("and it is a fingerprint, not the key",
+      (fpA||"").length === 16 && !KEY.includes(fpA||"zzz"), String(fpA));
+    process.env.PII_ENCRYPTION_KEY = KEY;
+    E = load();
+
     ok("with a good key, posture reports aes-256-gcm",
       E.encryptionPosture().writesWith === "aes-256-gcm" &&
       E.encryptionPosture().coupledToJwtSecret === false,

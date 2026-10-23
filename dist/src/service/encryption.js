@@ -244,7 +244,22 @@ const encryptionPosture = () => {
     catch (e) {
         keyError = e instanceof Error ? e.message : String(e);
     }
-    return Object.assign(Object.assign({ writesWith: configured ? "aes-256-gcm" : "aes-192-cbc (legacy)", piiKeyConfigured: configured, 
+    /*
+      A fingerprint, not the key: 16 hex characters of SHA-256 over the key
+      material. It reveals nothing and it CHANGES when the key changes,
+      which is the only way to confirm from outside that a rotation actually
+      took effect — `piiKeyConfigured: true` looks identical before and
+      after. The signing certificate is reported the same way.
+    */
+    let fingerprint = null;
+    if (configured) {
+        const k = process.env.PII_ENCRYPTION_KEY.trim().toLowerCase();
+        fingerprint = (0, node_crypto_1.createHash)("sha256")
+            .update(Buffer.from(k, "hex"))
+            .digest("hex")
+            .slice(0, 16);
+    }
+    return Object.assign(Object.assign({ writesWith: configured ? "aes-256-gcm" : "aes-192-cbc (legacy)", keyFingerprint: fingerprint, piiKeyConfigured: configured, 
         /*
           The headline. While this is true the session secret and the key to
           every name, email and phone number are the same string, and rotating

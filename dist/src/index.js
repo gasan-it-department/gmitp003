@@ -339,7 +339,7 @@ app.get("/test/ai", (request, reply) => __awaiter(void 0, void 0, void 0, functi
 // tag with each meaningful deploy.
 const handler_1 = require("./middleware/handler");
 const encryption_1 = require("./service/encryption");
-const BUILD_TAG = "2026-10-23-pii-key-split";
+const BUILD_TAG = "2026-10-23-key-fingerprint";
 /**
  * Can this container actually rasterise a PDF page?
  *

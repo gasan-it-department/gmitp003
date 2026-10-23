@@ -44,6 +44,7 @@
  * `npx ts-node --transpile-only reencrypt_pii.ts`.
  */
 import {
+  createHash,
   scrypt,
   randomBytes,
   randomFill,
@@ -268,8 +269,24 @@ export const encryptionPosture = () => {
   } catch (e) {
     keyError = e instanceof Error ? e.message : String(e);
   }
+  /*
+    A fingerprint, not the key: 16 hex characters of SHA-256 over the key
+    material. It reveals nothing and it CHANGES when the key changes,
+    which is the only way to confirm from outside that a rotation actually
+    took effect — `piiKeyConfigured: true` looks identical before and
+    after. The signing certificate is reported the same way.
+  */
+  let fingerprint: string | null = null;
+  if (configured) {
+    const k = process.env.PII_ENCRYPTION_KEY!.trim().toLowerCase();
+    fingerprint = createHash("sha256")
+      .update(Buffer.from(k, "hex"))
+      .digest("hex")
+      .slice(0, 16);
+  }
   return {
     writesWith: configured ? "aes-256-gcm" : "aes-192-cbc (legacy)",
+    keyFingerprint: fingerprint,
     piiKeyConfigured: configured,
     /*
       The headline. While this is true the session secret and the key to

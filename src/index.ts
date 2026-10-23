@@ -306,7 +306,7 @@ app.get("/test/ai", async (request: FastifyRequest, reply: FastifyReply) => {
 import { authPosture } from "./middleware/handler";
 import { encryptionPosture } from "./service/encryption";
 
-const BUILD_TAG = "2026-10-23-pii-key-split";
+const BUILD_TAG = "2026-10-23-key-fingerprint";
 
 /**
  * Can this container actually rasterise a PDF page?
