@@ -305,8 +305,12 @@ app.get("/test/ai", async (request: FastifyRequest, reply: FastifyReply) => {
 // tag with each meaningful deploy.
 import { authPosture } from "./middleware/handler";
 import { encryptionPosture } from "./service/encryption";
+import {
+  lastReencryption,
+  maybeRunReencryptionAtBoot,
+} from "./service/reencryptPii";
 
-const BUILD_TAG = "2026-10-23-key-fingerprint";
+const BUILD_TAG = "2026-10-23-backfill-runner";
 
 /**
  * Can this container actually rasterise a PDF page?
@@ -386,6 +390,7 @@ app.get("/health/build", async () => {
     lastSweep,
     auth: authPosture(),
     encryption: encryptionPosture(),
+    piiBackfill: lastReencryption(),
     pdfSigning: await signingIdentity(),
     objectStorage: await blobStoreStatus(),
     blobs: await (async () => {
@@ -457,6 +462,13 @@ app.listen({ port: 3000, host: "0.0.0.0" }, (err, address) => {
       "[pades] PDF_SIGN_DISABLED=1 — documents are going out UNSIGNED.",
     );
   }
+  /*
+    Driven by a variable so the migration can be run without opening the
+    production database to the internet. Deliberately not awaited: a slow
+    pass must not hold up the server accepting requests.
+  */
+  void maybeRunReencryptionAtBoot();
+
   if (encryptionPosture().coupledToJwtSecret) {
     console.warn(
       "[pii] PII_ENCRYPTION_KEY is not set — personal data is encrypted " +

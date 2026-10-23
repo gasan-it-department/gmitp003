@@ -339,7 +339,8 @@ app.get("/test/ai", (request, reply) => __awaiter(void 0, void 0, void 0, functi
 // tag with each meaningful deploy.
 const handler_1 = require("./middleware/handler");
 const encryption_1 = require("./service/encryption");
-const BUILD_TAG = "2026-10-23-key-fingerprint";
+const reencryptPii_1 = require("./service/reencryptPii");
+const BUILD_TAG = "2026-10-23-backfill-runner";
 /**
  * Can this container actually rasterise a PDF page?
  *
@@ -418,6 +419,7 @@ app.get("/health/build", () => __awaiter(void 0, void 0, void 0, function* () {
         lastSweep,
         auth: (0, handler_1.authPosture)(),
         encryption: (0, encryption_1.encryptionPosture)(),
+        piiBackfill: (0, reencryptPii_1.lastReencryption)(),
         pdfSigning: yield signingIdentity(),
         objectStorage: yield blobStoreStatus(),
         blobs: yield (() => __awaiter(void 0, void 0, void 0, function* () {
@@ -477,6 +479,12 @@ app.listen({ port: 3000, host: "0.0.0.0" }, (err, address) => {
     if (process.env.PDF_SIGN_DISABLED === "1") {
         console.warn("[pades] PDF_SIGN_DISABLED=1 — documents are going out UNSIGNED.");
     }
+    /*
+      Driven by a variable so the migration can be run without opening the
+      production database to the internet. Deliberately not awaited: a slow
+      pass must not hold up the server accepting requests.
+    */
+    void (0, reencryptPii_1.maybeRunReencryptionAtBoot)();
     if ((0, encryption_1.encryptionPosture)().coupledToJwtSecret) {
         console.warn("[pii] PII_ENCRYPTION_KEY is not set — personal data is encrypted " +
             "with JWT_SECRET. Rotating JWT_SECRET would make every encrypted " +

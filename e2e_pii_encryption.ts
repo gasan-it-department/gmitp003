@@ -244,6 +244,26 @@ const SAMPLE = "Maria Elena Sanchez-O'Brien ñ 09171234567";
     else process.env.PII_ENCRYPTION_KEY = envBefore.PII;
   }
 
+  /*
+    The boot hook can rewrite every encrypted column in the database, so
+    what it does when NOT asked matters more than what it does when asked.
+    Both paths below return before touching prisma, so no database
+    connection is made here.
+  */
+  console.log("");
+  console.log("-- the boot hook only runs when explicitly told to --");
+  const boot = require(
+    path.join(process.cwd(), "src", "service", "reencryptPii.ts"),
+  ) as typeof import("./src/service/reencryptPii");
+  delete process.env.PII_BACKFILL;
+  await boot.maybeRunReencryptionAtBoot();
+  ok("unset: does not run", boot.lastReencryption() === null);
+  process.env.PII_BACKFILL = "yes";
+  await boot.maybeRunReencryptionAtBoot();
+  ok("an unrecognised value is ignored rather than guessed at",
+    boot.lastReencryption() === null);
+  delete process.env.PII_BACKFILL;
+
   console.log(`\n${pass} passed, ${fails.length} failed`);
   process.exit(fails.length ? 1 : 0);
 })();
