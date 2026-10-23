@@ -126,8 +126,28 @@ app.register(multipart, {
     files: 10,
   },
 });
+/*
+  Sessions expire.
+
+  Tokens used to be minted with no `exp` claim at all, which made a stolen
+  one valid FOR EVER: there was no logout, no rotation and no timeout that
+  could take it back. The only revocation was deleting the account or
+  suspending the line.
+
+  Thirty days rather than a few hours because the two desktop clients are
+  offline-first — the inventory and pharmacy apps hold a session and keep
+  working with no network, so a short expiry would lock staff out in the
+  field with no way to sign in again. Thirty days bounds the damage to a
+  month while leaving those apps usable; a refresh-token flow is the
+  proper answer and is a separate piece of work.
+
+  Set here rather than at the four call sites so that a fifth one, written
+  later, cannot forget it. A per-call `expiresIn` still wins, which is how
+  the OTP tokens keep their ten minutes.
+*/
 app.register(jwt, {
   secret: process.env.JWT_SECRET!,
+  sign: { expiresIn: process.env.JWT_EXPIRES_IN || "30d" },
 });
 app.register(import("@fastify/rate-limit"), {
   max: 100,
@@ -283,7 +303,7 @@ app.get("/test/ai", async (request: FastifyRequest, reply: FastifyReply) => {
 // Public build marker — lets anyone (including the assistant) CONFIRM which
 // build is actually serving, instead of trusting deploy timers. Bump the
 // tag with each meaningful deploy.
-const BUILD_TAG = "2026-10-16-step-increments";
+const BUILD_TAG = "2026-10-23-auth-hardening";
 
 /**
  * Can this container actually rasterise a PDF page?

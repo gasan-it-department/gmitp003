@@ -127,7 +127,11 @@ export const medicine = (fastify: FastifyInstance) => {
   );
 
   fastify.get("/medicine/items", { preHandler: authenticated }, storageMeds);
-  fastify.get("/medicine/storage-item", storageMedList);
+  fastify.get(
+    "/medicine/storage-item",
+    { preHandler: authenticated },
+    storageMedList,
+  );
   // ONE low-stock threshold per MEDICINE — alerts on the medicine TOTAL.
   fastify.patch(
     "/medicine/low-stock-threshold",

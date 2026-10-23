@@ -3,9 +3,11 @@ import { prisma, Prisma } from "../barrel/prisma";
 import {
   AppError,
   NotFoundError,
+  UnauthorizedError,
   ValidationError,
   dbError,
 } from "../errors/errors";
+import { callerContext } from "../service/callerScope";
 
 //
 
@@ -1473,6 +1475,14 @@ export const addStorageMedInList = async (
     throw error;
   }
 };
+/**
+ * GET /medicine/storage-item — the medicines held in the caller's line.
+ *
+ * The line comes from the TOKEN, not from `?lineId=`. It used to come from
+ * the query string on an ungated route, which meant anyone on the internet
+ * could read any municipality's medicine list by naming it — and, passing
+ * no lineId at all, read several at once.
+ */
 export const storageMedList = async (
   req: FastifyRequest,
   res: FastifyReply,
@@ -1480,9 +1490,23 @@ export const storageMedList = async (
   const params = req.query as PagingProps;
 
   try {
+    const caller = await callerContext(req);
+    if (!caller.lineId) {
+      throw new UnauthorizedError("Your account is not attached to a line.");
+    }
+    /*
+      A lineId in the query is honoured only when it is the caller's own, so
+      an old client that still sends it keeps working and a forged one is
+      refused rather than silently widened.
+    */
+    if (params.lineId && params.lineId !== caller.lineId) {
+      throw new UnauthorizedError("This is not your municipality's data.");
+    }
+    const lineId = caller.lineId;
+
     const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
     const limit = params.limit ? parseInt(params.limit) : 20;
-    const filter: any = {};
+    const filter: any = { lineId };
 
     if (params.query) {
       filter.medicine = {
@@ -1492,15 +1516,12 @@ export const storageMedList = async (
         },
       };
     }
-    if (params.lineId) {
-      filter.lineId = params.lineId;
-    }
 
     const response = await prisma.medicine.findMany({
       where: {
         MedicineStock: {
           some: {
-            lineId: params.lineId as string,
+            lineId,
           },
         },
         ...filter,

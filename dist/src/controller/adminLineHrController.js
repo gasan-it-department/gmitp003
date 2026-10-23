@@ -93,12 +93,17 @@ const openLineHrSession = (req, reply) => __awaiter(void 0, void 0, void 0, func
             console.warn("[admin hr-session] audit log failed:", e);
         }
     }
+    /*
+      Two hours, not the thirty days an ordinary session gets. This token
+      lets a super-admin act inside someone else's municipality, so it
+      should last about as long as the job in hand and no longer.
+    */
     const token = yield reply.jwtSign({
         id: accountId,
         username,
         imp: true,
         impLineId: lineId,
-    });
+    }, { expiresIn: "2h" });
     // `userId` is the User behind the account. The web keys its session on it and
     // sends it as `userId` on every write — the audit rows are FKs to User, so
     // handing back the ACCOUNT id here made every HR save fail (500 / P2003).

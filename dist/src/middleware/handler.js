@@ -28,6 +28,30 @@ const RESEND_FROM = process.env.RESEND_FROM || HR_EMAIL;
 const resend = process.env.RESEND_API_KEY
     ? new resend_1.Resend(process.env.RESEND_API_KEY)
     : null;
+/**
+ * Verify the bearer token, and refuse one that never expires.
+ *
+ * Every token minted before session expiry was introduced carries no `exp`
+ * claim, so it is valid for ever and nothing can take it back. Those are
+ * exactly the tokens worth stealing, so they are refused here: the holder
+ * signs in again and gets one that ages.
+ *
+ * ALLOW_LEGACY_TOKENS=1 reprieves them, for a staged rollout — deploying
+ * this signs out everyone currently signed in, the two offline desktop
+ * clients included, and they need a network and their password to come
+ * back. Unset, which is the default, is the secure state.
+ */
+const verifyBearer = (request) => __awaiter(void 0, void 0, void 0, function* () {
+    const decoded = yield request.jwtVerify();
+    if (typeof decoded.exp !== "number") {
+        if (process.env.ALLOW_LEGACY_TOKENS === "1") {
+            console.warn("[auth] accepted a non-expiring legacy token");
+            return decoded;
+        }
+        throw new Error("This session predates session expiry. Please sign in again.");
+    }
+    return decoded;
+});
 const tempAuthenticated = (request, reply) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const authHeader = request.headers.authorization;
@@ -38,7 +62,7 @@ const tempAuthenticated = (request, reply) => __awaiter(void 0, void 0, void 0, 
         if (!token) {
             throw new Error("No token provided");
         }
-        const decoded = yield request.jwtVerify();
+        const decoded = yield verifyBearer(request);
         const temp = yield prisma_2.prisma.submittedApplication.findUnique({
             where: {
                 id: decoded.username,
@@ -72,7 +96,7 @@ const adminAuthenticated = (request, reply) => __awaiter(void 0, void 0, void 0,
         // The raw token and the decoded payload were logged here. A bearer
         // token in the logs is a credential in the logs: anyone who can read
         // them can act as that admin until it expires.
-        const decoded = yield request.jwtVerify();
+        const decoded = yield verifyBearer(request);
         const user = yield prisma_2.prisma.admin.findUnique({
             where: {
                 id: decoded.id,
@@ -130,7 +154,7 @@ const authenticated = (request, reply) => __awaiter(void 0, void 0, void 0, func
         if (!token) {
             throw new Error("No token provided");
         }
-        const decoded = yield request.jwtVerify();
+        const decoded = yield verifyBearer(request);
         const user = yield prisma_2.prisma.account.findUnique({
             where: {
                 id: decoded.id,

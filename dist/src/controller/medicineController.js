@@ -33,6 +33,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.updateMedicineThreshold = exports.medicineBulkUpload = exports.exportMedicineReport = exports.medicineDispenseInsights = exports.dispenseHistoryExport = exports.dispenseHistoryDetail = exports.dispenseHistoryList = exports.directDispenseMulti = exports.directDispenseBulk = exports.createDispenseRecord = exports.bulkAddMedicineStock = exports.medicineSync = exports.recordMedicineScan = exports.scanLowStock = exports.removeStorage = exports.storageData = exports.exportExpirationList = exports.expirationList = exports.medicineOverview = exports.removeMedicine = exports.medicineTransactions = exports.updateMedicineStock = exports.removeStock = exports.updateStock = exports.transferMedicine = exports.viewNotification = exports.medicineNotification = exports.newPrescriptionCount = exports.setMedicineLowStockThreshold = exports.storageMedList = exports.addStorageMedInList = exports.editMedicineStock = exports.consolidateSplitBatches = exports.storageMeds = exports.searchMedicineStock = exports.medicineLogList = exports.addStorageMed = exports.multiAddMed = exports.addMedFromExcel = exports.attachMedicineBarcode = exports.updateMedicineEntry = exports.medicineList = exports.addMedicineStorage = exports.medicineStorage = void 0;
 const prisma_1 = require("../barrel/prisma");
 const errors_1 = require("../errors/errors");
+const callerScope_1 = require("../service/callerScope");
 //
 const path_1 = __importDefault(require("path"));
 const exceljs_1 = __importDefault(require("exceljs"));
@@ -1265,12 +1266,33 @@ const addStorageMedInList = (req, res) => __awaiter(void 0, void 0, void 0, func
     }
 });
 exports.addStorageMedInList = addStorageMedInList;
+/**
+ * GET /medicine/storage-item — the medicines held in the caller's line.
+ *
+ * The line comes from the TOKEN, not from `?lineId=`. It used to come from
+ * the query string on an ungated route, which meant anyone on the internet
+ * could read any municipality's medicine list by naming it — and, passing
+ * no lineId at all, read several at once.
+ */
 const storageMedList = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     const params = req.query;
     try {
+        const caller = yield (0, callerScope_1.callerContext)(req);
+        if (!caller.lineId) {
+            throw new errors_1.UnauthorizedError("Your account is not attached to a line.");
+        }
+        /*
+          A lineId in the query is honoured only when it is the caller's own, so
+          an old client that still sends it keeps working and a forged one is
+          refused rather than silently widened.
+        */
+        if (params.lineId && params.lineId !== caller.lineId) {
+            throw new errors_1.UnauthorizedError("This is not your municipality's data.");
+        }
+        const lineId = caller.lineId;
         const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
         const limit = params.limit ? parseInt(params.limit) : 20;
-        const filter = {};
+        const filter = { lineId };
         if (params.query) {
             filter.medicine = {
                 name: {
@@ -1279,13 +1301,10 @@ const storageMedList = (req, res) => __awaiter(void 0, void 0, void 0, function*
                 },
             };
         }
-        if (params.lineId) {
-            filter.lineId = params.lineId;
-        }
         const response = yield prisma_1.prisma.medicine.findMany({
             where: Object.assign({ MedicineStock: {
                     some: {
-                        lineId: params.lineId,
+                        lineId,
                     },
                 } }, filter),
             skip: cursor ? 1 : 0,

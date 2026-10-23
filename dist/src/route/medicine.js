@@ -28,7 +28,7 @@ const medicine = (fastify) => {
     fastify.post("/medicine/storage/add-storage-location", { preHandler: handler_1.authenticated }, medicineController_1.addMedicineStorage);
     fastify.get("/medicine/storage-list", { preHandler: handler_1.authenticated }, medicineController_1.medicineList);
     fastify.get("/medicine/items", { preHandler: handler_1.authenticated }, medicineController_1.storageMeds);
-    fastify.get("/medicine/storage-item", medicineController_1.storageMedList);
+    fastify.get("/medicine/storage-item", { preHandler: handler_1.authenticated }, medicineController_1.storageMedList);
     // ONE low-stock threshold per MEDICINE — alerts on the medicine TOTAL.
     fastify.patch("/medicine/low-stock-threshold", { preHandler: handler_1.authenticated }, medicineController_1.setMedicineLowStockThreshold);
     fastify.post("/add-medicine", { preHandler: handler_1.authenticated }, medicineController_1.addStorageMed);

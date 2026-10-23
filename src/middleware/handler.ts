@@ -17,6 +17,35 @@ const resend = process.env.RESEND_API_KEY
   ? new Resend(process.env.RESEND_API_KEY)
   : null;
 
+/**
+ * Verify the bearer token, and refuse one that never expires.
+ *
+ * Every token minted before session expiry was introduced carries no `exp`
+ * claim, so it is valid for ever and nothing can take it back. Those are
+ * exactly the tokens worth stealing, so they are refused here: the holder
+ * signs in again and gets one that ages.
+ *
+ * ALLOW_LEGACY_TOKENS=1 reprieves them, for a staged rollout — deploying
+ * this signs out everyone currently signed in, the two offline desktop
+ * clients included, and they need a network and their password to come
+ * back. Unset, which is the default, is the secure state.
+ */
+const verifyBearer = async <T extends object>(
+  request: FastifyRequest,
+): Promise<T & { exp?: number }> => {
+  const decoded = await request.jwtVerify<T & { exp?: number }>();
+  if (typeof decoded.exp !== "number") {
+    if (process.env.ALLOW_LEGACY_TOKENS === "1") {
+      console.warn("[auth] accepted a non-expiring legacy token");
+      return decoded;
+    }
+    throw new Error(
+      "This session predates session expiry. Please sign in again.",
+    );
+  }
+  return decoded;
+};
+
 export const tempAuthenticated = async (
   request: FastifyRequest,
   reply: FastifyReply,
@@ -32,7 +61,7 @@ export const tempAuthenticated = async (
     if (!token) {
       throw new Error("No token provided");
     }
-    const decoded = await request.jwtVerify<{ username: string }>();
+    const decoded = await verifyBearer<{ username: string }>(request);
     const temp = await prisma.submittedApplication.findUnique({
       where: {
         id: decoded.username,
@@ -72,7 +101,7 @@ export const adminAuthenticated = async (
     // The raw token and the decoded payload were logged here. A bearer
     // token in the logs is a credential in the logs: anyone who can read
     // them can act as that admin until it expires.
-    const decoded = await request.jwtVerify<{ id: string }>();
+    const decoded = await verifyBearer<{ id: string }>(request);
 
     const user = await prisma.admin.findUnique({
       where: {
@@ -136,7 +165,7 @@ export const authenticated = async (
     if (!token) {
       throw new Error("No token provided");
     }
-    const decoded = await request.jwtVerify<{ id: string; imp?: boolean }>();
+    const decoded = await verifyBearer<{ id: string; imp?: boolean }>(request);
     const user = await prisma.account.findUnique({
       where: {
         id: decoded.id,
