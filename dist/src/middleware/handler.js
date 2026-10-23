@@ -12,7 +12,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.lineStatus = exports.phNumberFormat = exports.getAreaData = exports.generateOTPCode = exports.sendEmail = exports.generateDispenseRef = exports.generatePrescriptionRef = exports.generateMedRef = exports.generateStorageRef = exports.generatedInvitationCode = exports.generateItemRef = exports.generateOrderRef = exports.generatedItemCode = exports.viewContainerAuth = exports.generatedBoxCode = exports.medicineAccessAuth = exports.attendanceMobileAuth = exports.documentMobileAuth = exports.pharmacyMobileAuth = exports.authenticated = exports.callerUserId = exports.adminAuthenticated = exports.tempAuthenticated = void 0;
+exports.lineStatus = exports.phNumberFormat = exports.getAreaData = exports.generateOTPCode = exports.sendEmail = exports.generateDispenseRef = exports.generatePrescriptionRef = exports.generateMedRef = exports.generateStorageRef = exports.generatedInvitationCode = exports.generateItemRef = exports.generateOrderRef = exports.generatedItemCode = exports.viewContainerAuth = exports.generatedBoxCode = exports.medicineAccessAuth = exports.attendanceMobileAuth = exports.documentMobileAuth = exports.pharmacyMobileAuth = exports.authenticated = exports.callerUserId = exports.adminAuthenticated = exports.tempAuthenticated = exports.authPosture = void 0;
 const prisma_1 = require("../barrel/prisma");
 const prisma_2 = require("../barrel/prisma");
 const errors_1 = require("../errors/errors");
@@ -41,6 +41,29 @@ const resend = process.env.RESEND_API_KEY
  * clients included, and they need a network and their password to come
  * back. Unset, which is the default, is the secure state.
  */
+/**
+ * What the gate is actually doing right now, for /health/build.
+ *
+ * Reported because the dangerous states here are SILENT. A deploy that
+ * still accepts non-expiring tokens looks exactly like one that does not,
+ * and so does a deploy signing PDFs with nothing at all. Someone removing
+ * ALLOW_LEGACY_TOKENS needs to be able to see that it took effect rather
+ * than trust that it did.
+ */
+const authPosture = () => {
+    const legacy = process.env.ALLOW_LEGACY_TOKENS === "1";
+    return {
+        tokenExpiry: process.env.JWT_EXPIRES_IN || "30d",
+        impersonationExpiry: "2h",
+        legacyTokensAccepted: legacy,
+        sessionsExpire: !legacy,
+        note: legacy
+            ? "ALLOW_LEGACY_TOKENS=1 — tokens minted before expiry existed are " +
+                "still accepted and never expire. Remove the variable to close this."
+            : "Every token must carry an exp claim.",
+    };
+};
+exports.authPosture = authPosture;
 const verifyBearer = (request) => __awaiter(void 0, void 0, void 0, function* () {
     const decoded = yield request.jwtVerify();
     if (typeof decoded.exp !== "number") {

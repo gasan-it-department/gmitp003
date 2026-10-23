@@ -329,6 +329,7 @@ exports.padesSign = padesSign;
  */
 const signingIdentity = () => __awaiter(void 0, void 0, void 0, function* () {
     var _a, _b, _c;
+    const enabled = process.env.PDF_SIGN_DISABLED !== "1";
     try {
         // Asked of the loader rather than guessed from the environment, so
         // /health/build reports where the key actually came from.
@@ -340,13 +341,15 @@ const signingIdentity = () => __awaiter(void 0, void 0, void 0, function* () {
         const bag = (_a = store.getBags({ bagType: f.pki.oids.certBag })[f.pki.oids.certBag]) === null || _a === void 0 ? void 0 : _a[0];
         const cert = bag === null || bag === void 0 ? void 0 : bag.cert;
         if (!cert)
-            return Object.assign({ source, fingerprint: null, subject: null, notAfter: null }, (envRejected ? { envVar: envRejected } : {}));
+            return Object.assign({ enabled,
+                source, fingerprint: null, subject: null, notAfter: null }, (envRejected ? { envVar: envRejected } : {}));
         const der = f.asn1.toDer(f.pki.certificateToAsn1(cert)).getBytes();
         const sha = crypto_1.default
             .createHash("sha256")
             .update(Buffer.from(der, "binary"))
             .digest("hex");
-        return Object.assign(Object.assign({ source }, (envRejected ? { envVar: envRejected } : {})), { fingerprint: sha.slice(0, 16), subject: (_c = (_b = cert.subject.getField("CN")) === null || _b === void 0 ? void 0 : _b.value) !== null && _c !== void 0 ? _c : null, notAfter: cert.validity.notAfter.toISOString() });
+        return Object.assign(Object.assign({ enabled,
+            source }, (envRejected ? { envVar: envRejected } : {})), { fingerprint: sha.slice(0, 16), subject: (_c = (_b = cert.subject.getField("CN")) === null || _b === void 0 ? void 0 : _b.value) !== null && _c !== void 0 ? _c : null, notAfter: cert.validity.notAfter.toISOString() });
     }
     catch (e) {
         /*
@@ -356,6 +359,7 @@ const signingIdentity = () => __awaiter(void 0, void 0, void 0, function* () {
           tell a mangled paste from a wrong passphrase.
         */
         return {
+            enabled,
             source: "unavailable",
             fingerprint: null,
             subject: null,

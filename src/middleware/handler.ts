@@ -30,6 +30,29 @@ const resend = process.env.RESEND_API_KEY
  * clients included, and they need a network and their password to come
  * back. Unset, which is the default, is the secure state.
  */
+/**
+ * What the gate is actually doing right now, for /health/build.
+ *
+ * Reported because the dangerous states here are SILENT. A deploy that
+ * still accepts non-expiring tokens looks exactly like one that does not,
+ * and so does a deploy signing PDFs with nothing at all. Someone removing
+ * ALLOW_LEGACY_TOKENS needs to be able to see that it took effect rather
+ * than trust that it did.
+ */
+export const authPosture = () => {
+  const legacy = process.env.ALLOW_LEGACY_TOKENS === "1";
+  return {
+    tokenExpiry: process.env.JWT_EXPIRES_IN || "30d",
+    impersonationExpiry: "2h",
+    legacyTokensAccepted: legacy,
+    sessionsExpire: !legacy,
+    note: legacy
+      ? "ALLOW_LEGACY_TOKENS=1 — tokens minted before expiry existed are " +
+        "still accepted and never expire. Remove the variable to close this."
+      : "Every token must carry an exp claim.",
+  };
+};
+
 const verifyBearer = async <T extends object>(
   request: FastifyRequest,
 ): Promise<T & { exp?: number }> => {

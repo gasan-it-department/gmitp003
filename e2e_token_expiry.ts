@@ -31,7 +31,7 @@ require.cache[entry] = {
 import Fastify from "fastify";
 import jwt from "@fastify/jwt";
 import { prisma } from "./src/barrel/prisma";
-import { authenticated } from "./src/middleware/handler";
+import { authPosture, authenticated } from "./src/middleware/handler";
 
 let pass = 0;
 const fails: string[] = [];
@@ -160,6 +160,35 @@ const buildLegacy = async () => {
     const dead = await call(expired);
     ok("an expired token is refused", dead.statusCode === 401,
       `${dead.statusCode} ${dead.body.slice(0, 90)}`);
+    // -- what /health/build will say about all this ------------------
+    console.log("");
+    console.log("-- the posture report --");
+    delete process.env.ALLOW_LEGACY_TOKENS;
+    const closed = authPosture();
+    ok("with the flag unset it reports sessions expiring",
+      closed.sessionsExpire === true && closed.legacyTokensAccepted === false,
+      JSON.stringify(closed));
+    ok("and names the expiry", closed.tokenExpiry === "30d",
+      closed.tokenExpiry);
+
+    process.env.ALLOW_LEGACY_TOKENS = "1";
+    const open = authPosture();
+    ok("with the flag set it admits it", open.legacyTokensAccepted === true &&
+      open.sessionsExpire === false, JSON.stringify(open));
+    ok("and the note says how to close it",
+      /Remove the variable/i.test(open.note), open.note);
+    delete process.env.ALLOW_LEGACY_TOKENS;
+
+    /*
+      The report has to track the gate, not merely exist — a posture that
+      says "closed" while the gate lets legacy tokens through would be
+      worse than not reporting at all.
+    */
+    const reportSaysClosed = authPosture().sessionsExpire;
+    const gateRefuses = (await call(oldTok)).statusCode === 401;
+    ok("the report agrees with what the gate actually does",
+      reportSaysClosed === gateRefuses,
+      `report=${reportSaysClosed} gate401=${gateRefuses}`);
   } finally {
     if (hadFlag === undefined) delete process.env.ALLOW_LEGACY_TOKENS;
     else process.env.ALLOW_LEGACY_TOKENS = hadFlag;

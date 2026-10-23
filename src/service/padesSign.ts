@@ -345,6 +345,13 @@ export const padesSign = async (
  * every batch of documents is being signed by a different stranger.
  */
 export const signingIdentity = async (): Promise<{
+  /*
+    PDF_SIGN_DISABLED=1 skips signing entirely and says nothing. An
+    instance with it set is indistinguishable from a working one unless
+    this is reported, so documents would come out unsigned and nobody
+    would find out until a reader was asked to validate one.
+  */
+  enabled: boolean;
   source: IdentitySource | "unavailable";
   fingerprint: string | null;
   subject: string | null;
@@ -355,6 +362,7 @@ export const signingIdentity = async (): Promise<{
   /** Set when PDF_SIGN_P12_BASE64 was present but unusable. */
   envVar?: string;
 }> => {
+  const enabled = process.env.PDF_SIGN_DISABLED !== "1";
   try {
     // Asked of the loader rather than guessed from the environment, so
     // /health/build reports where the key actually came from.
@@ -369,6 +377,7 @@ export const signingIdentity = async (): Promise<{
     const cert = bag?.cert;
     if (!cert)
       return {
+        enabled,
         source,
         fingerprint: null,
         subject: null,
@@ -381,6 +390,7 @@ export const signingIdentity = async (): Promise<{
       .update(Buffer.from(der, "binary"))
       .digest("hex");
     return {
+      enabled,
       source,
       // Says plainly when a supplied PDF_SIGN_P12_BASE64 was ignored, so a
       // working signature never hides a broken setting.
@@ -397,6 +407,7 @@ export const signingIdentity = async (): Promise<{
       tell a mangled paste from a wrong passphrase.
     */
     return {
+      enabled,
       source: "unavailable",
       fingerprint: null,
       subject: null,

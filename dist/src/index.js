@@ -337,7 +337,8 @@ app.get("/test/ai", (request, reply) => __awaiter(void 0, void 0, void 0, functi
 // Public build marker — lets anyone (including the assistant) CONFIRM which
 // build is actually serving, instead of trusting deploy timers. Bump the
 // tag with each meaningful deploy.
-const BUILD_TAG = "2026-10-23-auth-hardening";
+const handler_1 = require("./middleware/handler");
+const BUILD_TAG = "2026-10-23-health-posture";
 /**
  * Can this container actually rasterise a PDF page?
  *
@@ -414,6 +415,7 @@ app.get("/health/build", () => __awaiter(void 0, void 0, void 0, function* () {
         pdfRaster: yield probeRaster(),
         reminders: yield probeReminders(),
         lastSweep,
+        auth: (0, handler_1.authPosture)(),
         pdfSigning: yield signingIdentity(),
         objectStorage: yield blobStoreStatus(),
         blobs: yield (() => __awaiter(void 0, void 0, void 0, function* () {
@@ -459,6 +461,20 @@ app.listen({ port: 3000, host: "0.0.0.0" }, (err, address) => {
         process.exit(1);
     }
     console.log(`Server is running at ${address}`);
+    /*
+      Say the weak states out loud. A public health field is only seen by
+      someone who goes looking; a deploy log is read when something is
+      already going wrong, which is exactly when "oh, expiry was off"
+      matters.
+    */
+    const posture = (0, handler_1.authPosture)();
+    if (posture.legacyTokensAccepted) {
+        console.warn("[auth] ALLOW_LEGACY_TOKENS=1 — non-expiring tokens issued before " +
+            "session expiry are still accepted. Remove the variable to close it.");
+    }
+    if (process.env.PDF_SIGN_DISABLED === "1") {
+        console.warn("[pades] PDF_SIGN_DISABLED=1 — documents are going out UNSIGNED.");
+    }
     /*
       Confirm every file the database points at is still in the bucket.
   
