@@ -338,7 +338,8 @@ app.get("/test/ai", (request, reply) => __awaiter(void 0, void 0, void 0, functi
 // build is actually serving, instead of trusting deploy timers. Bump the
 // tag with each meaningful deploy.
 const handler_1 = require("./middleware/handler");
-const BUILD_TAG = "2026-10-23-health-posture";
+const encryption_1 = require("./service/encryption");
+const BUILD_TAG = "2026-10-23-pii-key-split";
 /**
  * Can this container actually rasterise a PDF page?
  *
@@ -416,6 +417,7 @@ app.get("/health/build", () => __awaiter(void 0, void 0, void 0, function* () {
         reminders: yield probeReminders(),
         lastSweep,
         auth: (0, handler_1.authPosture)(),
+        encryption: (0, encryption_1.encryptionPosture)(),
         pdfSigning: yield signingIdentity(),
         objectStorage: yield blobStoreStatus(),
         blobs: yield (() => __awaiter(void 0, void 0, void 0, function* () {
@@ -474,6 +476,11 @@ app.listen({ port: 3000, host: "0.0.0.0" }, (err, address) => {
     }
     if (process.env.PDF_SIGN_DISABLED === "1") {
         console.warn("[pades] PDF_SIGN_DISABLED=1 — documents are going out UNSIGNED.");
+    }
+    if ((0, encryption_1.encryptionPosture)().coupledToJwtSecret) {
+        console.warn("[pii] PII_ENCRYPTION_KEY is not set — personal data is encrypted " +
+            "with JWT_SECRET. Rotating JWT_SECRET would make every encrypted " +
+            "name, email and phone number unreadable.");
     }
     /*
       Confirm every file the database points at is still in the bucket.

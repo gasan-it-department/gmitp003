@@ -304,8 +304,9 @@ app.get("/test/ai", async (request: FastifyRequest, reply: FastifyReply) => {
 // build is actually serving, instead of trusting deploy timers. Bump the
 // tag with each meaningful deploy.
 import { authPosture } from "./middleware/handler";
+import { encryptionPosture } from "./service/encryption";
 
-const BUILD_TAG = "2026-10-23-health-posture";
+const BUILD_TAG = "2026-10-23-pii-key-split";
 
 /**
  * Can this container actually rasterise a PDF page?
@@ -384,6 +385,7 @@ app.get("/health/build", async () => {
     reminders: await probeReminders(),
     lastSweep,
     auth: authPosture(),
+    encryption: encryptionPosture(),
     pdfSigning: await signingIdentity(),
     objectStorage: await blobStoreStatus(),
     blobs: await (async () => {
@@ -453,6 +455,13 @@ app.listen({ port: 3000, host: "0.0.0.0" }, (err, address) => {
   if (process.env.PDF_SIGN_DISABLED === "1") {
     console.warn(
       "[pades] PDF_SIGN_DISABLED=1 — documents are going out UNSIGNED.",
+    );
+  }
+  if (encryptionPosture().coupledToJwtSecret) {
+    console.warn(
+      "[pii] PII_ENCRYPTION_KEY is not set — personal data is encrypted " +
+        "with JWT_SECRET. Rotating JWT_SECRET would make every encrypted " +
+        "name, email and phone number unreadable.",
     );
   }
 
