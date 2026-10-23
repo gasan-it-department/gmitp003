@@ -197,6 +197,37 @@ class EncryptionService {
             }
         });
     }
+    /**
+     * Decrypt a v2 value with a key OTHER than the configured one.
+     *
+     * Only for re-keying. Without this the v2 key could never be ROTATED:
+     * every value would be readable solely by the key currently in the
+     * environment, so replacing a compromised PII_ENCRYPTION_KEY would mean
+     * losing the data it protected — swapping one unrotatable secret for
+     * another, which was the whole complaint about JWT_SECRET.
+     *
+     * A wrong key fails cleanly here rather than returning rubbish, because
+     * GCM authenticates: that is what lets the re-keying script tell "this
+     * row is already done" from "this row needs converting".
+     */
+    static decryptV2With(encryptedData, ivHex, keyHex) {
+        return __awaiter(this, void 0, void 0, function* () {
+            if (!/^[0-9a-fA-F]{64}$/.test(keyHex)) {
+                throw new Error("key must be 64 hex characters (32 bytes)");
+            }
+            if (!encryptedData.startsWith(V2_PREFIX)) {
+                throw new Error("not a v2 value");
+            }
+            const [, ctHex, tagHex] = encryptedData.split(":");
+            if (ctHex === undefined || !tagHex) {
+                throw new Error("malformed v2 ciphertext");
+            }
+            const decipher = (0, node_crypto_1.createDecipheriv)(V2_ALGORITHM, Buffer.from(keyHex, "hex"), Buffer.from(ivHex, "hex"));
+            decipher.setAuthTag(Buffer.from(tagHex, "hex"));
+            return (decipher.update(Buffer.from(ctHex, "hex")).toString("utf8") +
+                decipher.final("utf8"));
+        });
+    }
     /** True when this value still needs rewriting under the v2 key. */
     static isLegacy(encryptedData) {
         return !!encryptedData && !encryptedData.startsWith(V2_PREFIX);

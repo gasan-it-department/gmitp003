@@ -55,6 +55,15 @@ const BATCH = 200;
 */
 const ONLY = (process.argv.find((a) => a.startsWith("--model=")) || "")
     .split("=")[1];
+/*
+  --from-key=<64 hex> RE-KEYS: v2 values are read with that key and
+  rewritten with the one in PII_ENCRYPTION_KEY. Needed because a key that
+  cannot be rotated is the fault this whole change was meant to remove —
+  without this, replacing a leaked PII_ENCRYPTION_KEY would destroy
+  everything it protected.
+*/
+const FROM_KEY = (process.argv.find((a) => a.startsWith("--from-key=")) || "")
+    .split("=")[1];
 /** Iv columns whose base field is not simply the name without "Iv". */
 const OVERRIDES = {
     "SubmittedApplication.bdayIv": "birthDate",
@@ -118,6 +127,20 @@ const delegate = (model) => prisma_1.prisma[model[0].toLowerCase() + model.slice
         console.error("JWT_SECRET is not set — the legacy values cannot be read.");
         process.exit(1);
     }
+    if (FROM_KEY !== undefined) {
+        if (!/^[0-9a-fA-F]{64}$/.test(FROM_KEY)) {
+            console.error("--from-key must be 64 hex characters (32 bytes).");
+            process.exit(1);
+        }
+        if (FROM_KEY.toLowerCase() === (process.env.PII_ENCRYPTION_KEY || "").toLowerCase()) {
+            console.error("--from-key is the SAME as PII_ENCRYPTION_KEY — there is nothing to " +
+                "re-key. Set PII_ENCRYPTION_KEY to the NEW key first.");
+            process.exit(1);
+        }
+        console.log("RE-KEYING: v2 values will be read with --from-key and rewritten " +
+            "with PII_ENCRYPTION_KEY.");
+        console.log("");
+    }
     const pairs = readPairs();
     const byModel = new Map();
     for (const p of pairs) {
@@ -127,7 +150,7 @@ const delegate = (model) => prisma_1.prisma[model[0].toLowerCase() + model.slice
     }
     console.log(`${pairs.length} encrypted columns across ${byModel.size} models` +
         `${APPLY ? "" : "   (DRY RUN — nothing will be written)"}\n`);
-    let totalLegacy = 0, totalConverted = 0, totalFailed = 0;
+    let totalLegacy = 0, totalRekeyed = 0, totalConverted = 0, totalFailed = 0;
     const failures = [];
     for (const [model, cols] of byModel) {
         if (ONLY && model.toLowerCase() !== ONLY.toLowerCase())
@@ -143,7 +166,7 @@ const delegate = (model) => prisma_1.prisma[model[0].toLowerCase() + model.slice
             select[c.ivField] = true;
         }
         let cursor;
-        let seen = 0, legacy = 0, converted = 0, failed = 0;
+        let seen = 0, legacy = 0, rekeyed = 0, converted = 0, failed = 0;
         for (;;) {
             const rows = yield d.findMany(Object.assign(Object.assign({ take: BATCH }, (cursor ? { skip: 1, cursor: { id: cursor } } : {})), { orderBy: { id: "asc" }, select }));
             if (!rows.length)
@@ -157,11 +180,33 @@ const delegate = (model) => prisma_1.prisma[model[0].toLowerCase() + model.slice
                     const iv = row[c.ivField];
                     if (!value || !iv)
                         continue; // never encrypted
-                    if (!encryption_1.EncryptionService.isLegacy(value))
-                        continue; // already v2
-                    legacy++;
+                    const isLegacy = encryption_1.EncryptionService.isLegacy(value);
+                    if (!isLegacy && !FROM_KEY)
+                        continue; // already v2, not re-keying
                     try {
-                        const plain = yield encryption_1.EncryptionService.decrypt(value, iv);
+                        let plain;
+                        if (isLegacy) {
+                            plain = yield encryption_1.EncryptionService.decrypt(value, iv);
+                        }
+                        else {
+                            /*
+                              Try the CURRENT key first. A value already rewritten by an
+                              earlier (perhaps interrupted) run reads cleanly and is left
+                              alone, which makes this safe to re-run. GCM authenticates,
+                              so a wrong key throws rather than returning rubbish — that
+                              is what makes the distinction reliable.
+                            */
+                            try {
+                                yield encryption_1.EncryptionService.decrypt(value, iv);
+                                continue; // already under the new key
+                            }
+                            catch (_a) {
+                                plain = yield encryption_1.EncryptionService.decryptV2With(value, iv, FROM_KEY);
+                                rekeyed++;
+                            }
+                        }
+                        if (isLegacy)
+                            legacy++;
                         const next = yield encryption_1.EncryptionService.encrypt(plain);
                         /*
                           Prove the new ciphertext reads back as the same text BEFORE
@@ -190,10 +235,12 @@ const delegate = (model) => prisma_1.prisma[model[0].toLowerCase() + model.slice
                 break;
         }
         totalLegacy += legacy;
+        totalRekeyed += rekeyed;
         totalConverted += converted;
         totalFailed += failed;
         console.log(`  ${model.padEnd(26)} rows=${String(seen).padStart(5)}  ` +
             `legacy=${String(legacy).padStart(5)}  ` +
+            (FROM_KEY ? `rekey=${String(rekeyed).padStart(5)}  ` : "") +
             `${APPLY ? "rewritten" : "would rewrite"}=${String(converted).padStart(5)}` +
             (failed ? `  FAILED=${failed}` : ""));
     }
@@ -211,8 +258,24 @@ const delegate = (model) => prisma_1.prisma[model[0].toLowerCase() + model.slice
     if (!APPLY && totalLegacy) {
         console.log("\nDry run. Re-run with --apply to write.");
     }
-    if (APPLY && !totalFailed && !totalLegacy) {
-        console.log("\nNothing left on the old key — JWT_SECRET can now be rotated.");
+    /*
+      Only say this when it is actually true. The claim is about the WHOLE
+      database: a --model run has not looked at the other models, and a
+      --from-key run was rotating the PII key, which says nothing at all
+      about JWT_SECRET. Getting this wrong invites somebody to rotate
+      JWT_SECRET while legacy values still depend on it, destroying them —
+      the exact failure this script exists to prevent.
+    */
+    if (APPLY && !totalFailed && !totalLegacy && !ONLY && !FROM_KEY) {
+        console.log("\nNo legacy values remain anywhere — JWT_SECRET can now be rotated.");
+    }
+    else if (APPLY && !totalFailed && ONLY) {
+        console.log(`\nOnly --model=${ONLY} was processed. Run without --model before ` +
+            "drawing any conclusion about JWT_SECRET.");
+    }
+    else if (APPLY && !totalFailed && FROM_KEY) {
+        console.log("\nRe-keyed to the new PII_ENCRYPTION_KEY. That says nothing about " +
+            "JWT_SECRET — run without --from-key to check for legacy values.");
     }
     yield prisma_1.prisma.$disconnect();
     process.exit(totalFailed ? 1 : 0);

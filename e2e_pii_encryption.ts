@@ -139,6 +139,45 @@ const SAMPLE = "Maria Elena Sanchez-O'Brien ñ 09171234567";
       legacyThrew || legacyGave !== SAMPLE,
       legacyThrew ? "padding happened to break" : "returned altered text");
 
+    // ── re-keying: the v2 key must itself be rotatable ─────────────────
+    console.log("");
+    console.log("-- rotating the PII key --");
+    const KEY_B = "b".repeat(64);
+    process.env.PII_ENCRYPTION_KEY = KEY;
+    E = load();
+    const underA = await E.EncryptionService.encrypt(SAMPLE);
+
+    const viaOldKey = await E.EncryptionService.decryptV2With(
+      underA.encryptedData, underA.iv, KEY,
+    );
+    ok("a v2 value can be read with an explicitly supplied key",
+      viaOldKey === SAMPLE);
+
+    let wrongKeyThrew = false;
+    try {
+      await E.EncryptionService.decryptV2With(
+        underA.encryptedData, underA.iv, KEY_B,
+      );
+    } catch { wrongKeyThrew = true; }
+    ok("the WRONG key throws instead of returning rubbish — which is what " +
+      "lets the script tell 'already done' from 'needs converting'",
+      wrongKeyThrew);
+
+    // now the rotation itself: read with A, write under B
+    process.env.PII_ENCRYPTION_KEY = KEY_B;
+    E = load();
+    const plain = await E.EncryptionService.decryptV2With(
+      underA.encryptedData, underA.iv, KEY,
+    );
+    const underB = await E.EncryptionService.encrypt(plain);
+    ok("re-keyed value reads back identical under the NEW key",
+      (await E.EncryptionService.decrypt(underB.encryptedData, underB.iv)) === SAMPLE);
+    let oldUnreadable = false;
+    try { await E.EncryptionService.decrypt(underA.encryptedData, underA.iv); }
+    catch { oldUnreadable = true; }
+    ok("and the old ciphertext is no longer readable under the new key, " +
+      "so a half-finished rotation is detectable", oldUnreadable);
+
     // ── the configuration traps ────────────────────────────────────────
     console.log("");
     console.log("-- configuration --");
