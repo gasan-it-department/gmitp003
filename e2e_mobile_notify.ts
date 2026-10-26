@@ -33,6 +33,7 @@ import {
 } from "./src/controller/disseminationController";
 import { ROOM_MEMBER_TYPES } from "./src/controller/roomConfigController";
 
+import { putTestBlob, giveBoxesTo } from "./e2e_helpers";
 const TS = Date.now();
 
 const mockRes = () => {
@@ -115,6 +116,7 @@ const mockRes = () => {
     await prisma.signatoryArrangement.create({
       data: { signatureQueueRoomId: queue.id, userId: SIGNER.userId,
               index: 0, status: 0 } });
+ await giveBoxesTo(queue.id);
     // Dispatch refuses an empty routing, and rightly so — there would be
     // nothing to sign or receive.
     const doc = await prisma.document.create({
@@ -230,7 +232,7 @@ const mockRes = () => {
 
     const sig = await prisma.signature.create({
       data: { userId: SIGNER.userId, title: `QA MOB SIG ${TS}`,
-              signature: Buffer.from("x"), active: true },
+              ...(await putTestBlob(Buffer.from("x"), "png")), active: true },
       select: { id: true } });
     made.sigIds.push(sig.id);
     const signed = await call(signMine, SIGNER.accountId,

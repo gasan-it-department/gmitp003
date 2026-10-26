@@ -7,3 +7,11 @@ node_modules
 
 # Document signing identity — private key, never committed
 .secrets/
+
+# Local blob store for development (src/service/blobStore.ts)
+.localblobs/
+
+# Build output. Railway compiles from source on deploy (proven 2026-10-26:
+# a tag changed in TypeScript only, with dist/ left stale, appeared in
+# production), so committing it only produced diff noise and conflicts.
+dist/

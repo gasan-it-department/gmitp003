@@ -3,6 +3,21 @@
  * (2) the storage CREATOR can stock/restock without an explicit grant,
  * strangers still refused, grant-holders still allowed.
  * Run: npx ts-node --transpile-only e2e_med_threshold.ts */
+import path from "path";
+/*
+  Importing a controller pulls in src/index.ts, which boots Fastify and
+  listens on 3000 — so this test failed with EADDRINUSE whenever anything
+  else was already using that port. The other 39 test files stub the entry
+  for exactly this reason.
+*/
+const entry = path.join(process.cwd(), "src", "index.ts");
+require.cache[entry] = {
+  id: entry,
+  filename: entry,
+  loaded: true,
+  exports: { notificationSocket: { emitUserNotification: () => undefined } },
+} as never;
+
 import { prisma } from "./src/barrel/prisma";
 import {
   checkAndNotifyLowStock,

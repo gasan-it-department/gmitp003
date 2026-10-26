@@ -46,6 +46,7 @@ import {
 import { documentActivityPanel } from "./src/controller/documentActivityController";
 import { ROOM_MEMBER_TYPES } from "./src/controller/roomConfigController";
 
+import { putTestBlob, giveBoxesTo } from "./e2e_helpers";
 const TS = Date.now();
 
 const mockRes = () => {
@@ -301,6 +302,7 @@ const mockRes = () => {
     await prisma.signatoryArrangement.create({
       data: { signatureQueueRoomId: signed.queueId, userId: SENDER.userId,
               index: 0, status: 0 } });
+ await giveBoxesTo(signed.queueId);
     out = await call(finalizeDissemination, SENDER.accountId,
       { queueRoomId: signed.queueId, userId: SENDER.userId, lineId: LINE.id },
       "body");
@@ -326,12 +328,13 @@ const mockRes = () => {
     await prisma.signatoryArrangement.create({
       data: { signatureQueueRoomId: sealed.queueId, userId: SENDER.userId,
               index: 0, status: 0 } });
+ await giveBoxesTo(sealed.queueId);
     await call(finalizeDissemination, SENDER.accountId,
       { queueRoomId: sealed.queueId, userId: SENDER.userId, lineId: LINE.id },
       "body");
     const sig = await prisma.signature.create({
       data: { userId: SENDER.userId, title: `QA NS SIG ${TS}`,
-              signature: Buffer.from("x"), active: true },
+              ...(await putTestBlob(Buffer.from("x"), "png")), active: true },
       select: { id: true } });
     out = await call(signMine, SENDER.accountId,
       { queueRoomId: sealed.queueId, userId: SENDER.userId }, "body");

@@ -1,0 +1,83 @@
+# The API's quality gate.
+#
+# There wasn't one. `npm test` was `echo "Error: no test specified" && exit 1`,
+# there was no lint script, and the 74 end-to-end files could only be run one
+# at a time by hand — which is why thirteen of them sat broken for days after
+# the object-storage migration and nothing said so.
+#
+# What this catches is the failure that actually keeps happening: a change
+# that compiles in an editor but not under `tsc`, pushed to main, which turns
+# the Railway deploy red and then blocks every later deploy until someone
+# notices.
+#
+# What it does NOT do is run the e2e suite, and that is deliberate rather
+# than lazy. Those tests expect a populated database — a municipality, its
+# users, documents, medicines — and there is no seed script. Pointed at an
+# empty Postgres they would skip or fail for want of data, which is worse
+# than not running them: a suite that is red for uninteresting reasons is one
+# people learn to ignore. Run them locally with `npm test` against the dev
+# database. The `e2e` job below turns itself on the day a seeded test
+# database exists.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  typecheck:
+    name: Typecheck and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # The Prisma client is generated code; tsc cannot check anything that
+      # touches the database without it.
+      - run: npx prisma generate
+
+      # `npm run build` is `prisma generate && tsc`, so this is the same
+      # compile Railway performs — failing here means failing there.
+      - run: npm run build
+
+  e2e:
+    name: End-to-end (needs a seeded database)
+    runs-on: ubuntu-latest
+    # Add a TEST_DATABASE_URL secret pointing at a seeded test database and
+    # the steps below start running. Until then they skip rather than
+    # pretending to pass.
+    #
+    # The guard is on the STEPS, not the job: GitHub does not expose the
+    # secrets context to a job-level `if`, so the obvious spelling of this
+    # is a workflow that errors on its first run.
+    env:
+      TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+        if: env.TEST_DATABASE_URL != ''
+      - uses: actions/setup-node@v4
+        if: env.TEST_DATABASE_URL != ''
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+        if: env.TEST_DATABASE_URL != ''
+      - run: npx prisma generate
+        if: env.TEST_DATABASE_URL != ''
+      - name: Run the suite
+        if: env.TEST_DATABASE_URL != '' 
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+          JWT_SECRET: ci-only-not-a-real-secret
+          # Blobs go to a scratch directory instead of a bucket; see
+          # src/service/blobStore.ts for why that needs an explicit opt-in.
+          BLOB_LOCAL_DIR: ${{ runner.temp }}/blobs
+        run: npm run e2e

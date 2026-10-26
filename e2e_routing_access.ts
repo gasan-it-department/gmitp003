@@ -39,6 +39,7 @@ import {
 } from "./src/controller/disseminationController";
 import { ROOM_MEMBER_TYPES } from "./src/controller/roomConfigController";
 
+import { putTestBlob, giveBoxesTo } from "./e2e_helpers";
 const TS = Date.now();
 
 const mockRes = () => {
@@ -131,9 +132,11 @@ const mockRes = () => {
     await prisma.signatoryArrangement.create({
       data: { signatureQueueRoomId: q.id, userId: LONESIGN.userId, index: 0, status: 0 },
     });
+ await giveBoxesTo(q.id);
     await prisma.signatoryArrangement.create({
       data: { signatureQueueRoomId: q.id, userId: null, index: 1, status: 0 },
     });
+ await giveBoxesTo(q.id);
     const doc = await prisma.document.create({
       data: { title: `qa-acc-doc-${TS}`, lineId: line.id,
               userId: SENDER.userId, signatureQueueRoomId: q.id },
@@ -143,7 +146,7 @@ const mockRes = () => {
     await prisma.decodedFile.create({
       data: { documentId: doc.id, fileName: "x.pdf", fileSize: "11",
               fileType: "application/pdf",
-              fileDecoded: Buffer.from("%PDF-1.4 qa") },
+              ...(await putTestBlob(Buffer.from("%PDF-1.4 qa"), "pdf")) },
     });
 
     // A Self Sign upload: no routing at all, one owner.
@@ -155,7 +158,7 @@ const mockRes = () => {
     await prisma.decodedFile.create({
       data: { documentId: selfDoc.id, fileName: "s.pdf", fileSize: "13",
               fileType: "application/pdf",
-              fileDecoded: Buffer.from("%PDF-1.4 self") },
+              ...(await putTestBlob(Buffer.from("%PDF-1.4 self"), "pdf")) },
     });
 
     let res = mockRes();

@@ -33,6 +33,7 @@ import { signMine } from "./src/controller/disseminationController";
 import { pdfPageSizes, renderPdfPage } from "./src/service/pdfRaster";
 import { ROOM_MEMBER_TYPES } from "./src/controller/roomConfigController";
 
+import { putTestBlob } from "./e2e_helpers";
 const TS = Date.now();
 
 // A4 in points, which is what the fixture PDF is built at.
@@ -166,7 +167,7 @@ const mockRes = () => {
     await prisma.decodedFile.create({
       data: { documentId: doc.id, fileName: `qa-sv-${TS}.pdf`,
               fileType: "application/pdf", fileSize: String(pdfBytes.length),
-              fileDecoded: pdfBytes } });
+              ...(await putTestBlob(pdfBytes, "pdf")) } });
 
     // Boxes, in basis points. Page 2 carries one of mine and one of
     // theirs; page 3 carries a second of mine.
@@ -328,7 +329,7 @@ const mockRes = () => {
     // ── After signing ───────────────────────────────────────────────────
     const sig = await prisma.signature.create({
       data: { userId: SIGNER.userId, title: `QA SV SIG ${TS}`,
-              signature: Buffer.from("x"), active: true },
+              ...(await putTestBlob(Buffer.from("x"), "png")), active: true },
       select: { id: true } });
     const r = mockRes();
     let signErr: any = null;

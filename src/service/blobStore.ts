@@ -22,17 +22,32 @@
  * columns is a separate, deliberate act once the bucket has been proven.
  */
 import crypto from "crypto";
+import fsMod from "fs";
+import pathMod from "path";
 
-const ENDPOINT = process.env.BUCKET_ENDPOINT || "";
-const ACCESS_KEY = process.env.BUCKET_ACCESS_KEY || "";
-const SECRET_KEY = process.env.BUCKET_SECRET_KEY || "";
-const BUCKET = process.env.BUCKET_NAME || "";
+/*
+  Read when used, never captured at import.
+
+  `const X = process.env.X` at module scope freezes whatever the
+  environment held the instant this file was first required. dotenv runs
+  from the prisma barrel, so whether a .env value is visible here depended
+  on which module Node loaded first — and losing that race produced empty
+  configuration, no warning, and an AWS SDK error about a missing Bucket
+  label thrown far away from the cause.
+*/
+const env = (name: string, fallback = ""): string =>
+  (process.env[name] || fallback).trim();
+
+const ENDPOINT = () => env("BUCKET_ENDPOINT");
+const ACCESS_KEY = () => env("BUCKET_ACCESS_KEY");
+const SECRET_KEY = () => env("BUCKET_SECRET_KEY");
+const BUCKET = () => env("BUCKET_NAME");
 /**
  * Most S3-compatible providers that are not Amazon ignore the region but
  * require the client to send one. "auto" is what R2 documents; it is a
  * placeholder, not a location.
  */
-const REGION = process.env.BUCKET_REGION || "auto";
+const REGION = () => env("BUCKET_REGION", "auto");
 
 /**
  * Path-style addressing (bucket in the URL path) rather than virtual-host
@@ -40,10 +55,38 @@ const REGION = process.env.BUCKET_REGION || "auto";
  * other implementation needs the former, and getting it wrong produces DNS
  * errors that look nothing like a configuration problem.
  */
-const FORCE_PATH_STYLE = process.env.BUCKET_FORCE_PATH_STYLE !== "0";
+const FORCE_PATH_STYLE = () => env("BUCKET_FORCE_PATH_STYLE") !== "0";
+
+/**
+ * A disk-backed store for development and tests.
+ *
+ * Only ever used when BLOB_LOCAL_DIR is set AND no bucket is configured.
+ * Both conditions matter: production sets the bucket variables, so it can
+ * never reach this path, and a production instance that somehow lost its
+ * bucket credentials must FAIL rather than quietly start writing municipal
+ * records to a container filesystem that disappears on the next deploy.
+ * Requiring an explicit opt-in variable makes that impossible by accident.
+ *
+ * Without this there is no way to upload anything locally at all — the
+ * bytes columns were dropped, so the bucket became the only place a blob
+ * can live, and every test that creates a document has been unable to run
+ * since.
+ */
+const LOCAL_DIR = () => env("BLOB_LOCAL_DIR");
+const usingLocalDisk = (): boolean => !!LOCAL_DIR() && !bucketConfigured();
+
+const localPath = (key: string): string => {
+  // Keys contain "/" by design; keep the shape on disk and make the dirs.
+  const full = pathMod.join(LOCAL_DIR(), key);
+  fsMod.mkdirSync(pathMod.dirname(full), { recursive: true });
+  return full;
+};
+
+const bucketConfigured = (): boolean =>
+  !!(ENDPOINT() && ACCESS_KEY() && SECRET_KEY() && BUCKET());
 
 export const blobStoreConfigured = (): boolean =>
-  !!(ENDPOINT && ACCESS_KEY && SECRET_KEY && BUCKET);
+  bucketConfigured() || usingLocalDisk();
 
 let client: import("@aws-sdk/client-s3").S3Client | null = null;
 
@@ -51,10 +94,10 @@ const getClient = async () => {
   if (client) return client;
   const { S3Client } = await import("@aws-sdk/client-s3");
   client = new S3Client({
-    region: REGION,
-    endpoint: ENDPOINT,
-    forcePathStyle: FORCE_PATH_STYLE,
-    credentials: { accessKeyId: ACCESS_KEY, secretAccessKey: SECRET_KEY },
+    region: REGION(),
+    endpoint: ENDPOINT(),
+    forcePathStyle: FORCE_PATH_STYLE(),
+    credentials: { accessKeyId: ACCESS_KEY(), secretAccessKey: SECRET_KEY() },
   });
   return client;
 };
@@ -88,6 +131,10 @@ export interface PutResult {
 }
 
 /** Store an object. Returns what is needed to find and verify it again. */
+const putLocal = (key: string, body: Buffer): void => {
+  fsMod.writeFileSync(localPath(key), body);
+};
+
 export const putBlob = async (
   key: string,
   body: Buffer,
@@ -99,12 +146,16 @@ export const putBlob = async (
         "BUCKET_ACCESS_KEY, BUCKET_SECRET_KEY and BUCKET_NAME.",
     );
   }
+  if (usingLocalDisk()) {
+    putLocal(key, body);
+    return { key, bytes: body.length, sha256: sha256(body) };
+  }
   const { PutObjectCommand } = await import("@aws-sdk/client-s3");
   const c = await getClient();
   const digest = sha256(body);
   await c.send(
     new PutObjectCommand({
-      Bucket: BUCKET,
+      Bucket: BUCKET(),
       Key: key,
       Body: body,
       ContentType: contentType,
@@ -122,12 +173,19 @@ export const putBlob = async (
 
 /** Fetch an object. Returns null when it is simply not there. */
 export const getBlob = async (key: string): Promise<Buffer | null> => {
+  if (usingLocalDisk()) {
+    try {
+      return fsMod.readFileSync(pathMod.join(LOCAL_DIR(), key));
+    } catch {
+      return null;
+    }
+  }
   if (!blobStoreConfigured()) return null;
   try {
     const { GetObjectCommand } = await import("@aws-sdk/client-s3");
     const c = await getClient();
     const res = await c.send(
-      new GetObjectCommand({ Bucket: BUCKET, Key: key }),
+      new GetObjectCommand({ Bucket: BUCKET(), Key: key }),
     );
     const body = res.Body as unknown as AsyncIterable<Uint8Array>;
     const chunks: Buffer[] = [];
@@ -156,10 +214,18 @@ export const readBlob = async (key: string | null): Promise<Buffer | null> => {
 
 /** Remove an object. Used by the backfill's rollback, not by normal code. */
 export const deleteBlob = async (key: string): Promise<void> => {
+  if (usingLocalDisk()) {
+    try {
+      fsMod.unlinkSync(pathMod.join(LOCAL_DIR(), key));
+    } catch {
+      /* already gone */
+    }
+    return;
+  }
   if (!blobStoreConfigured()) return;
   const { DeleteObjectCommand } = await import("@aws-sdk/client-s3");
   const c = await getClient();
-  await c.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }));
+  await c.send(new DeleteObjectCommand({ Bucket: BUCKET(), Key: key }));
 };
 
 /** Does the bucket actually work? For /health/build and the backfill. */
@@ -184,15 +250,15 @@ export const blobStoreStatus = async (): Promise<{
       // A write that cannot be read back is worse than no bucket, so the
       // probe round-trips rather than just writing.
       reachable: !!back && back.equals(stamp),
-      bucket: BUCKET,
-      endpoint: ENDPOINT,
+      bucket: BUCKET(),
+      endpoint: ENDPOINT(),
     };
   } catch (e) {
     return {
       configured: true,
       reachable: false,
-      bucket: BUCKET,
-      endpoint: ENDPOINT,
+      bucket: BUCKET(),
+      endpoint: ENDPOINT(),
       error: e instanceof Error ? e.message : String(e),
     };
   }
@@ -203,11 +269,18 @@ export const headBlob = async (
   key: string,
 ): Promise<{ bytes: number } | null> => {
   if (!blobStoreConfigured()) return null;
+  if (usingLocalDisk()) {
+    try {
+      return { bytes: fsMod.statSync(pathMod.join(LOCAL_DIR(), key)).size };
+    } catch {
+      return null;
+    }
+  }
   try {
     const { HeadObjectCommand } = await import("@aws-sdk/client-s3");
     const c = await getClient();
     const res = await c.send(
-      new HeadObjectCommand({ Bucket: BUCKET, Key: key }),
+      new HeadObjectCommand({ Bucket: BUCKET(), Key: key }),
     );
     return { bytes: Number(res.ContentLength ?? 0) };
   } catch (e) {

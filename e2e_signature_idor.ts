@@ -9,6 +9,8 @@
  *
  * Run: npx ts-node --transpile-only e2e_signature_idor.ts */
 import { prisma } from "./src/barrel/prisma";
+import { putTestBlob } from "./e2e_helpers";
+import { readBlob } from "./src/service/blobStore";
 import {
   listUserSignatures,
   activateUserSignature,
@@ -73,7 +75,7 @@ const reqAs = (accountId: string, extra: any = {}) =>
         title: "Victim official signature",
         userId: B.userId,
         active: true,
-        signature: SECRET_IMAGE,
+        ...(await putTestBlob(SECRET_IMAGE, "png")),
       },
       select: { id: true },
     });
@@ -85,7 +87,7 @@ const reqAs = (accountId: string, extra: any = {}) =>
         title: "Attacker own signature",
         userId: A.userId,
         active: true,
-        signature: Buffer.from("\x89PNG\r\n\x1a\nATTACKER-PIXELS"),
+        ...(await putTestBlob(Buffer.from("\x89PNG\r\n\x1a\nATTACKER-PIXELS"), "png")),
       },
       select: { id: true },
     });
@@ -142,9 +144,10 @@ const reqAs = (accountId: string, extra: any = {}) =>
     ok("A cannot DELETE B's signature", !!threw, threw || "NO THROW");
     const still = await prisma.signature.findUnique({ where: { id: bSig.id } });
     ok("B's signature still exists", !!still);
+    // The bytes live in the store now; the row only points at them.
+    const stillBytes = await readBlob(still?.storageKey ?? null);
     ok("B's signature bytes are intact",
-      !!still?.signature &&
-        Buffer.from(still.signature).equals(SECRET_IMAGE));
+      !!stillBytes && stillBytes.equals(SECRET_IMAGE));
 
     // ── 5. The owner can still do all of it ─────────────────────────────
     res = mockRes();

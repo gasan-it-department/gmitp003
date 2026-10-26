@@ -140,9 +140,15 @@ export const applyCells = (
 };
 
 /**
- * Cells the 2026 template ships with a grey background that should be plain
- * white: the residential CITY/MUNICIPALITY (I24:K24) and PROVINCE (L24:N24)
- * input boxes on sheet C1.
+ * Cells the 2026 template once shipped with a grey background that should
+ * be plain white: the residential ZIP row (I24:N24) on sheet C1.
+ *
+ * Named wrongly here until 2026-10-26 — the comment claimed these were the
+ * City/Municipality and Province boxes, which are row 22. The cell list was
+ * always row 24. Inspecting the template now shows every one of these cells
+ * already carries patternType="none", so this pass is a no-op against the
+ * current file; it is kept because a future template revision may shade
+ * them again, and de-greying an already-white cell costs nothing.
  *
  * The 2025 template had these white and an earlier 2026 copy shaded them,
  * which made every export come out grey in that one block. Every other input
@@ -583,9 +589,9 @@ const exportPds = async (
     // The ZIP row is one wide box spanning I:N, which is why it takes the
     // whole value rather than sharing the row.
     I24: resZip,
-    // City and Province are SEPARATE cells. The 2025 template merged
-    // I24:N24 into one box, so both had to be crammed into a single
-    // string; the 2026 revision splits it into I24:K24 + L24:N24.
+    // City and Province are separate cells at I22 and L22, above this
+    // one. An earlier reading of the 2026 form had them sharing row 24
+    // with the zip, which is wrong: row 24 is the zip box alone.
 
     I25: permaHouse,
     L25: permaStreet,

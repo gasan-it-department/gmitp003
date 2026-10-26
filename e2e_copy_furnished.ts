@@ -27,6 +27,7 @@ require.cache[entry] = {
 } as any;
 
 import { prisma } from "./src/barrel/prisma";
+import { giveBoxesTo } from "./e2e_helpers";
 import {
   setTargetRooms,
   finalizeDissemination,
@@ -132,6 +133,7 @@ const mockRes = () => {
             status: 0,
           },
         });
+ await giveBoxesTo(q.id);
       }
       // finalize() refuses a dissemination with nothing attached.
       const doc = await prisma.document.create({

@@ -34,6 +34,7 @@ import {
 } from "./src/controller/disseminationController";
 import { ROOM_MEMBER_TYPES } from "./src/controller/roomConfigController";
 
+import { giveBoxesTo } from "./e2e_helpers";
 const TS = Date.now();
 
 const mockRes = () => {
@@ -132,6 +133,7 @@ const mockRes = () => {
     await prisma.signatoryArrangement.create({
       data: { signatureQueueRoomId: q.id, userId: SIGNER.userId, index: 0, status: 0 },
     });
+ await giveBoxesTo(q.id);
     const doc = await prisma.document.create({
       data: { title: `qa-rcpt-doc-${TS}`, lineId: line.id,
               userId: SENDER.userId, signatureQueueRoomId: q.id },

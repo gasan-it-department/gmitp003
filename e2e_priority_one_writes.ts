@@ -40,6 +40,7 @@ import {
 } from "./src/controller/documentReceiveController";
 import { ROOM_MEMBER_TYPES } from "./src/controller/roomConfigController";
 
+import { giveBoxesTo } from "./e2e_helpers";
 const TS = Date.now();
 
 const mockRes = () => {
@@ -157,6 +158,7 @@ const mockRes = () => {
 
     await prisma.signatoryArrangement.create({
       data: { signatureQueueRoomId: Q1.id, userId: null, index: 0, status: 0 } });
+ await giveBoxesTo(Q1.id);
 
     out = await call(finalizeDissemination, OUTSIDE.accountId, {
       queueRoomId: Q1.id, userId: SENDER.userId, lineId: LINE_A.id });

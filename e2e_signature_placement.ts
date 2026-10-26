@@ -18,6 +18,7 @@ import {
 } from "./src/service/signaturePlacement";
 import { setSignaturePlacement } from "./src/controller/signatureController";
 
+import { putTestBlob } from "./e2e_helpers";
 const TS = Date.now();
 
 const mockRes = () => {
@@ -189,7 +190,7 @@ const mockRes = () => {
     const B = await mk("b");
 
     const sigA = await prisma.signature.create({
-      data: { userId: A.userId, title: `QA sig ${TS}`, signature: Buffer.from([0x89, 0x50]) },
+      data: { userId: A.userId, title: `QA sig ${TS}`, ...(await putTestBlob(Buffer.from([0x89, 0x50]), "png")) },
       select: { id: true, baselinePct: true, inkHeightPt: true },
     });
     ok("a fresh signature starts unsized", sigA.inkHeightPt === null);

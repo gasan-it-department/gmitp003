@@ -27,6 +27,8 @@ import {
 } from "./src/controller/documentReceiveController";
 import { ROOM_MEMBER_TYPES } from "./src/controller/roomConfigController";
 
+import { putTestBlob } from "./e2e_helpers";
+import { readBlob } from "./src/service/blobStore";
 const TS = Date.now();
 
 const mockRes = () => {
@@ -103,7 +105,8 @@ const PNG_1PX = Buffer.from(
       made.recordIds.push(rec.id);
       for (let i = 1; i <= scanned; i++) {
         await prisma.documentReceivePage.create({
-          data: { recordId: rec.id, page: i, mime: "image/png", bytes: PNG_1PX } });
+          data: { recordId: rec.id, page: i, mime: "image/png",
+                  ...(await putTestBlob(PNG_1PX, "png")) } });
       }
       return rec;
     };
@@ -156,17 +159,19 @@ const PNG_1PX = Buffer.from(
 
     const file = await prisma.decodedFile.findFirst({
       where: { documentId: out.body.documentId },
-      select: { fileName: true, fileType: true, fileDecoded: true } });
+      select: { fileName: true, fileType: true, storageKey: true } });
+    // The row points at the store; the bytes are not beside it any more.
+    const fileBytes = await readBlob(file?.storageKey ?? null);
     ok("a real PDF was built from the scans",
-      file?.fileType === "application/pdf" && (file?.fileDecoded?.length ?? 0) > 0);
+      file?.fileType === "application/pdf" && (fileBytes?.length ?? 0) > 0);
     ok("…and it is a PDF, not something merely labelled one",
-      Buffer.from(file!.fileDecoded!).subarray(0, 5).toString() === "%PDF-",
-      Buffer.from(file!.fileDecoded!).subarray(0, 8).toString());
+      fileBytes!.subarray(0, 5).toString() === "%PDF-",
+      fileBytes!.subarray(0, 8).toString());
     // Count pages by loading the PDF, not by grepping its bytes: pdf-lib
     // compresses object streams, so "/Type /Page" is not there to find and
     // a regex reports zero for a perfectly good three-page file.
     const { PDFDocument: PDFRead } = await import("pdf-lib");
-    const parsed = await PDFRead.load(Buffer.from(file!.fileDecoded!));
+    const parsed = await PDFRead.load(fileBytes!);
     ok("…with one page per scan", parsed.getPageCount() === 3,
       String(parsed.getPageCount()));
     ok("…named after the barcode, so the paper can be found again",

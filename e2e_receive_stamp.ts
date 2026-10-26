@@ -22,6 +22,8 @@ require.cache[entry] = {
 
 import zlib from "zlib";
 import { prisma } from "./src/barrel/prisma";
+import { putTestBlob } from "./e2e_helpers";
+import { readBlob } from "./src/service/blobStore";
 import {
   myReceiveStamp,
   deleteReceiveStamp,
@@ -277,7 +279,7 @@ const fileReq = (
     const sg = await prisma.signature.create({
       data: {
         title: `qa-rs-${TS}`, userId: ME.userId, active: true,
-        signature: makePng(240, 120),
+        ...(await putTestBlob(makePng(240, 120), "png")),
       },
       select: { id: true },
     });
@@ -375,7 +377,8 @@ const fileReq = (
         file: {
           create: {
             fileName: "received.pdf", fileSize: String(srcBytes.length),
-            fileType: "application/pdf", fileDecoded: srcBytes,
+            fileType: "application/pdf",
+            ...(await putTestBlob(srcBytes, "pdf")),
           },
         },
       },
@@ -488,12 +491,13 @@ const fileReq = (
     */
     const stored = await prisma.decodedFile.findFirst({
       where: { documentId: doc.id },
-      select: { fileDecoded: true },
+      select: { storageKey: true },
     });
+    // The bytes live in the store now, not in a column beside the row.
+    const storedBytes = await readBlob(stored?.storageKey ?? null);
     ok("THE STORED FILE IS BYTE-FOR-BYTE UNCHANGED",
-      !!stored?.fileDecoded &&
-        Buffer.from(stored.fileDecoded).equals(srcBytes),
-      `${stored?.fileDecoded?.length} vs ${srcBytes.length}`);
+      !!storedBytes && storedBytes.equals(srcBytes),
+      `${storedBytes?.length} vs ${srcBytes.length}`);
 
     /*
       And it comes out at its real size. 58mm is 164.4pt on a 595.28pt-wide

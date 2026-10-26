@@ -3,7 +3,7 @@
  * The earlier test exercised the fill-clearing transform in isolation, which
  * proved the helper worked but NOT that the export actually calls it. This
  * drives exportPdsExcel itself, captures the .xlsx it sends, and inspects the
- * residential City/Municipality (I24:K24) and Province (L24:N24) boxes in the
+ * residential City/Municipality (I22) and Province (L22) boxes in the
  * delivered workbook.
  *
  * Run: npx ts-node --transpile-only e2e_pds_export_fill.ts */
@@ -64,14 +64,32 @@ const cellFill = (sheetXml: string, stylesXml: string, ref: string) => {
 
   try {
     const app = await prisma.submittedApplication.findFirst({
-      select: { id: true, firstname: true, lastname: true },
+      select: { id: true, firstname: true, lastname: true, lineId: true },
       orderBy: { timestamp: "desc" },
     });
     if (!app) { console.log("NO FIXTURE (submittedApplication)"); process.exit(2); }
     console.log(`exporting for: ${app.lastname}, ${app.firstname}\n`);
 
+    /*
+      The export is scoped to the caller's municipality now — a PDS should
+      not be downloadable by whoever knows an id. This test is about which
+      cells get filled, so it needs a real caller from the application's
+      own line rather than no caller at all.
+    */
+    const caller = await prisma.account.findFirst({
+      where: { status: 1, User: { is: { lineId: app.lineId } } },
+      select: { id: true },
+    });
+    if (!caller) {
+      console.log(`NO FIXTURE (an account in line ${app.lineId})`);
+      process.exit(2);
+    }
+
     const res = captureRes();
-    await exportPdsExcel({ query: { id: app.id } } as any, res);
+    await exportPdsExcel(
+      { query: { id: app.id }, user: { id: caller.id } } as any,
+      res,
+    );
 
     // The handler streams the workbook with res.header(...).send(buf) and
     // never calls res.code(), so the payload and the download headers are
@@ -112,11 +130,16 @@ const cellFill = (sheetXml: string, stylesXml: string, ref: string) => {
       const m = sheetXml.match(new RegExp(`<c r="${ref}"[^>]*>([\\s\\S]*?)</c>`));
       return m ? (m[1].match(/<t[^>]*>([\s\S]*?)<\/t>/)?.[1] ?? "") : "";
     };
-    ok("City/Municipality still carries its value", textAt("I24").trim().length > 0,
-      JSON.stringify(textAt("I24")));
-    ok("Province still carries its value", textAt("L24").trim().length > 0,
-      JSON.stringify(textAt("L24")));
-    console.log(`      I24=${JSON.stringify(textAt("I24"))}  L24=${JSON.stringify(textAt("L24"))}`);
+    /*
+      I22 and L22, not I24. This asserted I24/L24 — the ZIP row — and the
+      City check passed because a zip code is not empty either, so the test
+      was green while checking the wrong box entirely.
+    */
+    ok("City/Municipality still carries its value", textAt("I22").trim().length > 0,
+      JSON.stringify(textAt("I22")));
+    ok("Province still carries its value", textAt("L22").trim().length > 0,
+      JSON.stringify(textAt("L22")));
+    console.log(`      I22=${JSON.stringify(textAt("I22"))}  L22=${JSON.stringify(textAt("L22"))}  I24(zip)=${JSON.stringify(textAt("I24"))}`);
 
     // ── Neighbouring address boxes untouched ────────────────────────────
     for (const ref of ["I22", "L22", "I23", "L23", "I25"]) {
