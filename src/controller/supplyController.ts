@@ -1,4 +1,5 @@
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
+import { callerContext } from "../service/callerScope";
 import { Prisma, prisma } from "../barrel/prisma";
 import ExcelJS from "exceljs";
 import { Readable } from "stream";
@@ -15,22 +16,45 @@ import {
   generateOrderRef,
   generateDispenseRef,
 } from "../middleware/handler";
-import { AppError, NotFoundError, ValidationError, dbError } from "../errors/errors";
+import { AppError, NotFoundError, ValidationError, dbError, UnauthorizedError } from "../errors/errors";
 import { getPriceTotal } from "../utils/date";
 export const addSupply = async (req: FastifyRequest, res: FastifyReply) => {
   try {
     const body = req.body as AddNewSupplyProps;
 
-    if (!body.item || !body.suppliesDataSetId || !body.lineId) {
+    if (!body.item || !body.suppliesDataSetId) {
       return res.code(400).send({ message: "Bad Request" });
     }
+
+    /*
+      The municipality and the actor both come from the TOKEN.
+
+      This route had no authentication at all and took `lineId` straight
+      from the body, so anyone could add items to any municipality's
+      catalogue — and the audit row beneath took `userId` from the body
+      too, which let the entry name somebody who had done nothing. A
+      forgeable audit trail is worse than none, because it is believed.
+
+      A lineId in the body is still accepted when it matches the caller's
+      own, so the existing web and desktop clients keep working unchanged;
+      one that does not match is refused rather than quietly widened.
+    */
+    const caller = await callerContext(req);
+    if (!caller.lineId) {
+      throw new UnauthorizedError("Your account is not attached to a line.");
+    }
+    if (body.lineId && body.lineId !== caller.lineId) {
+      throw new UnauthorizedError("This is not your municipality's data.");
+    }
+    const lineId = caller.lineId;
+
     const code = await generatedItemCode();
     await prisma.$transaction([
       prisma.supplies.create({
         data: {
           item: body.item,
           suppliesDataSetId: body.suppliesDataSetId,
-          lineId: body.lineId,
+          lineId,
           description: body.description,
 
           consumable: body.consumable,
@@ -39,7 +63,8 @@ export const addSupply = async (req: FastifyRequest, res: FastifyReply) => {
       }),
       prisma.inventoryAccessLogs.create({
         data: {
-          userId: body.userId,
+          // The actor, resolved server-side — not whatever the body claimed.
+          userId: caller.actorId,
           inventoryBoxId: body.inventoryBoxId,
           action: `Added Supply: ${body.item}`,
           timestamp: new Date(),
@@ -49,6 +74,20 @@ export const addSupply = async (req: FastifyRequest, res: FastifyReply) => {
 
     return res.code(200).send({ message: "OK" });
   } catch (error) {
+    /*
+      Let the deliberate refusals through. This caught everything and
+      answered 500, so "you are not signed in" and "that is not your
+      municipality" both reached the client as "Internal Server Error" —
+      which reads as a bug in the server rather than a decision about the
+      request, and hides a refusal from anyone reading the logs.
+    */
+    if (
+      error instanceof UnauthorizedError ||
+      error instanceof ValidationError ||
+      error instanceof NotFoundError
+    ) {
+      throw error;
+    }
     console.log(error);
     res.code(500).send({ message: "Internal Server Error" });
   }
@@ -175,150 +214,212 @@ export const dispenseSupply = async (
       }
     }
 
-    const stock = await prisma.supplyStockTrack.findUnique({
-      where: {
-        id: body.id,
-      },
-      select: {
-        quantity: true,
-        perQuantity: true,
-        id: true,
-        stock: true,
-        suppliesId: true,
-        desc: true,
-      },
-    });
+    /*
+      From here to the writes, everything happens inside ONE transaction
+      with the stock row LOCKED.
 
-    if (!stock) {
-      throw new NotFoundError("ITEM NOT FOUND");
-    }
+      This used to read the row outside any transaction, work out the
+      remainder in JavaScript, and write that number back as an absolute
+      value. Two dispenses at once both read the same starting figure and
+      both wrote the same remainder, so one deduction simply disappeared:
+      ten concurrent dispenses of ten pieces from two hundred left the row
+      reading 190 instead of 100. The "insufficient stock" check could not
+      catch it either, being tested against the same stale read. Worse, the
+      dispense RECORDS were all correct — so the books disagreed with the
+      shelf and nothing pointed at why.
 
-    const currentBoxes = stock.quantity;
-    const perBox = stock.perQuantity;
-    const currentStockPieces = stock.stock;
-    const toDispense = parseInt(body.quantity, 10);
+      SELECT ... FOR UPDATE makes concurrent dispensers of the same row
+      queue instead of race. The packing arithmetic below is left exactly
+      as it was; serialising it is safer than restating it as an atomic
+      expression, because the opened-box and loose-piece cases are easy to
+      get subtly wrong in SQL.
+    */
+    const refCode = await generateDispenseRef();
 
-    // Check if database consistency issue
-    if (currentStockPieces !== currentBoxes * perBox) {
-      console.warn(`Database inconsistency:
-        stock.stock = ${currentStockPieces},
-        but quantity * perQuantity = ${currentBoxes * perBox}`);
-      // You might want to fix this or use stock.stock as source of truth
-    }
+    const result = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "SupplyStockTrack" WHERE id = ${body.id} FOR UPDATE`;
+      const stock = await tx.supplyStockTrack.findUnique({
+        where: {
+          id: body.id,
+        },
+        select: {
+          quantity: true,
+          perQuantity: true,
+          id: true,
+          stock: true,
+          suppliesId: true,
+          desc: true,
+        },
+      });
 
-    // Check if enough stock
-    if (toDispense > currentStockPieces) {
-      throw new ValidationError(
-        `Insufficient stock. Available: ${currentStockPieces}, Requested: ${toDispense}`,
-      );
-    }
+      if (!stock) {
+        throw new NotFoundError("ITEM NOT FOUND");
+      }
 
-    // Calculate dispensing details - FIXED LOGIC
-    const fullBoxesToGive = Math.floor(toDispense / perBox);
-    const loosePieces = toDispense % perBox;
+      const currentBoxes = stock.quantity;
+      const perBox = stock.perQuantity;
+      const currentStockPieces = stock.stock;
+      const toDispense = parseInt(body.quantity, 10);
 
-    console.log("Dispensing calculation:", {
-      fullBoxesToGive,
-      loosePieces,
-    });
+      // Check if database consistency issue
+      if (currentStockPieces !== currentBoxes * perBox) {
+        console.warn(`Database inconsistency:
+          stock.stock = ${currentStockPieces},
+          but quantity * perQuantity = ${currentBoxes * perBox}`);
+        // You might want to fix this or use stock.stock as source of truth
+      }
 
-    // Calculate remaining inventory - SIMPLIFIED CORRECT LOGIC
-    let remainingFullBoxes = currentBoxes - fullBoxesToGive;
-    let openedBoxRemainingPieces = 0;
+      // Check if enough stock
+      if (toDispense > currentStockPieces) {
+        throw new ValidationError(
+          `Insufficient stock. Available: ${currentStockPieces}, Requested: ${toDispense}`,
+        );
+      }
 
-    if (loosePieces > 0) {
-      // We need to open a box for loose pieces
-      remainingFullBoxes -= 1; // Remove the box we're opening
-      openedBoxRemainingPieces = perBox - loosePieces; // What's left in that opened box
-    }
+      // Calculate dispensing details - FIXED LOGIC
+      const fullBoxesToGive = Math.floor(toDispense / perBox);
+      const loosePieces = toDispense % perBox;
 
-    // Total pieces calculation
-    const remainingPieces =
-      remainingFullBoxes * perBox + openedBoxRemainingPieces;
+      console.log("Dispensing calculation:", {
+        fullBoxesToGive,
+        loosePieces,
+      });
 
-    // Also calculate expected remaining pieces
-    const expectedRemainingPieces = currentStockPieces - toDispense;
+      // Calculate remaining inventory - SIMPLIFIED CORRECT LOGIC
+      let remainingFullBoxes = currentBoxes - fullBoxesToGive;
+      let openedBoxRemainingPieces = 0;
 
-    console.log("Remaining calculation:", {
-      remainingFullBoxes,
-      openedBoxRemainingPieces,
-      remainingPieces,
-      expectedRemainingPieces,
-      check: remainingPieces === expectedRemainingPieces,
-    });
+      if (loosePieces > 0) {
+        // We need to open a box for loose pieces
+        remainingFullBoxes -= 1; // Remove the box we're opening
+        openedBoxRemainingPieces = perBox - loosePieces; // What's left in that opened box
+      }
 
-    // Verify calculation matches
-    if (remainingPieces !== expectedRemainingPieces) {
-      console.error("Calculation mismatch details:", {
-        currentStockPieces,
-        toDispense,
+      // Total pieces calculation
+      const remainingPieces =
+        remainingFullBoxes * perBox + openedBoxRemainingPieces;
+
+      // Also calculate expected remaining pieces
+      const expectedRemainingPieces = currentStockPieces - toDispense;
+
+      console.log("Remaining calculation:", {
+        remainingFullBoxes,
+        openedBoxRemainingPieces,
         remainingPieces,
         expectedRemainingPieces,
-        difference: remainingPieces - expectedRemainingPieces,
+        check: remainingPieces === expectedRemainingPieces,
       });
-      throw new Error(`Inventory calculation mismatch:
-        Got ${remainingPieces}, Expected ${expectedRemainingPieces}`);
-    }
 
-    // Prepare update data
-    // The quantity field should represent total boxes (full + partial)
-    const totalBoxesAfter =
-      remainingFullBoxes + (openedBoxRemainingPieces > 0 ? 1 : 0);
+      // Verify calculation matches
+      if (remainingPieces !== expectedRemainingPieces) {
+        console.error("Calculation mismatch details:", {
+          currentStockPieces,
+          toDispense,
+          remainingPieces,
+          expectedRemainingPieces,
+          difference: remainingPieces - expectedRemainingPieces,
+        });
+        throw new Error(`Inventory calculation mismatch:
+          Got ${remainingPieces}, Expected ${expectedRemainingPieces}`);
+      }
 
-    const updateData: any = {
-      quantity: totalBoxesAfter,
-      stock: remainingPieces,
-    };
+      // Prepare update data
+      // The quantity field should represent total boxes (full + partial)
+      const totalBoxesAfter =
+        remainingFullBoxes + (openedBoxRemainingPieces > 0 ? 1 : 0);
 
-    console.log("Update data:", updateData);
+      const updateData: any = {
+        quantity: totalBoxesAfter,
+        stock: remainingPieces,
+      };
 
-    // Prepare data for dispense record - Using ALL fields from your schema
-    const dispenseRecordData: any = {
-      refCode: await generateDispenseRef(),
-      clientOpId: clientOpId || undefined,
-      quantity: toDispense.toString(),
-      suppliesId: stock.suppliesId,
-      supplyStockTrackId: stock.id,
-      remarks: body.remark || `Dispensed ${toDispense} pieces`,
-      inventoryBoxId: body.inventoryBoxId,
-      supplyBatchId: body.listId,
-      desc: stock.desc,
-    };
+      console.log("Update data:", updateData);
 
-    // Add optional fields based on request body
-    if (body.unitId) {
-      dispenseRecordData.departmentId = body.unitId;
-    }
+      // Prepare data for dispense record - Using ALL fields from your schema
+      const dispenseRecordData: any = {
+        refCode,
+        clientOpId: clientOpId || undefined,
+        quantity: toDispense.toString(),
+        suppliesId: stock.suppliesId,
+        supplyStockTrackId: stock.id,
+        remarks: body.remark || `Dispensed ${toDispense} pieces`,
+        inventoryBoxId: body.inventoryBoxId,
+        supplyBatchId: body.listId,
+        desc: stock.desc,
+      };
 
-    // Add user info - userId might be the recipient
-    if (body.userId && body.userId.trim() !== "") {
-      dispenseRecordData.userId = body.userId;
-    }
+      // Add optional fields based on request body
+      if (body.unitId) {
+        dispenseRecordData.departmentId = body.unitId;
+      }
 
-    // Add dispensary info - currUserId might be the person dispensing
-    if (body.currUserId) {
-      dispenseRecordData.dispensaryId = body.currUserId;
-    }
+      // Add user info - userId might be the recipient
+      if (body.userId && body.userId.trim() !== "") {
+        dispenseRecordData.userId = body.userId;
+      }
 
-    console.log("Dispense record data:", dispenseRecordData);
+      // Add dispensary info - currUserId might be the person dispensing
+      if (body.currUserId) {
+        dispenseRecordData.dispensaryId = body.currUserId;
+      }
 
-    // Use transaction to ensure both operations succeed or fail together
-    const response = await prisma.$transaction(async (tx) => {
-      // Update stock
-      await tx.supplyStockTrack.update({
-        where: { id: body.id },
+      console.log("Dispense record data:", dispenseRecordData);
+
+      /*
+        The write is guarded as well as locked. The lock is what makes this
+        correct; the `stock: { gte: toDispense }` condition is what makes it
+        fail loudly rather than go negative if anyone later moves this out
+        from under the lock.
+      */
+      const applied = await tx.supplyStockTrack.updateMany({
+        where: { id: body.id, stock: { gte: toDispense } },
         data: updateData,
       });
+      if (applied.count === 0) {
+        throw new ValidationError(
+          "This item's stock changed while the dispense was being recorded. " +
+            "Nothing was dispensed — refresh and try again.",
+        );
+      }
 
-      // Create dispense record - Now with all valid fields
-      await tx.supplyDispenseRecord.create({
-        data: dispenseRecordData,
-      });
+      await tx.supplyDispenseRecord.create({ data: dispenseRecordData });
 
-      return "OK";
-    });
+      return {
+        toDispense,
+        fullBoxesToGive,
+        loosePieces,
+        totalBoxesAfter,
+        remainingPieces,
+        remainingFullBoxes,
+        openedBoxRemainingPieces,
+        currentBoxes,
+        currentStockPieces,
+      };
+    },
+    /*
+      Dispensers of the same item now queue on the row lock instead of
+      racing, so a burst — the desktop flushing an offline queue, or a
+      counter with several staff — must be allowed to wait rather than be
+      rejected by the default two-second maxWait. These match the figures
+      already used by the bulk path further down this file.
+    */
+    { maxWait: 10000, timeout: 15000 });
 
-    if (!response) throw new ValidationError("FAILED TO DISPENSE");
+
+    if (!result) throw new ValidationError("FAILED TO DISPENSE");
+
+    // Computed under the lock, so these describe what was actually written.
+    const {
+      toDispense,
+      fullBoxesToGive,
+      loosePieces,
+      totalBoxesAfter,
+      remainingPieces,
+      remainingFullBoxes,
+      openedBoxRemainingPieces,
+      currentBoxes,
+      currentStockPieces,
+    } = result;
 
     // Return success response with details
     return res.code(200).send({
@@ -429,6 +530,24 @@ export const updateSupplyDispense = async (
 
   try {
     const result = await prisma.$transaction(async (tx) => {
+      /*
+        Lock the stock row this adjustment will move, BEFORE reading it.
+
+        The read below is inside the transaction, which is not by itself
+        enough: under Read Committed another dispense can change the row
+        between this read and the write, and the write sets an absolute
+        figure, so that change is silently discarded. The stock id is only
+        known from the record, hence the subquery — it locks the right row
+        in one statement rather than reading twice.
+      */
+      await tx.$queryRaw`
+        SELECT t.id FROM "SupplyStockTrack" t
+        WHERE t.id = (
+          SELECT r."supplyStockTrackId" FROM "SupplyDispenseRecord" r
+          WHERE r.id = ${body.id}
+        )
+        FOR UPDATE`;
+
       const original = await tx.supplyDispenseRecord.findUnique({
         where: { id: body.id },
         include: {
@@ -2888,8 +3007,14 @@ export const restockSupply = async (
         await tx.supplyStockTrack.update({
           where: { id: stock.id },
           data: {
-            stock: stock.stock + addedStock,
-            quantity: stock.quantity + quantity,
+            /*
+              Atomic, so two deliveries booked in at once cannot lose one
+              another's addition. The absolute form — stock.stock + added
+              — read a figure that another restock could already have
+              moved, and wrote a total that silently discarded it.
+            */
+            stock: { increment: addedStock },
+            quantity: { increment: quantity },
             ...(body.quality ? { quality: body.quality } : {}),
             ...optional,
             ...(brandCreates.length > 0

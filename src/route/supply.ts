@@ -24,7 +24,11 @@ import {
 } from "../controller/supplyController";
 
 export const supply = (fastify: FastifyInstance) => {
-  fastify.post("/add-supply", { schema: addNewSupplySchema }, addSupply);
+  fastify.post(
+    "/add-supply",
+    { preHandler: authenticated, schema: addNewSupplySchema },
+    addSupply,
+  );
   fastify.delete(
     "/delete-supply",
     { preHandler: authenticated, schema: deleteSupplySchema },
