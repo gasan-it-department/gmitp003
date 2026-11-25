@@ -312,11 +312,6 @@ export const restockSupply = async (
   }
 };
 
-// GET /supply/container-datasets?id=<inventoryBoxId>
-// Datasets belong to a CONTAINER (a container can have several), and lists
-// aren't pinned to one — so the direct "Add item" form searches/creates within
-// the container's datasets. Returns them with their supply counts.
-
 export const newOrder = async (req: FastifyRequest, res: FastifyReply) => {
   try {
     const params = req.body as { title: string; id: string; lineId: string };
@@ -342,7 +337,7 @@ export const newOrder = async (req: FastifyRequest, res: FastifyReply) => {
 
     res.code(200).send({ message: "OK", data: response });
   } catch (error) {
-    console.log(error);
+    console.error(error);
     res.code(500).send({ message: "Internal Server Error" });
   }
 };

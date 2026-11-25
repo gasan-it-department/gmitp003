@@ -63,7 +63,7 @@ export const inventories = async (req: FastifyRequest, res: FastifyReply) => {
       .code(200)
       .send({ list: response, lastCursor: nextLastCursorId, hasMore });
   } catch (error) {
-    console.log(error);
+    console.error(error);
 
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_ERROR", 500, "DB_ERROR");
@@ -85,7 +85,6 @@ export const createInventory = async (
       userId: string;
     };
 
-    console.log({ body });
 
     if (!body.name) {
       return res.code(400).send({ message: "Bad Request 12" });
@@ -153,7 +152,7 @@ export const createInventory = async (
     });
     res.code(200).send({ message: "OK", data: response });
   } catch (error) {
-    console.log(error);
+    console.error(error);
     res.code(500).send({ message: "Internal Server Error" });
   }
 };
@@ -163,7 +162,6 @@ export const viewContainerAuth = async (
   res: FastifyReply,
 ) => {
   const params = req.query as { id: string; userId: string };
-  console.log("Containers: ", { params });
 
   await assertOwned(req, "container", params.id);
   if (!params.id || !params.userId) {
@@ -202,7 +200,6 @@ export const viewContainerAuth = async (
       return data;
     });
 
-    console.log({ response });
 
     if (!response) {
       throw new NotFoundError("DATA NOT FOUND!");
@@ -293,7 +290,7 @@ export const inventoryLogsAccessList = async (
       .code(200)
       .send({ list: response, lastCursor: newLastCursorId, hasMore });
   } catch (error) {
-    console.log(error);
+    console.error(error);
     res.code(500).send({ message: "Internal Server Error" });
   }
 };
@@ -403,7 +400,7 @@ export const removeContainer = async (
 
     return res.code(200).send({ message: "Container removed successfully" });
   } catch (error) {
-    console.log(error);
+    console.error(error);
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_ERROR", 500, "DB_FAILED");
     }

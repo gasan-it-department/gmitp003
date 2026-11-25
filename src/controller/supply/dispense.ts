@@ -134,10 +134,6 @@ export const dispenseSupply = async (
       const fullBoxesToGive = Math.floor(toDispense / perBox);
       const loosePieces = toDispense % perBox;
 
-      console.log("Dispensing calculation:", {
-        fullBoxesToGive,
-        loosePieces,
-      });
 
       // Calculate remaining inventory - SIMPLIFIED CORRECT LOGIC
       let remainingFullBoxes = currentBoxes - fullBoxesToGive;
@@ -156,13 +152,6 @@ export const dispenseSupply = async (
       // Also calculate expected remaining pieces
       const expectedRemainingPieces = currentStockPieces - toDispense;
 
-      console.log("Remaining calculation:", {
-        remainingFullBoxes,
-        openedBoxRemainingPieces,
-        remainingPieces,
-        expectedRemainingPieces,
-        check: remainingPieces === expectedRemainingPieces,
-      });
 
       // Verify calculation matches
       if (remainingPieces !== expectedRemainingPieces) {
@@ -190,7 +179,6 @@ export const dispenseSupply = async (
       */
       const updateData: any = stockFields(remainingPieces, perBox);
 
-      console.log("Update data:", updateData);
 
       // Prepare data for dispense record - Using ALL fields from your schema
       const dispenseRecordData: any = {
@@ -220,7 +208,6 @@ export const dispenseSupply = async (
         dispenseRecordData.dispensaryId = body.currUserId;
       }
 
-      console.log("Dispense record data:", dispenseRecordData);
 
       /*
         The write is guarded as well as locked. The lock is what makes this
@@ -307,7 +294,7 @@ export const dispenseSupply = async (
       },
     });
   } catch (error) {
-    console.error("Error in dispenseItem:", error);
+    console.error("Error in dispenseSupply:", error);
 
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       switch (error.code) {
@@ -348,16 +335,6 @@ export const dispenseSupply = async (
     throw new AppError("INTERNAL_ERROR", 500, "An unexpected error occurred");
   }
 };
-
-/**
- * "Update" a dispense transaction by creating a compensating audit record.
- * The original record is left untouched (sacred history). A new
- * SupplyDispenseRecord is created that captures the delta:
- *   - quantity is signed (e.g. "-20" = return to stock, "+15" = extra deduct)
- *   - recipient = new recipient (or same as original if unchanged)
- *   - desc links back to the original via "ADJ:<originalId>"
- *   - stock is adjusted by the delta (return increases stock, extra decreases)
- */
 
 /**
  * "Update" a dispense transaction by creating a compensating audit record.
@@ -714,20 +691,6 @@ export const updateSupplyDispense = async (
   }
 };
 
-/*
-  dispenseItem lived here and was deleted on 2026-11-25.
-
-  It was never routed, never imported and no client referenced it,
-  but it carried a THIRD and incompatible model of the stock columns:
-  it decremented `perQuantity` — the pieces-per-box ratio, which is a
-  constant property of the packaging — and then derived `stock` from
-  boxes times that mutated ratio. Wiring it up would have corrupted
-  stock levels quietly. Dead code that is merely unused is clutter;
-  dead code that is WRONG is a trap, so it is gone rather than fixed.
-
-  dispenseSupply is the live dispense path.
-*/
-
 export const removeStockInList = async (
   req: FastifyRequest,
   res: FastifyReply,
@@ -740,7 +703,6 @@ export const removeStockInList = async (
     lineId: string;
   };
 
-  console.log({ body });
 
   if (
     !body.id ||
@@ -918,3 +880,17 @@ export const removeStockInList = async (
     throw new AppError("INTERNAL_ERROR", 500, "An unexpected error occurred");
   }
 };
+
+/*
+  dispenseItem lived here and was deleted on 2026-11-25.
+
+  It was never routed, never imported and no client referenced it,
+  but it carried a THIRD and incompatible model of the stock columns:
+  it decremented `perQuantity` — the pieces-per-box ratio, which is a
+  constant property of the packaging — and then derived `stock` from
+  boxes times that mutated ratio. Wiring it up would have corrupted
+  stock levels quietly. Dead code that is merely unused is clutter;
+  dead code that is WRONG is a trap, so it is gone rather than fixed.
+
+  dispenseSupply is the live dispense path.
+*/

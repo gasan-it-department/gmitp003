@@ -104,7 +104,6 @@ export const supplyTimeBaseReport = async (
   res: FastifyReply,
 ) => {
   const params = req.query as PagingProps;
-  console.log({ params });
 
   if (!params.id) throw new ValidationError("INVALID REQUIRED ID");
   try {
@@ -134,7 +133,6 @@ export const supplyTimeBaseReport = async (
       }
     }
 
-    console.log("Range: ", { years });
 
     const yearStart = years.length > 1 ? years[years.length - 1] : years[0];
     const yearEnd = years[0];
@@ -144,24 +142,16 @@ export const supplyTimeBaseReport = async (
       ? yearStart
       : new Date().getFullYear();
 
-    console.log("Selected Year: ", finalYearStart);
 
     const firstHalfStart = new Date(finalYearStart, 0, 1); // January 1
     const firstHalfEnd = new Date(finalYearStart, 5, 30, 23, 59, 59, 999); // June 30
     const secondHalfStart = new Date(yearEnd, 6, 1); // July 1
     const secondHalfEnd = new Date(yearEnd, 11, 31, 23, 59, 59, 999); // December 31
 
-    console.log({
-      firstHalfEnd: firstHalfEnd,
-      firstHalfStart: firstHalfStart,
-      secondHalfEnd: secondHalfEnd,
-      secondHalfStart: secondHalfStart,
-    });
 
     const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
     const limit = params.limit ? parseInt(params.limit) : 20;
 
-    //console.log(JSON.stringify(supplies, null, 2));
 
     const response = await prisma.supplies.findMany({
       where: {
@@ -211,10 +201,8 @@ export const supplyTimeBaseReport = async (
       cursor,
     });
 
-    console.log({ response });
 
     const processedData = response.map((item) => {
-      console.log("Entry");
 
       // Calculate individual supply data
       const firstHalfRecieved = item.SupplieRecieveHistory.reduce(
@@ -223,7 +211,6 @@ export const supplyTimeBaseReport = async (
             acc.timestamp >= firstHalfStart &&
             acc.timestamp <= firstHalfEnd
           ) {
-            console.log("1 R found");
 
             return (base += acc.quantity);
           }
@@ -238,7 +225,6 @@ export const supplyTimeBaseReport = async (
             acc.timestamp >= secondHalfStart &&
             acc.timestamp <= secondHalfEnd
           ) {
-            console.log("2 R found");
             return (base += acc.quantity);
           }
           return base;
@@ -248,7 +234,6 @@ export const supplyTimeBaseReport = async (
 
       const firstHalfCost = item.SupplieRecieveHistory.reduce((base, acc) => {
         if (acc.timestamp >= firstHalfStart && acc.timestamp <= firstHalfEnd) {
-          console.log("1 C found");
 
           return (base += acc.pricePerItem);
         }
@@ -317,7 +302,6 @@ export const supplyTimeBaseReport = async (
         ? processedData[processedData.length - 1].id
         : null;
     const hasMore = limit === processedData.length;
-    console.log({ processedData });
 
     return res
       .code(200)
@@ -561,13 +545,6 @@ export const timebaseReport = async (
     throw new AppError("INTERNAL_ERROR", 500, "An unexpected error occurred");
   }
 };
-
-/**
- * Excel export of the inventory issuance report.
- * Renders the SUPPLIES YYYY workbook layout: letterhead → "As of …" →
- * merged "ISSUANCE YYYY" header spanning 1ST..5TH → data rows → TOTAL →
- * Certified Correct block.
- */
 
 /**
  * Excel export of the inventory issuance report.

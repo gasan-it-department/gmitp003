@@ -206,7 +206,6 @@ export const supplyTransactionInfo = async (
   res: FastifyReply,
 ) => {
   const query = req.query as { id: string };
-  console.log({ query });
 
   if (!query.id) {
     throw new ValidationError("INVALID_ID");
@@ -293,7 +292,6 @@ export const userSupplyDispenseRecords = async (
   res: FastifyReply,
 ) => {
   const query = req.query as PagingProps;
-  console.log({ query });
 
   if (!query.id) {
     throw new ValidationError("INVALID_USER_ID");
@@ -332,7 +330,6 @@ export const userSupplyDispenseRecords = async (
       take: limit,
       cursor,
     });
-    console.log({ records });
     const newLastCursorId =
       records.length > 0 ? records[records.length - 1].id : null;
     const hasMore = records.length === limit;
@@ -365,7 +362,6 @@ export const unitSupplyDispenseRecords = async (
   res: FastifyReply,
 ) => {
   const query = req.query as PagingProps;
-  console.log("Unit: ", { query });
   if (!query.id) {
     throw new ValidationError("INVALID_UNIT_ID");
   }
@@ -432,29 +428,3 @@ export const unitSupplyDispenseRecords = async (
     throw new AppError("INTERNAL_ERROR", 500, "An unexpected error occurred");
   }
 };
-
-/**
- * Quarterly stock + dispense report.
- *
- * Behaviour:
- * - When `quarter` is a valid number (1-4): each item is returned as a
- *   per-quarter object whose populated field is the requested quarter only;
- *   dispense records are filtered to that quarter's date range.
- * - Otherwise: returns every item with all four quarters (q1..q4) computed,
- *   plus a full list of the dispense records for the year.
- */
-/**
- * Inventory issuance report.
- *
- * Returns each stock-track row with up to the first 5 issuance (dispense)
- * records of the chosen year (optionally narrowed to a single quarter) laid
- * out as `first`, `second`, `third`, `fourth`, `fifth`. Records beyond the
- * 5th are still counted into `totalDispensed` so the balance math stays
- * correct.
- *
- * Query params:
- *   - id      (required) supplyBatchId
- *   - year    (optional, defaults to current year) — 4-digit issuance year
- *   - quarter (optional, 1..4) — narrows the issuance pool to that quarter
- *   - lastCursor / limit — standard cursor paging
- */

@@ -18,7 +18,6 @@ import { supplyOrderStatus } from "../utils/helper";
 export const orders = async (req: FastifyRequest, res: FastifyReply) => {
   try {
     const { id, lastCursor, limit } = req.query as PagingProps;
-    console.log("check", { id, lastCursor, limit });
 
     if (!id) {
       throw new ValidationError("INVALID REQUIRED ID");
@@ -117,7 +116,7 @@ export const addSupplyItem = async (req: FastifyRequest, res: FastifyReply) => {
 
     await assertOwned(req, "batchOrder", params.orderId);
     await assertOwned(req, "supply", params.supplyId);
-    // console.log("Params new ORder: ", params);
+    // 
 
     if (!params.quanlity || !params.orderId || !params.supplyId) {
       return res.code(400).send({ message: "BAD REQUEST!" });
@@ -365,7 +364,6 @@ export const saveOrder = async (req: FastifyRequest, res: FastifyReply) => {
 
 export const fullFillOrder = async (req: FastifyRequest, res: FastifyReply) => {
   const body = req.body as FullFillOrderProps;
-  console.log(body);
 
   if (!body.orderId || !body.userId || !body.inventoryBoxId) {
     throw new ValidationError("BAD REQUEST!");
@@ -454,7 +452,7 @@ export const fullFillOrder = async (req: FastifyRequest, res: FastifyReply) => {
 
     return res.code(200).send({ message: "OK" });
   } catch (error) {
-    console.log(error);
+    console.error(error);
 
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("Database operation failed", 500, "DB_ERROR");
@@ -502,7 +500,6 @@ export const saveItemOrder = async (req: FastifyRequest, res: FastifyReply) => {
     const threeMonthsAgo = new Date();
     threeMonthsAgo.setMonth(currentDate.getMonth() - 7);
     const brands = body.brand ? body.brand.split(",") : [];
-    console.log({ brands });
 
     await prisma.$transaction(async (tx) => {
       const item = await tx.supplyOrder.findUnique({
@@ -687,7 +684,7 @@ export const saveItemOrder = async (req: FastifyRequest, res: FastifyReply) => {
       message: "OK",
     });
   } catch (error) {
-    console.log(error);
+    console.error(error);
 
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("Database operation failed", 500, "DB_ERROR");
@@ -701,7 +698,6 @@ export const purchaseRequest = async (
   res: FastifyReply,
 ) => {
   const params = req.query as PagingProps;
-  console.log("Params: ", params);
 
   if (!params.id) {
     throw new ValidationError("BAD_REQUEST");
@@ -754,7 +750,6 @@ export const purchaseRequest = async (
         delete filter.AND;
       }
     }
-    console.log(JSON.stringify(filter, null, 2));
 
     const response = await prisma.supplyBatchOrder.findMany({
       where: {

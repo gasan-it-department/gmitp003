@@ -149,9 +149,3 @@ export const uploadBulkExcel = async (
     throw new AppError("INTERNAL_ERROR", 500, "An unexpected error occurred");
   }
 };
-
-// POST /supply/restock
-// DIRECT re-stock: add stock to a supply inside a container/list WITHOUT going
-// through the order process (no SupplyOrder / purchase-request workflow). It
-// mirrors the stock-writing half of the order fulfillment (saveItemOrder) so
-// the order/transaction system stays fully intact for those who still need it.

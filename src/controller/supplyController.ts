@@ -1,17 +1,3 @@
-/*
-  dispenseItem lived here and was deleted on 2026-11-25.
-
-  It was never routed, never imported and no client referenced it,
-  but it carried a THIRD and incompatible model of the stock columns:
-  it decremented `perQuantity` — the pieces-per-box ratio, which is a
-  constant property of the packaging — and then derived `stock` from
-  boxes times that mutated ratio. Wiring it up would have corrupted
-  stock levels quietly. Dead code that is merely unused is clutter;
-  dead code that is WRONG is a trap, so it is gone rather than fixed.
-
-  dispenseSupply is the live dispense path.
-*/
-
 /**
  * The supplies module's handlers.
  *

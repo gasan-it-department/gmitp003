@@ -32,7 +32,7 @@ export const createDateSet = async (req: FastifyRequest, res: FastifyReply) => {
 
     return res.code(200).send({ message: "OK" });
   } catch (error) {
-    console.log(error);
+    console.error(error);
 
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       if (error.code === "P2002") {
@@ -101,7 +101,6 @@ export const dateSetData = async (req: FastifyRequest, res: FastifyReply) => {
   try {
     const params = req.query as PagingProps;
     await assertOwned(req, "dataset", (params as { id?: string }).id);
-    console.log("Params: ", { params });
 
     if (!params.id) {
       return res.code(400).send({ messag: "Bad Request" });
@@ -117,7 +116,7 @@ export const dateSetData = async (req: FastifyRequest, res: FastifyReply) => {
     }
     return res.code(200).send({ data });
   } catch (error) {
-    console.log(error);
+    console.error(error);
     res.code(500).send({ message: "Internal Server Error" });
   }
 };
@@ -132,7 +131,6 @@ export const dataSetSupplies = async (
     const filter: any = {
       suppliesDataSetId: params.id,
     };
-    console.log("Data Set Item: ", { params });
 
     if (!params.id) {
       return res.code(400).send({ message: "Bad request!" });
@@ -198,7 +196,7 @@ export const dataSetSupplies = async (
       .code(200)
       .send({ list: response, lastCursor: nextLastCursorId, hasMore });
   } catch (error) {
-    console.log(error);
+    console.error(error);
     return res.code(500).send({ message: "Internal server error" });
   }
 };
@@ -211,7 +209,7 @@ export const dataSetSelection = async (
     const body = req.query as { id: string };
     await assertOwned(req, "dataset", (body as { id?: string }).id);
   } catch (error) {
-    console.log(error);
+    console.error(error);
   }
 };
 
@@ -230,7 +228,6 @@ export const deleteDataSet = async (req: FastifyRequest, res: FastifyReply) => {
     });
     return res.code(200).send({ message: "OK" });
   } catch (error) {
-    console.log("Delete Error: ", error);
 
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_ERROR", 500, "DB_ERROR");

@@ -88,7 +88,7 @@ export const addSupply = async (req: FastifyRequest, res: FastifyReply) => {
     ) {
       throw error;
     }
-    console.log(error);
+    console.error(error);
     res.code(500).send({ message: "Internal Server Error" });
   }
 };
@@ -127,7 +127,7 @@ export const updateSupply = async (req: FastifyRequest, res: FastifyReply) => {
       // })
     ]);
   } catch (error) {
-    console.log(error);
+    console.error(error);
     res.code(500).send({ message: "Internal Server Error" });
   }
 };
@@ -159,7 +159,7 @@ export const deleteSupply = async (req: FastifyRequest, res: FastifyReply) => {
       }),
     ]);
   } catch (error) {
-    console.log(error);
+    console.error(error);
     res.code(500).send({ message: "Internal Server Error" });
   }
 };
