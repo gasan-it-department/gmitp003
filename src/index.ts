@@ -305,6 +305,7 @@ app.get("/test/ai", async (request: FastifyRequest, reply: FastifyReply) => {
 // tag with each meaningful deploy.
 import { authPosture } from "./middleware/handler";
 import { encryptionPosture } from "./service/encryption";
+import { stockConsistency } from "./service/stockMath";
 import {
   lastReencryption,
   maybeRunReencryptionAtBoot,
@@ -390,6 +391,7 @@ app.get("/health/build", async () => {
     lastSweep,
     auth: authPosture(),
     encryption: encryptionPosture(),
+    stock: await stockConsistency(),
     piiBackfill: lastReencryption(),
     pdfSigning: await signingIdentity(),
     objectStorage: await blobStoreStatus(),

@@ -1,4 +1,5 @@
 import { FastifyRequest, FastifyReply } from "../barrel/fastify";
+import { stockFields } from "../service/stockMath";
 import { assertLine, assertOwned } from "../service/inventoryScope";
 import { Prisma, prisma } from "../barrel/prisma";
 import { AppError, NotFoundError, ValidationError, dbError } from "../errors/errors";
@@ -607,8 +608,10 @@ export const saveItemOrder = async (req: FastifyRequest, res: FastifyReply) => {
           await tx.supplyStockTrack.update({
             where: { id: prior.id },
             data: {
-              stock: Math.max(0, prior.stock - prevAdded),
-              quantity: Math.max(0, prior.quantity - prevQty),
+              ...stockFields(
+                Math.max(0, prior.stock - prevAdded),
+                prior.perQuantity,
+              ),
             },
           });
         }
@@ -639,8 +642,7 @@ export const saveItemOrder = async (req: FastifyRequest, res: FastifyReply) => {
         await tx.supplyStockTrack.update({
           where: { id: stock.id },
           data: {
-            stock: stock.stock + addedStock,
-            quantity: stock.quantity + quantity,
+            ...stockFields(stock.stock + addedStock, stock.perQuantity),
             ...(body.quality ? { quality: body.quality } : {}),
             ...optional,
             ...(brandCreates.length > 0
@@ -659,8 +661,7 @@ export const saveItemOrder = async (req: FastifyRequest, res: FastifyReply) => {
         await tx.supplyStockTrack.create({
           data: {
             suppliesId: body.id,
-            stock: addedStock,
-            quantity: quantity,
+            ...stockFields(addedStock, perQuantity),
             quality: body.quality,
             perQuantity: perQuantity,
             inventoryBoxId: body.inventoryBoxId,

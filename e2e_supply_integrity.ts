@@ -38,6 +38,7 @@ require.cache[entry] = {
 
 import { prisma } from "./src/barrel/prisma";
 import { addSupply, dispenseSupply } from "./src/controller/supplyController";
+import { boxesFor } from "./src/service/stockMath";
 
 let pass = 0;
 const fails: string[] = [];
@@ -166,12 +167,13 @@ const made = {
     ok("stock never went negative", (after?.stock ?? 0) >= 0, String(after?.stock));
 
     /*
-      The second invariant: the row carries the same amount twice, as
-      pieces and as boxes. With perQuantity 1 they must agree, and the
-      controller only warns to the console when they do not.
+      The row carries the same amount twice, as pieces and as boxes. The
+      rule is `quantity === ceil(stock / perQuantity)` — NOT
+      `stock === quantity * perQuantity`, which only holds while no box
+      has been opened and was what the production check wrongly used.
     */
-    ok("the two quantity fields still agree (stock === quantity * perQuantity)",
-      (after?.stock ?? -1) === (after?.quantity ?? -2) * 1,
+    ok("boxes are consistent with pieces",
+      after?.quantity === boxesFor(after?.stock ?? 0, 1),
       `stock=${after?.stock} quantity=${after?.quantity}`);
     // -- the other half: more demand than stock --------------------
     console.log("");
@@ -217,6 +219,49 @@ const made = {
       String(scarceAfter?.stock));
     ok("no record exists for a dispense that was refused",
       scarceIssued === 40, `${scarceIssued} pieces recorded`);
+    // -- a part-used box, where the two rules disagree ---------------
+    console.log("");
+    console.log("-- dispensing from boxes of 12, leaving one part-used --");
+    const boxed = await prisma.supplyStockTrack.create({
+      data: {
+        suppliesId: supply.id,
+        ...{ stock: 108, quantity: 9 },   // 9 boxes of 12
+        perQuantity: 12,
+        desc: TAG,
+      },
+      select: { id: true },
+    });
+    made.stockIds.push(boxed.id);
+
+    const bres = mockRes();
+    await dispenseSupply(
+      {
+        body: { id: boxed.id, quantity: "10", remark: `${TAG}boxed` },
+        user: { id: acct.id },
+      } as never,
+      bres,
+    );
+    const boxedAfter = await prisma.supplyStockTrack.findUnique({
+      where: { id: boxed.id },
+      select: { stock: true, quantity: true, perQuantity: true },
+    });
+    console.log(`     stock=${boxedAfter?.stock} quantity=${boxedAfter?.quantity} per=${boxedAfter?.perQuantity}`);
+
+    ok("98 pieces remain", boxedAfter?.stock === 98, String(boxedAfter?.stock));
+    ok("held in 9 boxes, the ninth part-used",
+      boxedAfter?.quantity === 9, String(boxedAfter?.quantity));
+    ok("the real invariant holds: quantity === ceil(stock / perQuantity)",
+      boxedAfter?.quantity === boxesFor(boxedAfter?.stock ?? 0, boxedAfter?.perQuantity ?? 1),
+      `ceil(${boxedAfter?.stock}/${boxedAfter?.perQuantity}) = ${boxesFor(boxedAfter?.stock ?? 0, boxedAfter?.perQuantity ?? 1)}`);
+    /*
+      And the rule the code used to check is FALSE here — which is the
+      whole point: it would have logged "Database inconsistency" about a
+      perfectly ordinary opened box.
+    */
+    ok("...while the old rule (stock === quantity * per) is false here, as it should be",
+      boxedAfter?.stock !== (boxedAfter?.quantity ?? 0) * (boxedAfter?.perQuantity ?? 0),
+      `${boxedAfter?.stock} vs ${(boxedAfter?.quantity ?? 0) * (boxedAfter?.perQuantity ?? 0)}`);
+
     // -- the cross-municipality door --------------------------------
     console.log("");
     console.log("-- a caller from another municipality --");

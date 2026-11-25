@@ -1,4 +1,5 @@
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
+import { boxesConsistent, boxesFor, stockFields } from "../service/stockMath";
 import { assertLine, assertOwned } from "../service/inventoryScope";
 import { callerContext } from "../service/callerScope";
 import { Prisma, prisma } from "../barrel/prisma";
@@ -278,12 +279,23 @@ export const dispenseSupply = async (
       const currentStockPieces = stock.stock;
       const toDispense = parseInt(body.quantity, 10);
 
-      // Check if database consistency issue
-      if (currentStockPieces !== currentBoxes * perBox) {
-        console.warn(`Database inconsistency:
-          stock.stock = ${currentStockPieces},
-          but quantity * perQuantity = ${currentBoxes * perBox}`);
-        // You might want to fix this or use stock.stock as source of truth
+      /*
+        The row records the amount twice. `stock` is the authority — it
+        is what this function decrements and what "insufficient stock"
+        is judged against — so a disagreeing `quantity` is repaired from
+        it rather than reported and ignored.
+
+        The check here used to be `stock !== quantity * perQuantity`,
+        which is only true when no box has been opened. It therefore
+        warned on ordinary correct data and, being the wrong rule, would
+        have stayed silent on real drift.
+      */
+      if (!boxesConsistent({ ...stock, perQuantity: perBox })) {
+        console.warn(
+          `[supply] stock ${stock.id}: ${currentStockPieces} pieces but ` +
+            `${currentBoxes} boxes of ${perBox}; recomputing boxes as ` +
+            `${boxesFor(currentStockPieces, perBox)}.`,
+        );
       }
 
       // Check if enough stock
@@ -345,10 +357,13 @@ export const dispenseSupply = async (
       const totalBoxesAfter =
         remainingFullBoxes + (openedBoxRemainingPieces > 0 ? 1 : 0);
 
-      const updateData: any = {
-        quantity: totalBoxesAfter,
-        stock: remainingPieces,
-      };
+      /*
+        One derivation for both columns. `totalBoxesAfter` reached the
+        same answer by a separate route through the packing arithmetic,
+        which is a second chance to disagree with the piece count;
+        boxesFor is the only place boxes are worked out now.
+      */
+      const updateData: any = stockFields(remainingPieces, perBox);
 
       console.log("Update data:", updateData);
 
@@ -777,12 +792,9 @@ export const updateSupplyDispense = async (
           );
         }
 
-        const newBoxes =
-          newStockPieces === 0 ? 0 : Math.ceil(newStockPieces / perQ);
-
         await tx.supplyStockTrack.update({
           where: { id: stock.id },
-          data: { stock: newStockPieces, quantity: newBoxes },
+          data: stockFields(newStockPieces, perQ),
         });
       }
 
@@ -866,183 +878,19 @@ export const updateSupplyDispense = async (
   }
 };
 
-export const dispenseItem = async (req: FastifyRequest, res: FastifyReply) => {
-  const body = req.body as DispenseItemProps;
-  console.log("Request body:", body);
+/*
+  dispenseItem lived here and was deleted on 2026-11-25.
 
-  if (!body.id || !body.quantity) {
-    throw new ValidationError("Item ID and positive quantity are required");
-  }
-  await assertOwned(req, "stock", body.id);
+  It was never routed, never imported and no client referenced it,
+  but it carried a THIRD and incompatible model of the stock columns:
+  it decremented `perQuantity` — the pieces-per-box ratio, which is a
+  constant property of the packaging — and then derived `stock` from
+  boxes times that mutated ratio. Wiring it up would have corrupted
+  stock levels quietly. Dead code that is merely unused is clutter;
+  dead code that is WRONG is a trap, so it is gone rather than fixed.
 
-  try {
-    console.log("Log 1 - Starting transaction");
-
-    await prisma.$transaction(async (tx) => {
-      // 1. Get the current stock item with all necessary details
-      const stockItem = await tx.supplyStockTrack.findUnique({
-        where: {
-          id: body.id,
-        },
-        select: {
-          id: true,
-          stock: true,
-          quality: true,
-          quantity: true,
-          perQuantity: true,
-          suppliesId: true,
-        },
-      });
-      console.log("Log 2 - Stock item found:", stockItem?.id);
-
-      if (!stockItem) {
-        throw new ValidationError("Supply item not found");
-      }
-
-      const currentStock = stockItem.stock || 0;
-      const currentQuantity = stockItem.quantity || 0;
-      const currentPerQuantity = stockItem.perQuantity || 0;
-      const toDispense = parseInt(body.quantity, 10);
-
-      console.log("Log 3 - Current values:", {
-        currentStock,
-        currentQuantity,
-        currentPerQuantity,
-        toDispense,
-      });
-
-      // Validate we have enough stock
-      if (currentStock < toDispense) {
-        throw new ValidationError("Insufficient stock available");
-      }
-
-      // Calculate the dispensing logic (same algorithm as prescriptionDispense)
-      console.log("Log 4 - Starting stock calculation");
-
-      let perQuantityReal: number;
-      let perQuantityRemainder: number;
-
-      if (currentPerQuantity > 0) {
-        // If we have a perQuantity value, use the same logic as prescriptionDispense
-        perQuantityReal =
-          toDispense > currentPerQuantity
-            ? Math.floor(toDispense / currentPerQuantity)
-            : toDispense;
-
-        perQuantityRemainder =
-          toDispense >= currentPerQuantity
-            ? toDispense % currentPerQuantity
-            : currentPerQuantity;
-      } else {
-        // If perQuantity is 0, we just deduct from quantity directly
-        perQuantityReal = toDispense;
-        perQuantityRemainder = 0;
-      }
-
-      console.log("Log 5 - Calculation results:", {
-        perQuantityReal,
-        perQuantityRemainder,
-      });
-
-      const newQuantity = currentQuantity - perQuantityReal;
-      const newPerQuantity = currentPerQuantity - perQuantityRemainder;
-
-      // Ensure no negative values
-      const finalQuantity = Math.max(0, newQuantity);
-      const finalPerQuantity = Math.max(0, newPerQuantity);
-
-      // Calculate new total stock
-      const newTotalStock = finalQuantity * finalPerQuantity;
-
-      console.log("Log 6 - Updated values:", {
-        newQuantity: finalQuantity,
-        newPerQuantity: finalPerQuantity,
-        newTotalStock,
-      });
-
-      // 2. Create the dispense record
-      console.log("Log 7 - Creating dispense record");
-      await tx.supplyDispenseRecord.create({
-        data: {
-          refCode: await generateDispenseRef(),
-          supplyStockTrackId: body.id,
-          quantity: toDispense.toString(),
-          remarks: body.desc || "",
-          userId: body.userId || null,
-          departmentId: body.unitId || null,
-        },
-      });
-
-      // 3. Update the stock by deducting the quantity
-      console.log("Log 8 - Updating stock track");
-      await tx.supplyStockTrack.update({
-        where: {
-          id: body.id,
-        },
-        data: {
-          stock: newTotalStock,
-          quantity: finalQuantity,
-          perQuantity: finalPerQuantity,
-        },
-      });
-
-      // 4. Create a log entry for tracking
-      console.log("Log 9 - Creating system log");
-      // await tx.systemLogs.create({
-      //   data: {
-      //     userId: body.userId || null,
-      //     action: "DISPENSE_ITEM",
-      //     message: `Dispensed ${toDispense} units of supply item ${stockItem.supplyId}`,
-      //     details: JSON.stringify({
-      //       stockItemId: body.id,
-      //       quantityDispensed: toDispense,
-      //       previousStock: currentStock,
-      //       newStock: newTotalStock,
-      //       remarks: body.desc
-      //     }),
-      //   },
-      // });
-
-      console.log("Log 10 - Transaction completed successfully");
-    });
-
-    res.code(200).send({
-      success: true,
-      message: "Item dispensed successfully",
-    });
-  } catch (error) {
-    console.error("Error in dispenseItem:", error);
-
-    if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      // Handle specific Prisma errors
-      switch (error.code) {
-        case "P2002":
-          throw new AppError("DUPLICATE_ENTRY", 409, "Duplicate record");
-        case "P2003":
-          throw new AppError(
-            "FOREIGN_KEY_CONSTRAINT",
-            400,
-            "Invalid reference",
-          );
-        case "P2025":
-          throw new AppError("RECORD_NOT_FOUND", 404, "Record not found");
-        default:
-          console.error("Prisma error code:", error.code);
-          throw new AppError("DB_ERROR", 500, "Database operation failed");
-      }
-    }
-
-    if (error instanceof ValidationError) {
-      throw error;
-    }
-
-    if (error instanceof Error) {
-      console.error("Error stack:", error.stack);
-    }
-
-    throw new AppError("INTERNAL_ERROR", 500, "An unexpected error occurred");
-  }
-};
+  dispenseSupply is the live dispense path.
+*/
 
 export const supplyList = async (req: FastifyRequest, res: FastifyReply) => {
   const params = req.query as PagingProps;
@@ -3051,9 +2899,13 @@ export const restockSupply = async (
               another's addition. The absolute form — stock.stock + added
               — read a figure that another restock could already have
               moved, and wrote a total that silently discarded it.
+
+              Boxes are NOT incremented alongside: adding ten loose
+              pieces to a part-used box should fill that box, not open a
+              new one, so the box count is recomputed from the resulting
+              piece count just below.
             */
             stock: { increment: addedStock },
-            quantity: { increment: quantity },
             ...(body.quality ? { quality: body.quality } : {}),
             ...optional,
             ...(brandCreates.length > 0
@@ -3062,12 +2914,28 @@ export const restockSupply = async (
             price: { create: { value: priceValue, suppliesId } },
           },
         });
+
+        /*
+          Recompute the box count from the piece count the increment
+          actually produced. Done as a second statement because `ceil`
+          cannot be expressed in a Prisma atomic update; it is inside
+          the same transaction, so no reader sees the intermediate row.
+        */
+        const after = await tx.supplyStockTrack.findUnique({
+          where: { id: stock.id },
+          select: { stock: true, perQuantity: true },
+        });
+        if (after) {
+          await tx.supplyStockTrack.update({
+            where: { id: stock.id },
+            data: { quantity: boxesFor(after.stock, after.perQuantity) },
+          });
+        }
       } else {
         await tx.supplyStockTrack.create({
           data: {
             suppliesId,
-            stock: addedStock,
-            quantity,
+            ...stockFields(addedStock, perQuantity),
             quality: body.quality ?? null,
             perQuantity,
             inventoryBoxId: body.inventoryBoxId,
