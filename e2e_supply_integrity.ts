@@ -71,6 +71,29 @@ const made = {
     const line = await prisma.line.findFirst({ select: { id: true } });
     if (!line) { console.log("no line in this database"); process.exit(1); }
 
+    /*
+      A real account in the same line: dispensing is scoped to the
+      caller's municipality now, so a stub user is no longer enough —
+      which is the point.
+    */
+    const acct = await prisma.account.create({
+      data: {
+        username: `${TAG}acct${Date.now()}`,
+        password: "x",
+        lineId: line.id,
+        status: 1,
+        User: {
+          create: {
+            firstName: TAG, lastName: "adder", lineId: line.id,
+            username: `${TAG}u${Date.now()}`, email: `${TAG}@example.invalid`,
+          },
+        },
+      },
+      select: { id: true, User: { select: { id: true } } },
+    });
+    made.accountIds.push(acct.id);
+    if (acct.User) made.userIds.push(acct.User.id);
+
     const supply = await prisma.supplies.create({
       data: { item: `${TAG}item`, lineId: line.id, quantity: 1 },
       select: { id: true },
@@ -103,7 +126,7 @@ const made = {
                 quantity: String(EACH),
                 remark: `${TAG}${i}`,
               },
-              user: {},
+              user: { id: acct.id },
             } as never,
             res,
           );
@@ -167,7 +190,10 @@ const made = {
         const res = mockRes();
         try {
           await dispenseSupply(
-            { body: { id: scarce.id, quantity: "10", remark: `${TAG}s${i}` }, user: {} } as never,
+            {
+              body: { id: scarce.id, quantity: "10", remark: `${TAG}s${i}` },
+              user: { id: acct.id },
+            } as never,
             res,
           );
           return res._code === 200 || res._body?.success === true;
@@ -191,29 +217,67 @@ const made = {
       String(scarceAfter?.stock));
     ok("no record exists for a dispense that was refused",
       scarceIssued === 40, `${scarceIssued} pieces recorded`);
+    // -- the cross-municipality door --------------------------------
+    console.log("");
+    console.log("-- a caller from another municipality --");
+    const other = await prisma.line.findFirst({
+      where: { id: { not: line.id } }, select: { id: true },
+    });
+    if (other) {
+      const outsider = await prisma.account.create({
+        data: {
+          username: `${TAG}out${Date.now()}`,
+          password: "x",
+          lineId: other.id,
+          status: 1,
+          User: {
+            create: {
+              firstName: TAG, lastName: "outsider", lineId: other.id,
+              username: `${TAG}o${Date.now()}`, email: `${TAG}o@example.invalid`,
+            },
+          },
+        },
+        select: { id: true, User: { select: { id: true } } },
+      });
+      made.accountIds.push(outsider.id);
+      if (outsider.User) made.userIds.push(outsider.User.id);
+
+      const before = await prisma.supplyStockTrack.findUnique({
+        where: { id: stock.id }, select: { stock: true },
+      });
+      const r = mockRes();
+      let refused = "";
+      try {
+        await dispenseSupply(
+          {
+            body: { id: stock.id, quantity: "5", remark: `${TAG}intruder` },
+            user: { id: outsider.id },
+          } as never,
+          r,
+        );
+      } catch (e) {
+        refused = e instanceof Error ? e.message : String(e);
+      }
+      const afterIntruder = await prisma.supplyStockTrack.findUnique({
+        where: { id: stock.id }, select: { stock: true },
+      });
+
+      ok("another municipality cannot dispense this stock",
+        /not your municipality/i.test(refused), refused || `code ${r._code}`);
+      ok("and nothing moved", before?.stock === afterIntruder?.stock,
+        `${before?.stock} -> ${afterIntruder?.stock}`);
+    } else {
+      console.log("  (only one line in this database - skipped)");
+    }
+
     // -- who may add a supply, and in whose name ---------------------
     console.log("");
     console.log("-- /add-supply takes the line and the actor from the token --");
 
-    const acct = await prisma.account.create({
-      data: {
-        username: `${TAG}acct${Date.now()}`,
-        password: "x",
-        lineId: line.id,
-        status: 1,
-        User: {
-          create: {
-            firstName: TAG, lastName: "adder", lineId: line.id,
-            username: `${TAG}u${Date.now()}`, email: `${TAG}@example.invalid`,
-          },
-        },
-      },
-      select: { id: true, User: { select: { id: true } } },
+    const ds = await prisma.suppliesDataSet.findFirst({
+      where: { lineId: line.id },
+      select: { id: true },
     });
-    made.accountIds.push(acct.id);
-    if (acct.User) made.userIds.push(acct.User.id);
-
-    const ds = await prisma.suppliesDataSet.findFirst({ select: { id: true } });
 
     const callAdd = async (reqLike: Record<string, unknown>) => {
       const r = mockRes();

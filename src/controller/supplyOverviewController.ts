@@ -1,4 +1,5 @@
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
+import { assertOwned } from "../service/inventoryScope";
 import { prisma, Prisma } from "../barrel/prisma";
 import { AppError, ValidationError } from "../errors/errors";
 import { PagingProps, SupplyListOverviewProps } from "../models/route";
@@ -12,6 +13,9 @@ export const supplyOverview = async (
   if (!params.id) {
     throw new ValidationError("BAD_REQUEST");
   }
+
+  // `id` is the list being overviewed.
+  await assertOwned(req, "batch", params.id);
   try {
     const { lastCursor, limit, query, id } = params;
     const take = limit ? parseInt(limit, 10) : 20;
@@ -103,6 +107,7 @@ export const supplyOverviewStatus = async (
   res: FastifyReply
 ) => {
   const params = req.query as { listId: string };
+  await assertOwned(req, "batch", params.listId);
   if (!params) throw new ValidationError("INVALID REQUIRED ID");
   try {
     const response = await prisma.$transaction(async (tx) => {

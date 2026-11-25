@@ -1,4 +1,5 @@
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
+import { assertLine, assertOwned } from "../service/inventoryScope";
 import { Prisma, prisma } from "../barrel/prisma";
 import { AppError, ValidationError } from "../errors/errors";
 import { DeleteDataSetProps, NewDataSetProps } from "../models/route";
@@ -8,14 +9,14 @@ export const createDateSet = async (req: FastifyRequest, res: FastifyReply) => {
   try {
     const body = req.body as NewDataSetProps;
 
-    if (!body.title || !body.lineId || !body.inventoryBoxId || !body.userId) {
+    if (!body.title || !body.inventoryBoxId || !body.userId) {
       return res.code(400).send({ message: "Bad request!" });
     }
     await prisma.$transaction([
       prisma.suppliesDataSet.create({
         data: {
           title: body.title,
-          lineId: body.lineId,
+          lineId: await assertLine(req, body.lineId),
           inventoryBoxId: body.inventoryBoxId,
         },
       }),
@@ -51,6 +52,7 @@ export const createDateSet = async (req: FastifyRequest, res: FastifyReply) => {
 export const dataSetList = async (req: FastifyRequest, res: FastifyReply) => {
   try {
     const body = req.query as PagingProps;
+    await assertOwned(req, "container", body.id);
     if (!body.id) {
       return res.code(400).send({ message: "Bad request!" });
     }
@@ -98,6 +100,7 @@ export const dataSetList = async (req: FastifyRequest, res: FastifyReply) => {
 export const dateSetData = async (req: FastifyRequest, res: FastifyReply) => {
   try {
     const params = req.query as PagingProps;
+    await assertOwned(req, "dataset", (params as { id?: string }).id);
     console.log("Params: ", { params });
 
     if (!params.id) {
@@ -125,6 +128,7 @@ export const dataSetSupplies = async (
 ) => {
   try {
     const params = req.query as PagingProps;
+    await assertOwned(req, "dataset", (params as { id?: string }).id);
     const filter: any = {
       suppliesDataSetId: params.id,
     };
@@ -205,6 +209,7 @@ export const dataSetSelection = async (
 ) => {
   try {
     const body = req.query as { id: string };
+    await assertOwned(req, "dataset", (body as { id?: string }).id);
   } catch (error) {
     console.log(error);
   }
@@ -212,6 +217,7 @@ export const dataSetSelection = async (
 
 export const deleteDataSet = async (req: FastifyRequest, res: FastifyReply) => {
   const params = req.query as DeleteDataSetProps;
+  await assertOwned(req, "dataset", (params as { id?: string }).id);
 
   if (!params.id || !params.userId || !params.inventoryBoxId)
     throw new ValidationError();

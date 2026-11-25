@@ -1,4 +1,5 @@
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
+import { assertLine, assertOwned } from "../service/inventoryScope";
 import { callerContext } from "../service/callerScope";
 import { Prisma, prisma } from "../barrel/prisma";
 import ExcelJS from "exceljs";
@@ -103,6 +104,7 @@ export const deleteSupply = async (req: FastifyRequest, res: FastifyReply) => {
     if (!body.id || !body.userId || !body.inventoryBoxId) {
       return res.code(400).send({ message: "Bad Request!" });
     }
+    await assertOwned(req, "supply", body.id);
     await prisma.$transaction([
       prisma.supplies.delete({
         where: {
@@ -131,6 +133,8 @@ export const updateSupply = async (req: FastifyRequest, res: FastifyReply) => {
     if (!body.id) {
       return res.code(400).send({ message: "Bad Request" });
     }
+
+    await assertOwned(req, "supply", body.id);
     const toUpdate: any = {
       consumable: body.consumable,
     };
@@ -164,7 +168,14 @@ export const updateSupply = async (req: FastifyRequest, res: FastifyReply) => {
 export const newOrder = async (req: FastifyRequest, res: FastifyReply) => {
   try {
     const params = req.body as { title: string; id: string; lineId: string };
-    console.log("New ORder:", params);
+
+    /*
+      The list being ordered against has to be the caller's, and the order
+      is filed under the caller's municipality rather than whichever one
+      the body named.
+    */
+    await assertOwned(req, "batch", params.id);
+    const lineId = await assertLine(req, params.lineId);
 
     const refNumber = await generateOrderRef();
     const response = await prisma.supplyBatchOrder.create({
@@ -173,7 +184,7 @@ export const newOrder = async (req: FastifyRequest, res: FastifyReply) => {
         refNumber,
         supplyBatchId: params.id,
         status: 0,
-        lineId: params.lineId,
+        lineId,
       },
     });
 
@@ -193,6 +204,12 @@ export const dispenseSupply = async (
   if (!body.id || !body.quantity || parseInt(body.quantity, 10) <= 0) {
     throw new ValidationError("Item ID and positive quantity are required");
   }
+  /*
+    The stock row has to belong to the caller's municipality. Without
+    this the handler took an id and dispensed it, so knowing an id from
+    anywhere was enough to draw down another LGU's shelves.
+  */
+  await assertOwned(req, "stock", body.id);
 
   // Offline desktop dispenses carry a stable clientOpId so a retried push is
   // idempotent — if we've already recorded this op, return OK without
@@ -528,6 +545,9 @@ export const updateSupplyDispense = async (
 
   if (!body.id) throw new ValidationError("Transaction ID is required");
 
+  /* The record being adjusted must belong to the caller's line. */
+  await assertOwned(req, "dispense", body.id);
+
   try {
     const result = await prisma.$transaction(async (tx) => {
       /*
@@ -853,6 +873,7 @@ export const dispenseItem = async (req: FastifyRequest, res: FastifyReply) => {
   if (!body.id || !body.quantity) {
     throw new ValidationError("Item ID and positive quantity are required");
   }
+  await assertOwned(req, "stock", body.id);
 
   try {
     console.log("Log 1 - Starting transaction");
@@ -1690,6 +1711,10 @@ export const removeStockInList = async (
     throw new ValidationError("INVALID_REQUIRED_ID");
   }
 
+  /* The stock row, and any lineId named, must be the caller's own. */
+  await assertOwned(req, "stock", body.id);
+  await assertLine(req, body.lineId);
+
   try {
     // First, check if all required related records exist
     const [stock, inventory, supplyBatch, line] = await Promise.all([
@@ -1863,6 +1888,9 @@ export const supplyTransactionInfo = async (
   if (!query.id) {
     throw new ValidationError("INVALID_ID");
   }
+
+  // Named "transaction", but the row it reads is a dispense record.
+  await assertOwned(req, "dispense", query.id);
 
   try {
     const transaction = await prisma.supplyDispenseRecord.findUnique({
@@ -2877,6 +2905,17 @@ export const restockSupply = async (
       "An existing item (suppliesId) or a new item name, plus inventoryBoxId, listId and quantity, are required",
     );
   }
+
+  /*
+    Everything this restock touches must be the caller's: the container
+    it goes into, the list within it, and the item itself when an
+    existing one is named. A lineId in the body is honoured only when it
+    is the caller's own.
+  */
+  await assertLine(req, body.lineId);
+  await assertOwned(req, "container", body.inventoryBoxId);
+  await assertOwned(req, "batch", body.listId);
+  if (body.suppliesId) await assertOwned(req, "supply", body.suppliesId);
 
   const quantity = parseInt(String(body.quantity), 10);
   if (Number.isNaN(quantity) || quantity < 1) {

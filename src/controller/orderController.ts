@@ -1,4 +1,5 @@
 import { FastifyRequest, FastifyReply } from "../barrel/fastify";
+import { assertLine, assertOwned } from "../service/inventoryScope";
 import { Prisma, prisma } from "../barrel/prisma";
 import { AppError, NotFoundError, ValidationError, dbError } from "../errors/errors";
 import { generateItemRef } from "../middleware/handler";
@@ -112,6 +113,9 @@ export const addSupplyItem = async (req: FastifyRequest, res: FastifyReply) => {
       orderId: string;
       supplyId: string;
     };
+
+    await assertOwned(req, "batchOrder", params.orderId);
+    await assertOwned(req, "supply", params.supplyId);
     // console.log("Params new ORder: ", params);
 
     if (!params.quanlity || !params.orderId || !params.supplyId) {
@@ -167,6 +171,8 @@ export const removeOrderItem = async (
     throw new ValidationError("Item ID is Required!");
   }
 
+  await assertOwned(req, "batchOrder", params.orderId);
+
   try {
     const [order, items] = await prisma.$transaction([
       prisma.supplyBatchOrder.findUnique({
@@ -201,6 +207,7 @@ export const order = async (req: FastifyRequest, res: FastifyReply) => {
   if (!params.id) {
     throw new ValidationError();
   }
+  await assertOwned(req, "batchOrder", params.id);
   try {
     const order = await prisma.supplyBatchOrder.findUnique({
       where: {
@@ -230,6 +237,10 @@ export const updateOrderItem = async (
   if (!body.id) throw new ValidationError("Required ID not found!");
   if (!body.inventoryBoxId || !body.value)
     throw new ValidationError("BAD REQUEST!");
+
+  // A SupplyOrder line item; it belongs to its Supplies row.
+  await assertOwned(req, "order", body.id);
+  await assertOwned(req, "container", body.inventoryBoxId);
 
   const toUpdate: any = {};
   if (body.value) {
@@ -262,6 +273,9 @@ export const cancelOrder = async (req: FastifyRequest, res: FastifyReply) => {
   if (!params.id || !params.inventoryBoxId || !params.userId) {
     throw new ValidationError();
   }
+
+  await assertOwned(req, "batchOrder", params.id);
+  await assertOwned(req, "container", params.inventoryBoxId);
   try {
     const order = await prisma.supplyBatchOrder.findUnique({
       where: {
@@ -302,6 +316,7 @@ export const saveOrder = async (req: FastifyRequest, res: FastifyReply) => {
   };
 
   if (!body.id) throw new ValidationError("Order is missing");
+  await assertOwned(req, "batchOrder", body.id);
   if (!body.status) return new ValidationError("Status to update not found!");
   try {
     await prisma.$transaction(async (tx) => {
@@ -354,6 +369,9 @@ export const fullFillOrder = async (req: FastifyRequest, res: FastifyReply) => {
   if (!body.orderId || !body.userId || !body.inventoryBoxId) {
     throw new ValidationError("BAD REQUEST!");
   }
+
+  await assertOwned(req, "batchOrder", body.orderId);
+  await assertOwned(req, "container", body.inventoryBoxId);
 
   try {
     const [items, order] = await prisma.$transaction([
@@ -457,6 +475,11 @@ export const saveItemOrder = async (req: FastifyRequest, res: FastifyReply) => {
   ) {
     throw new ValidationError("BAD REQUEST!");
   }
+
+  // `id` here is the supply being received against the order.
+  await assertOwned(req, "supply", body.id);
+  await assertOwned(req, "container", body.inventoryBoxId);
+  await assertOwned(req, "batch", body.listId);
 
   try {
     // const [item, stock, supplier] = await prisma.$transaction([
@@ -778,6 +801,7 @@ export const purchaseRequestInfo = async (
   const params = req.query as { id: string };
 
   if (!params.id) throw new ValidationError("BAD_REQUEST");
+  await assertOwned(req, "batchOrder", params.id);
   try {
     const response = await prisma.supplyBatchOrder.findUnique({
       where: {

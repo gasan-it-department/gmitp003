@@ -14,7 +14,7 @@ export const dataSet = (fastify: FastifyInstance) => {
     { preHandler: authenticated },
     createDateSet
   );
-  fastify.get("/data-set-list", dataSetList);
+  fastify.get("/data-set-list", { preHandler: authenticated }, dataSetList);
   fastify.get("/data-set-info", { preHandler: authenticated }, dateSetData);
   fastify.get(
     "/data-set-supplies",

@@ -1,4 +1,5 @@
 import { Prisma, prisma } from "../barrel/prisma";
+import { assertLine } from "../service/inventoryScope";
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
 import { PagingProps } from "../models/route";
 
@@ -8,6 +9,8 @@ export const getSuppliers = async (req: FastifyRequest, res: FastifyReply) => {
   const params = req.query as PagingProps;
 
   if (!params.id) throw new ValidationError("BAD_REQUEST");
+  // `id` here is the municipality whose suppliers are being listed.
+  await assertLine(req, params.id);
   if (!params.query)
     return res.code(200).send({ list: [], lastCursor: null, hasMore: false });
 

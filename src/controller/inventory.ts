@@ -1,4 +1,5 @@
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
+import { assertLine, assertOwned, callerLine } from "../service/inventoryScope";
 import { prisma, Prisma } from "../barrel/prisma";
 import { PagingProps } from "../models/route";
 import { generatedBoxCode } from "../middleware/handler";
@@ -12,7 +13,12 @@ export const inventories = async (req: FastifyRequest, res: FastifyReply) => {
   try {
     const params = req.query as PagingProps;
     const { lastCursor, limit, query, departId, userId } = params;
-    const filter: any = {};
+    /*
+      Containers are per municipality. This filter had no line in it at
+      all, so the list handed back every LGU's containers to anyone who
+      asked for them.
+    */
+    const filter: any = { lineId: await callerLine(req) };
     const cursor = lastCursor ? { id: lastCursor } : undefined;
     if (query) {
       const searchTerms = query.trim().split(/\s+/); // Split on any whitespace
@@ -85,6 +91,12 @@ export const createInventory = async (
       return res.code(400).send({ message: "Bad Request 12" });
     }
 
+    /*
+      The container is filed under the caller's municipality, not
+      whichever one the body named.
+    */
+    const lineId = await assertLine(req, body.lineId);
+
     // Idempotent for the offline-first desktop: if the client supplies an id,
     // reuse any existing row with that id so retried pushes never duplicate and
     // the id stays aligned across web + desktop (same principle as pharmacy sync).
@@ -92,12 +104,22 @@ export const createInventory = async (
       const existing = await prisma.inventoryBox.findUnique({
         where: { id: body.id },
       });
-      if (existing) return res.code(200).send({ message: "OK", data: existing });
+      /*
+        Scoped to the caller's line. Unscoped, this replay shortcut
+        handed back somebody else's container to anyone who guessed its
+        id — the retry path was a read of another municipality's data.
+      */
+      if (existing && existing.lineId === lineId) {
+        return res.code(200).send({ message: "OK", data: existing });
+      }
+      if (existing) {
+        throw new UnauthorizedError("This is not your municipality's data.");
+      }
     }
 
     const check = await prisma.inventoryBox.findFirst({
       where: {
-        lineId: body.lineId,
+        lineId,
         name: { equals: body.name, mode: "insensitive" },
       },
       select: { id: true },
@@ -114,7 +136,7 @@ export const createInventory = async (
         ...(body.id ? { id: body.id } : {}),
         name: body.name,
         code: code,
-        lineId: body.lineId,
+        lineId,
         userId: body.userId,
         departmentId: body.departmentId || null,
         createdAt: new Date(),
@@ -143,6 +165,7 @@ export const viewContainerAuth = async (
   const params = req.query as { id: string; userId: string };
   console.log("Containers: ", { params });
 
+  await assertOwned(req, "container", params.id);
   if (!params.id || !params.userId) {
     throw new ValidationError("INVALID REQUIRED FIELDS");
   }
@@ -316,7 +339,7 @@ export const removeContainer = async (
 ) => {
   try {
     const { id, userId } = req.query as { id: string; userId: string };
-    console.log({ id, userId });
+    await assertOwned(req, "container", id);
 
     if (!id || !userId) {
       return res.code(400).send({ message: "Bad Request" });
