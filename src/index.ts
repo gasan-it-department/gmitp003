@@ -311,7 +311,7 @@ import {
   maybeRunReencryptionAtBoot,
 } from "./service/reencryptPii";
 
-const BUILD_TAG = "2026-11-25-inventory-bugfixes";
+const BUILD_TAG = "2026-11-25-pades-env";
 
 /**
  * Can this container actually rasterise a PDF page?

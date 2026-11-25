@@ -48,7 +48,7 @@ import { blobStoreConfigured, getBlob, putBlob } from "./blobStore";
  *
  * The file path and on-demand generation remain, for local development.
  */
-const P12_BASE64 = process.env.PDF_SIGN_P12_BASE64 || "";
+const readP12Base64 = () => process.env.PDF_SIGN_P12_BASE64 || "";
 const P12_PATH =
   process.env.PDF_SIGN_P12_PATH ||
   path.join(process.cwd(), ".secrets", "doc-signing.p12");
@@ -66,6 +66,88 @@ const P12_BUCKET_KEY =
 
 /** A PKCS#12 smaller than this is not a key, it is a mangled paste. */
 const P12_MIN_BYTES = 500;
+
+/**
+ * What base64 of this length should decode to.
+ *
+ * Buffer.from drops invalid characters without complaint, so a shortfall
+ * against this is the signature of a value that lost bytes on the way in.
+ * A value that decodes to exactly this and is still too small is a
+ * different mistake -- a complete paste of an incomplete file -- and
+ * telling the two apart is the difference between hunting for stray
+ * newlines and simply pasting the whole thing again.
+ */
+const expectedBytes = (chars: number) => Math.floor((chars * 3) / 4);
+
+/**
+ * Whether a buffer opens like a PKCS#12 at all.
+ *
+ * A .p12/.pfx is DER: a SEQUENCE, so 0x30, and since it runs to kilobytes
+ * its length is encoded long-form, so the top bit of the next byte is set.
+ * A PEM file starts with "-" (0x2d) and a base64-of-PEM starts with "L"
+ * (0x4c), both of which fail this and are the two things most often
+ * pasted by mistake.
+ */
+const looksLikeP12 = (buf: Buffer) =>
+  buf.length > 4 && buf[0] === 0x30 && (buf[1] & 0x80) !== 0;
+
+/**
+ * Whether this really is a PKCS#12 that this process can open.
+ *
+ * The size floor and the DER opening both read only the first bytes, so a
+ * value corrupted in the middle clears them, gets accepted, and then
+ * fails at every signature — leaving the identity "unavailable" and
+ * nothing signed, which is worse than the mangled paste the floor exists
+ * to catch, because the fall-through to the bucket never happens.
+ *
+ * Parsing it once, here, is the only check that answers the question. It
+ * costs a single parse per process, since the result is cached.
+ */
+const p12OpenError = async (buf: Buffer): Promise<string | null> => {
+  try {
+    const forge = await import("node-forge");
+    const f = forge.default;
+    f.pkcs12.pkcs12FromAsn1(
+      f.asn1.fromDer(buf.toString("binary")),
+      P12_PASSPHRASE,
+    );
+    return null;
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e);
+  }
+};
+
+/** Why a supplied value cannot be used, in terms of what to do about it. */
+const describeRejection = (cleaned: string, buf: Buffer): string => {
+  const expected = expectedBytes(cleaned.length);
+  const lost = expected - buf.length;
+
+  if (lost > 2) {
+    return (
+      `ignored: ${cleaned.length} base64 characters should decode to about ` +
+      `${expected} bytes but produced ${buf.length}, so roughly ${lost} were ` +
+      `dropped as invalid base64 — the value is corrupt rather than merely ` +
+      `short. Re-copy it; a dashboard textarea will often have folded it.`
+    );
+  }
+
+  if (buf.length < P12_MIN_BYTES) {
+    return (
+      `ignored: ${cleaned.length} base64 characters decoded cleanly to ` +
+      `${buf.length} bytes, so nothing was lost in transit — there is simply ` +
+      `not much there. A whole p12 is some 3,400 characters, so this is a ` +
+      `fragment of one, usually the first line of a paste that wrapped.`
+    );
+  }
+
+  const first = buf[0]?.toString(16).padStart(2, "0") ?? "??";
+  return (
+    `ignored: decoded cleanly to ${buf.length} bytes, but it does not open ` +
+    `like a PKCS#12 — expected a DER sequence (0x30 with a long-form ` +
+    `length), found 0x${first}. Check that it is base64 of a .p12/.pfx ` +
+    `file, not of a PEM certificate or a private key on its own.`
+  );
+};
 
 type IdentitySource = "env" | "bucket" | "file" | "generated";
 
@@ -122,10 +204,13 @@ const loadIdentity = async (): Promise<{
     SHORTER, corrupt key rather than an error, which then fails somewhere
     far less obvious. Better to refuse it loudly than to sign with it.
   */
-  if (P12_BASE64) {
-    const cleaned = P12_BASE64.replace(/\s+/g, "");
+  const supplied = readP12Base64();
+  if (supplied) {
+    const cleaned = supplied.replace(/\s+/g, "");
     const buf = Buffer.from(cleaned, "base64");
-    if (buf.length >= P12_MIN_BYTES) {
+    const shapeOk = buf.length >= P12_MIN_BYTES && looksLikeP12(buf);
+    const openError = shapeOk ? await p12OpenError(buf) : null;
+    if (shapeOk && !openError) {
       cachedIdentity = { buf, source: "env" };
       return cachedIdentity;
     }
@@ -140,9 +225,11 @@ const loadIdentity = async (): Promise<{
       than silently dropped, so this cannot quietly mask a deliberate
       identity that simply failed to arrive.
     */
-    envRejected =
-      `ignored: decoded to only ${buf.length} bytes from ` +
-      `${cleaned.length} base64 chars, so it is truncated or mangled`;
+    envRejected = openError
+      ? `ignored: ${buf.length} bytes that open like a PKCS#12 but will not ` +
+        `parse (${openError}) — usually a value corrupted part-way through, ` +
+        `or the wrong PDF_SIGN_P12_PASSPHRASE for it`
+      : describeRejection(cleaned, buf);
     console.error(`[pades] PDF_SIGN_P12_BASE64 ${envRejected}`);
   }
 
@@ -413,7 +500,14 @@ export const signingIdentity = async (): Promise<{
       subject: null,
       notAfter: null,
       error: e instanceof Error ? e.message : String(e),
-      base64Chars: P12_BASE64 ? P12_BASE64.replace(/\s+/g, "").length : 0,
+      // The one path that used to omit this, and the one where it matters
+      // most: when nothing loaded at all, why the variable was passed over
+      // is the first thing worth knowing.
+      ...(envRejected ? { envVar: envRejected } : {}),
+      base64Chars: (() => {
+        const supplied = readP12Base64();
+        return supplied ? supplied.replace(/\s+/g, "").length : 0;
+      })(),
       hasPassphrase: P12_PASSPHRASE.length > 0,
     } as never;
   }
