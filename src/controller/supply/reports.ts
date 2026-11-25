@@ -26,6 +26,7 @@ export const timebaseSupplyReport = async (
     if (params.period === "Annually") period = 1;
 
     const cursor = params.lastCursor ? { id: params.lastCursor } : undefined;
+    const take = params.limit ? parseInt(params.limit, 10) : 20;
 
     const currentYear = new Date().getFullYear();
     const startOfYear = new Date(currentYear, 0, 1); // Jan 1, current year
@@ -63,6 +64,9 @@ export const timebaseSupplyReport = async (
         },
       },
       cursor,
+      take,
+      // Prisma's cursor is inclusive; every sibling handler skips it.
+      skip: cursor ? 1 : 0,
     });
 
     const groupedPrice: TimebaseGroupPrice[] = [];
@@ -86,7 +90,10 @@ export const timebaseSupplyReport = async (
       groupedPrice.length > 0
         ? groupedPrice[groupedPrice.length - 1].item.id
         : null;
-    const hasMore = groupedPrice.length === parseInt(params.limit, 10);
+    // Against the rows fetched and the limit actually used: comparing
+    // with parseInt(params.limit) said "no more pages" whenever the
+    // client sent no limit, because every comparison with NaN is false.
+    const hasMore = response.length === take;
 
     return res
       .code(200)

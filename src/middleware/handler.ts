@@ -498,17 +498,14 @@ export const viewContainerAuth = async (
 };
 
 export const generatedItemCode = async () => {
-  let isUnique = false;
-  const generated = Math.floor(100000 + Math.random() * 900000);
-  while (!isUnique) {
-    const check = await prisma.supplies.findFirst({
-      where: {
-        quantity: generated,
-      },
+  for (;;) {
+    const generated = Math.floor(100000 + Math.random() * 900000);
+    const check = await prisma.supplies.findUnique({
+      where: { code: generated },
+      select: { id: true },
     });
-    if (!check) isUnique = true;
+    if (!check) return generated;
   }
-  return generated;
 };
 
 function generateSecureRef(len: number): string {

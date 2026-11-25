@@ -6,10 +6,11 @@
  */
 import { FastifyReply, FastifyRequest } from "../../barrel/fastify";
 import { Prisma, prisma } from "../../barrel/prisma";
+import { assertLine, assertOwned } from "../../service/inventoryScope";
 import ExcelJS from "exceljs";
 import { Readable } from "stream";
 import { generatedItemCode } from "../../middleware/handler";
-import { AppError, ValidationError } from "../../errors/errors";
+import { AppError, ValidationError, UnauthorizedError } from "../../errors/errors";
 
 
 export const uploadBulkExcel = async (
@@ -46,6 +47,14 @@ export const uploadBulkExcel = async (
       throw new ValidationError("INVALID FILE");
     }
 
+    /*
+      The line and data set named in the form must be the caller's own.
+      They arrive as multipart fields, which is how they escaped the
+      scoping added to the handlers that read body or query.
+    */
+    const lineId = await assertLine(req, formData.lineId);
+    await assertOwned(req, "dataset", formData.dataSetId);
+
     const workbook = new ExcelJS.Workbook();
     const stream = Readable.from(fileBuffer);
     await workbook.xlsx.read(stream);
@@ -73,7 +82,7 @@ export const uploadBulkExcel = async (
         where: {
           item: { in: batch },
           suppliesDataSetId: formData.dataSetId,
-          lineId: formData.lineId,
+          lineId,
         },
         select: { item: true },
       });
@@ -105,7 +114,7 @@ export const uploadBulkExcel = async (
         item,
         code,
         suppliesDataSetId: formData.dataSetId,
-        lineId: formData.lineId,
+        lineId,
         consumable: false,
         description: "",
       });
@@ -121,6 +130,7 @@ export const uploadBulkExcel = async (
         });
         insertedCount += result.count;
       } catch (error) {
+        if (error instanceof UnauthorizedError) throw error;
         console.error(`Error inserting batch ${i / BATCH_SIZE + 1}:`, error);
         throw new AppError(
           "BATCH_INSERT_ERROR",
@@ -138,6 +148,7 @@ export const uploadBulkExcel = async (
       skippedCount: itemsToInsert.length - insertedCount,
     });
   } catch (error) {
+    if (error instanceof UnauthorizedError) throw error;
     if (error instanceof ValidationError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       console.error("Prisma error code:", error.code);

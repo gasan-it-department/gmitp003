@@ -1,5 +1,6 @@
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
 import { assertLine, assertOwned, callerLine } from "../service/inventoryScope";
+import { callerContext } from "../service/callerScope";
 import { prisma, Prisma } from "../barrel/prisma";
 import { PagingProps } from "../models/route";
 import { generatedBoxCode } from "../middleware/handler";
@@ -20,6 +21,7 @@ export const inventories = async (req: FastifyRequest, res: FastifyReply) => {
     */
     const filter: any = { lineId: await callerLine(req) };
     const cursor = lastCursor ? { id: lastCursor } : undefined;
+    const take = limit ? parseInt(limit, 10) : 20;
     if (query) {
       const searchTerms = query.trim().split(/\s+/); // Split on any whitespace
 
@@ -51,13 +53,15 @@ export const inventories = async (req: FastifyRequest, res: FastifyReply) => {
         ...filter,
       },
       cursor,
-      take: parseInt(limit, 10),
+      take,
       skip: cursor ? 1 : 0,
     });
 
     const nextLastCursorId =
       response.length > 0 ? response[response.length - 1].id : null;
-    const hasMore = response.length === 20;
+    // Against the limit actually used. This was the literal 20, so any
+    // other page size reported "no more pages" and paging stopped.
+    const hasMore = response.length === take;
 
     res
       .code(200)
@@ -152,6 +156,7 @@ export const createInventory = async (
     });
     res.code(200).send({ message: "OK", data: response });
   } catch (error) {
+    if (error instanceof UnauthorizedError) throw error;
     console.error(error);
     res.code(500).send({ message: "Internal Server Error" });
   }
@@ -207,6 +212,7 @@ export const viewContainerAuth = async (
 
     return res.code(200).send({ message: "OK", data: response });
   } catch (error) {
+    if (error instanceof UnauthorizedError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_ERROR", 500, "DB_FAILED");
     }
@@ -223,8 +229,11 @@ export const inventoryLogsAccessList = async (
     if (!id) {
       return res.code(400).send({ message: "Bad Request" });
     }
+    /* Whose container's access list this is. */
+    await assertOwned(req, "container", id);
     const filter: any = {};
     const cursor = lastCursor ? { id: lastCursor } : undefined;
+    const take = limit ? parseInt(limit, 10) : 20;
 
     if (query) {
       const searchTerms = query.trim().split(/\s+/); // Split on any whitespace
@@ -238,8 +247,8 @@ export const inventoryLogsAccessList = async (
       } else {
         filter.AND = searchTerms.map((term) => ({
           OR: [
-            { firstname: { contains: term, mode: "insensitive" } },
-            { lastname: { contains: term, mode: "insensitive" } },
+            { firstName: { contains: term, mode: "insensitive" } },
+            { lastName: { contains: term, mode: "insensitive" } },
           ],
         }));
 
@@ -257,7 +266,7 @@ export const inventoryLogsAccessList = async (
         inventoryBoxId: id,
       },
       cursor,
-      take: parseInt(limit, 10),
+      take,
       skip: cursor ? 1 : 0,
       select: {
         id: true,
@@ -284,12 +293,13 @@ export const inventoryLogsAccessList = async (
 
     const newLastCursorId =
       response.length > 0 ? response[response.length - 1].id : null;
-    const hasMore = response.length === parseInt(limit, 10);
+    const hasMore = response.length === take;
 
     return res
       .code(200)
       .send({ list: response, lastCursor: newLastCursorId, hasMore });
   } catch (error) {
+    if (error instanceof UnauthorizedError) throw error;
     console.error(error);
     res.code(500).send({ message: "Internal Server Error" });
   }
@@ -341,6 +351,7 @@ export const removeContainer = async (
     if (!id || !userId) {
       return res.code(400).send({ message: "Bad Request" });
     }
+    const caller = await callerContext(req);
     const response = await prisma.$transaction(async (tx) => {
       const items = await tx.supplies.count({
         where: {
@@ -386,7 +397,7 @@ export const removeContainer = async (
       });
       await tx.inventoryAccessLogs.create({
         data: {
-          userId,
+          userId: caller.actorId,
           action: "REMOVED CONTAINER",
         },
       });
@@ -400,6 +411,7 @@ export const removeContainer = async (
 
     return res.code(200).send({ message: "Container removed successfully" });
   } catch (error) {
+    if (error instanceof UnauthorizedError) throw error;
     console.error(error);
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("DB_CONNECTION_ERROR", 500, "DB_FAILED");

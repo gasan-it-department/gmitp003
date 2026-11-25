@@ -1,7 +1,7 @@
 import { FastifyReply, FastifyRequest } from "../barrel/fastify";
 import { assertLine, assertOwned } from "../service/inventoryScope";
 import { Prisma, prisma } from "../barrel/prisma";
-import { AppError, ValidationError } from "../errors/errors";
+import { AppError, ValidationError, UnauthorizedError } from "../errors/errors";
 import { DeleteDataSetProps, NewDataSetProps } from "../models/route";
 import { PagingProps } from "../models/route";
 
@@ -32,6 +32,7 @@ export const createDateSet = async (req: FastifyRequest, res: FastifyReply) => {
 
     return res.code(200).send({ message: "OK" });
   } catch (error) {
+    if (error instanceof UnauthorizedError) throw error;
     console.error(error);
 
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
@@ -90,6 +91,7 @@ export const dataSetList = async (req: FastifyRequest, res: FastifyReply) => {
       hasMore,
     });
   } catch (error) {
+    if (error instanceof UnauthorizedError) throw error;
     return res.status(500).send({
       error: "Internal Server Error",
       message: "Something went wrong",
@@ -116,6 +118,7 @@ export const dateSetData = async (req: FastifyRequest, res: FastifyReply) => {
     }
     return res.code(200).send({ data });
   } catch (error) {
+    if (error instanceof UnauthorizedError) throw error;
     console.error(error);
     res.code(500).send({ message: "Internal Server Error" });
   }
@@ -196,6 +199,7 @@ export const dataSetSupplies = async (
       .code(200)
       .send({ list: response, lastCursor: nextLastCursorId, hasMore });
   } catch (error) {
+    if (error instanceof UnauthorizedError) throw error;
     console.error(error);
     return res.code(500).send({ message: "Internal server error" });
   }
@@ -209,6 +213,7 @@ export const dataSetSelection = async (
     const body = req.query as { id: string };
     await assertOwned(req, "dataset", (body as { id?: string }).id);
   } catch (error) {
+    if (error instanceof UnauthorizedError) throw error;
     console.error(error);
   }
 };

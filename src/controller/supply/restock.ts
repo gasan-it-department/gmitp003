@@ -7,9 +7,10 @@
 import { FastifyReply, FastifyRequest } from "../../barrel/fastify";
 import { boxesFor, stockFields } from "../../service/stockMath";
 import { assertLine, assertOwned } from "../../service/inventoryScope";
+import { callerContext } from "../../service/callerScope";
 import { Prisma, prisma } from "../../barrel/prisma";
 import { generatedItemCode, generateOrderRef } from "../../middleware/handler";
-import { AppError, NotFoundError, ValidationError } from "../../errors/errors";
+import { AppError, NotFoundError, ValidationError, UnauthorizedError } from "../../errors/errors";
 
 
 // POST /supply/restock
@@ -71,6 +72,7 @@ export const restockSupply = async (
   await assertOwned(req, "container", body.inventoryBoxId);
   await assertOwned(req, "batch", body.listId);
   if (body.suppliesId) await assertOwned(req, "supply", body.suppliesId);
+  const caller = await callerContext(req);
 
   const quantity = parseInt(String(body.quantity), 10);
   if (Number.isNaN(quantity) || quantity < 1) {
@@ -138,16 +140,16 @@ export const restockSupply = async (
           },
         });
         suppliesId = supply.id;
-        if (body.userId) {
-          await tx.inventoryAccessLogs.create({
-            data: {
-              userId: body.userId,
-              inventoryBoxId: body.inventoryBoxId,
-              action: `Added Supply (direct): ${supply.item}`,
-              timestamp: new Date(),
-            },
-          });
-        }
+        // Unconditional: this was skipped entirely when the request
+        // carried no userId, which is a stock-in with no trail.
+        await tx.inventoryAccessLogs.create({
+          data: {
+            userId: caller.actorId,
+            inventoryBoxId: body.inventoryBoxId,
+            action: `Added Supply (direct): ${supply.item}`,
+            timestamp: new Date(),
+          },
+        });
       }
 
       // Resolve supplier — accept an id, a known name, or create a new one.
@@ -277,11 +279,15 @@ export const restockSupply = async (
 
       // Audit trail (system requirement) — the stock-in is still recorded even
       // though it skipped the order process.
-      if (body.userId && body.lineId) {
+      // The line is the caller's own — assertLine above saw to that —
+      // so fall back to it rather than dropping the row, which is what
+      // happened whenever either field was left out of the request.
+      const auditLineId = body.lineId || caller.lineId;
+      if (auditLineId) {
         await tx.inventoryLogs.create({
           data: {
-            lineId: body.lineId,
-            userId: body.userId,
+            lineId: auditLineId,
+            userId: caller.actorId,
             action: 1,
             desc: `DIRECT RESTOCK: +${addedStock} unit(s) of "${supply.item}" (qty ${quantity} x ${perQuantity})`,
           },
@@ -337,6 +343,7 @@ export const newOrder = async (req: FastifyRequest, res: FastifyReply) => {
 
     res.code(200).send({ message: "OK", data: response });
   } catch (error) {
+    if (error instanceof UnauthorizedError) throw error;
     console.error(error);
     res.code(500).send({ message: "Internal Server Error" });
   }

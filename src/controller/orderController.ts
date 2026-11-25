@@ -1,8 +1,9 @@
 import { FastifyRequest, FastifyReply } from "../barrel/fastify";
 import { stockFields } from "../service/stockMath";
 import { assertLine, assertOwned } from "../service/inventoryScope";
+import { callerContext } from "../service/callerScope";
 import { Prisma, prisma } from "../barrel/prisma";
-import { AppError, NotFoundError, ValidationError, dbError } from "../errors/errors";
+import { AppError, NotFoundError, ValidationError, dbError, UnauthorizedError } from "../errors/errors";
 import { generateItemRef } from "../middleware/handler";
 import {
   DeleteOrderItemProps,
@@ -23,11 +24,14 @@ export const orders = async (req: FastifyRequest, res: FastifyReply) => {
       throw new ValidationError("INVALID REQUIRED ID");
     }
     const cursor = lastCursor ? { id: lastCursor } : undefined;
+    // Defaulted: Prisma rejects take: NaN with "Argument `take` is
+    // missing", so omitting the limit was a 500 rather than a page of 20.
+    const take = limit ? parseInt(limit, 10) : 20;
     const response = await prisma.supplyBatchOrder.findMany({
       where: {
         supplyBatchId: id,
       },
-      take: parseInt(limit, 10),
+      take,
       skip: cursor ? 1 : 0,
       cursor,
       include: {
@@ -41,7 +45,7 @@ export const orders = async (req: FastifyRequest, res: FastifyReply) => {
 
     const newLastCursorId =
       response.length > 0 ? response[response.length - 1].id : null;
-    const hasMore = response.length === parseInt(limit, 10);
+    const hasMore = response.length === take;
 
     return res.code(200).send({
       list: response,
@@ -90,7 +94,7 @@ export const orderItemList = async (req: FastifyRequest, res: FastifyReply) => {
 
     const newLastCursorId =
       items.length > 0 ? items[items.length - 1].id : null;
-    const hasMore = items.length === parseInt(limit, 10);
+    const hasMore = items.length === take;
 
     return res.code(200).send({
       list: items,
@@ -154,6 +158,7 @@ export const addSupplyItem = async (req: FastifyRequest, res: FastifyReply) => {
 
     return res.code(200).send({ message: "Success!" });
   } catch (error) {
+    if (error instanceof UnauthorizedError) throw error;
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       throw new AppError("Database operation failed", 500, "DB_ERROR");
     }
@@ -276,6 +281,7 @@ export const cancelOrder = async (req: FastifyRequest, res: FastifyReply) => {
 
   await assertOwned(req, "batchOrder", params.id);
   await assertOwned(req, "container", params.inventoryBoxId);
+  const caller = await callerContext(req);
   try {
     const order = await prisma.supplyBatchOrder.findUnique({
       where: {
@@ -292,7 +298,7 @@ export const cancelOrder = async (req: FastifyRequest, res: FastifyReply) => {
       }),
       prisma.inventoryAccessLogs.create({
         data: {
-          userId: params.userId,
+          userId: caller.actorId,
           action: `Deleted ORDER Ref No.: ${order.refNumber}`,
           inventoryBoxId: params.inventoryBoxId,
           timestamp: new Date(),
@@ -318,6 +324,7 @@ export const saveOrder = async (req: FastifyRequest, res: FastifyReply) => {
   if (!body.id) throw new ValidationError("Order is missing");
   await assertOwned(req, "batchOrder", body.id);
   if (!body.status) return new ValidationError("Status to update not found!");
+  const caller = await callerContext(req);
   try {
     await prisma.$transaction(async (tx) => {
       const items = await tx.supplyOrder.findMany({
@@ -339,7 +346,7 @@ export const saveOrder = async (req: FastifyRequest, res: FastifyReply) => {
       await tx.inventoryAccessLogs.create({
         data: {
           inventoryBoxId: body.inventoryBoxId,
-          userId: body.userId,
+          userId: caller.actorId,
           timestamp: new Date(),
           action: `Save Order: ${order.title} - Ref. Number: ${order.refNumber}`,
         },
@@ -371,6 +378,7 @@ export const fullFillOrder = async (req: FastifyRequest, res: FastifyReply) => {
 
   await assertOwned(req, "batchOrder", body.orderId);
   await assertOwned(req, "container", body.inventoryBoxId);
+  const caller = await callerContext(req);
 
   try {
     const [items, order] = await prisma.$transaction([
@@ -412,7 +420,7 @@ export const fullFillOrder = async (req: FastifyRequest, res: FastifyReply) => {
       operations.push(
         prisma.inventoryAccessLogs.create({
           data: {
-            userId: body.userId,
+            userId: caller.actorId,
             inventoryBoxId: body.inventoryBoxId,
             action: `Fullfilled Order: ${order.title} Ref No.: ${order.refNumber}`,
           },

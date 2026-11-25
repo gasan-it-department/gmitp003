@@ -10,6 +10,7 @@
 import { FastifyReply, FastifyRequest } from "../../barrel/fastify";
 import { boxesConsistent, boxesFor, stockFields } from "../../service/stockMath";
 import { assertLine, assertOwned } from "../../service/inventoryScope";
+import { callerContext } from "../../service/callerScope";
 import { Prisma, prisma } from "../../barrel/prisma";
 import { DispenseItemProps } from "../../models/route";
 import { generateDispenseRef } from "../../middleware/handler";
@@ -27,8 +28,19 @@ export const dispenseSupply = async (
 ) => {
   const body = req.body as DispenseItemProps;
 
-  if (!body.id || !body.quantity || parseInt(body.quantity, 10) <= 0) {
-    throw new ValidationError("Item ID and positive quantity are required");
+  if (!body.id) {
+    throw new ValidationError("Item ID is required");
+  }
+  /*
+    Strict, because parseInt is forgiving in ways that cost stock:
+    parseInt("9abc") is 9 and parseInt("1e3") is 1, and the old guard let
+    NaN past entirely since NaN <= 0 is false.
+  */
+  const requested = String(body.quantity ?? "").trim();
+  if (!/^\d+$/.test(requested) || parseInt(requested, 10) <= 0) {
+    throw new ValidationError(
+      "Quantity must be a whole number greater than zero.",
+    );
   }
   /*
     The stock row has to belong to the caller's municipality. Without
@@ -102,7 +114,7 @@ export const dispenseSupply = async (
       const currentBoxes = stock.quantity;
       const perBox = stock.perQuantity;
       const currentStockPieces = stock.stock;
-      const toDispense = parseInt(body.quantity, 10);
+      const toDispense = parseInt(requested, 10);
 
       /*
         The row records the amount twice. `stock` is the authority — it
@@ -426,7 +438,48 @@ export const updateSupplyDispense = async (
       const stock = original.supply;
       const perQ = stock.perQuantity || 1;
       const currentStockPieces = stock.stock;
-      const oldQty = parseInt(original.quantity, 10) || 0;
+      /*
+        The transaction as it stands NOW, not as it was created.
+
+        `original.quantity` is never rewritten — an edit records a
+        compensating "ADJ:" row instead, which is what keeps the audit
+        trail intact. Reading the base row alone therefore measured every
+        edit against the amount first dispensed, and an edit that is
+        resent applies twice: "set this to 15", sent three times against
+        a dispense of 10, took 25 pieces while logging +5 three times.
+
+        Summing the ADJ rows gives the true total and handles both kinds
+        of edit: an adjustment contributes its signed delta, while a
+        transfer's -N/+N pair nets to zero, because a transfer moves
+        units between recipients without changing how many were issued.
+      */
+      const baseQty = parseInt(original.quantity, 10) || 0;
+      const adjustments = await tx.supplyDispenseRecord.findMany({
+        where: { desc: `ADJ:${original.id}` },
+        select: { quantity: true, userId: true, departmentId: true },
+      });
+      const sumOf = (rows: { quantity: string }[]) =>
+        rows.reduce((total, r) => total + (parseInt(r.quantity, 10) || 0), 0);
+
+      const oldQty = baseQty + sumOf(adjustments);
+
+      /*
+        What the ORIGINAL recipient still holds, which is the ceiling on a
+        transfer: oldQty above counts units already moved to someone else,
+        and drawing on those let a 10-unit dispense be transferred away
+        eight at a time without end. The deduction side of a transfer
+        keeps the original recipient, so matching on recipient separates
+        what is still theirs from what has left.
+      */
+      const heldByRecipient =
+        baseQty +
+        sumOf(
+          adjustments.filter(
+            (a) =>
+              a.userId === original.userId &&
+              a.departmentId === original.departmentId,
+          ),
+        );
       const parentRef = original.refCode ?? original.id.slice(0, 8);
 
       // Human-readable label for the original recipient
@@ -460,9 +513,9 @@ export const updateSupplyDispense = async (
           throw new ValidationError(
             "Transfer quantity must be a positive number.",
           );
-        if (transferQty > oldQty)
+        if (transferQty > heldByRecipient)
           throw new ValidationError(
-            `Cannot transfer ${transferQty} units — original transaction only has ${oldQty} units.`,
+            `Cannot transfer ${transferQty} units — this transaction only has ${heldByRecipient} units left with its recipient.`,
           );
 
         const newToUserId = body.toUserId || null;
@@ -502,7 +555,7 @@ export const updateSupplyDispense = async (
         // 1) Deduction from original recipient
         const remarksDeduct =
           `Transferred ${transferQty} units to ${destinationLabel}. ` +
-          `Original txn ${parentRef} reduced from ${oldQty} → ${oldQty - transferQty}. ` +
+          `Original txn ${parentRef} reduced from ${heldByRecipient} → ${heldByRecipient - transferQty}. ` +
           `See ${transferRef} for the receiving side.`;
 
         const deduction = await tx.supplyDispenseRecord.create({
@@ -717,6 +770,7 @@ export const removeStockInList = async (
   /* The stock row, and any lineId named, must be the caller's own. */
   await assertOwned(req, "stock", body.id);
   await assertLine(req, body.lineId);
+  const caller = await callerContext(req);
 
   try {
     // First, check if all required related records exist
@@ -789,7 +843,7 @@ export const removeStockInList = async (
           data: {
             lineId: body.lineId,
             supplyBatchId: body.listId,
-            userId: body.userId,
+            userId: caller.actorId,
             suppliesId: stock.suppliesId,
             action: 3, // 0 - add, 1 - update, 3 - remove
             quantity: stock.quantity,

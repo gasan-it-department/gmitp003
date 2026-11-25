@@ -127,6 +127,7 @@ export const updateSupply = async (req: FastifyRequest, res: FastifyReply) => {
       // })
     ]);
   } catch (error) {
+    if (error instanceof UnauthorizedError) throw error;
     console.error(error);
     res.code(500).send({ message: "Internal Server Error" });
   }
@@ -143,6 +144,7 @@ export const deleteSupply = async (req: FastifyRequest, res: FastifyReply) => {
       return res.code(400).send({ message: "Bad Request!" });
     }
     await assertOwned(req, "supply", body.id);
+    const caller = await callerContext(req);
     await prisma.$transaction([
       prisma.supplies.delete({
         where: {
@@ -153,12 +155,13 @@ export const deleteSupply = async (req: FastifyRequest, res: FastifyReply) => {
         data: {
           action: "Deleted an item.",
           inventoryBoxId: body.inventoryBoxId,
-          userId: body.userId,
+          userId: caller.actorId,
           timestamp: new Date(),
         },
       }),
     ]);
   } catch (error) {
+    if (error instanceof UnauthorizedError) throw error;
     console.error(error);
     res.code(500).send({ message: "Internal Server Error" });
   }
