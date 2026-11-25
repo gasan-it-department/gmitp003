@@ -15,3 +15,8 @@ node_modules
 # a tag changed in TypeScript only, with dist/ left stale, appeared in
 # production), so committing it only produced diff noise and conflicts.
 dist/
+
+# Output of e2e_pades.ts — rewritten on every run, read by nothing. It was
+# committed once and has shown as modified ever since, so every status and
+# every diff carried it.
+pades-signed.pdf
